@@ -7,6 +7,7 @@ body {
     align-items: center;
     min-height: 100vh;
     margin: 0;
+    text-align: center;
 }
 #app-container {
     width: 90%;
@@ -16,41 +17,72 @@ body {
     border-radius: 10px;
     box-shadow: 0 4px 20px rgba(0,0,0,0.1);
 }
-.module {
-display: none; /* Hide all modules by default /
-}
-.module.active {
-display: block; / Show only the active module */
-}
-h1, h2 {
-color: #005a9e;
-}
+.module { display: none; }
+.module.active { display: block; }
+h1, h2 { color: #005a9e; }
 input, select, button {
-display: block;
-width: 100%;
-padding: 10px;
-margin-bottom: 15px;
-border-radius: 5px;
-border: 1px solid #ccc;
-font-size: 1rem;
-box-sizing: border-box;
+    display: block;
+    width: 100%;
+    padding: 12px;
+    margin-bottom: 15px;
+    border-radius: 5px;
+    border: 1px solid #ccc;
+    font-size: 1rem;
+    box-sizing: border-box;
+    font-family: 'Sarabun', sans-serif;
 }
 button {
-background-color: #007bff;
-color: white;
-border: none;
-cursor: pointer;
-transition: background-color 0.3s;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.3s;
 }
-button:hover {
-background-color: #0056b3;
+button:hover { background-color: #0056b3; }
+button:disabled { background-color: #ccc; cursor: not-allowed; }
+ul { list-style-position: inside; text-align: left; padding-left: 20px; }
+.myth-buster {
+    background-color: #fffbe6;
+    border-left: 5px solid #fcc419;
+    padding: 15px;
+    margin: 20px 0;
+    text-align: left;
 }
-#submit-scores-btn:disabled {
-background-color: #ccc;
-cursor: not-allowed;
+.feedback { margin-top: 15px; font-weight: bold; min-height: 24px; }
+.correct { color: green; }
+.incorrect { color: red; }
+.game-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-top: 20px;
 }
-#submission-status {
-margin-top: 15px;
-font-weight: bold;
+.card {
+    background-color: #007bff;
+    color: white;
+    height: 100px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 1.2rem;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: transform 0.3s, background-color 0.3s;
+    transform-style: preserve-3d;
 }
-```
+.card.card-content { display: none; }
+.card.flipped,.card.matched {
+    background-color: #28a745;
+    transform: rotateY(180deg);
+}
+.card.flipped.card-content,.card.matched.card-content {
+    display: block;
+    transform: rotateY(180deg);
+}
+.option-btn {
+    background-color: #6c757d;
+}
+.option-btn:hover {
+    background-color: #5a6268;
+}
+#submission-status { margin-top: 15px; font-weight: bold; }
