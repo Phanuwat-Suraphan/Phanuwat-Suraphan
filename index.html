@@ -6,6 +6,7 @@
     <title>ภารกิจพิชิตรากที่สอง</title>
     <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.5.1/dist/confetti.browser.min.js"></script>
 </head>
 <body>
     <div id="app-container">
@@ -25,36 +26,94 @@
             </form>
         </div>
 
+        <div id="intro-module" class="module">
+            <h2>บทนำและจุดประสงค์การเรียนรู้</h2>
+            <p>ในภารกิจนี้ เราจะออกเดินทางไปสำรวจโลกของ "รากที่สอง" ด้วยกันตลอด 3 ชั่วโมง เมื่อสิ้นสุดภารกิจนี้ นักเรียนจะสามารถ:</p>
+            <ul>
+                <li>อธิบายความหมายของรากที่สองของจำนวนจริงได้</li>
+                <li>อ่านและใช้สัญลักษณ์ √ ได้อย่างถูกต้อง</li>
+                <li>หารากที่สองของจำนวนจริงโดยการแยกตัวประกอบและการประมาณค่าได้</li>
+                <li>ตระหนักถึงความสมเหตุสมผลของคำตอบที่ได้</li>
+            </ul>
+            <button onclick="goToModule('content-module-1')">ต่อไป</button>
+        </div>
+
         <div id="content-module-1" class="module">
-            <h2>ชั่วโมงที่ 1: รากฐาน - ทำความเข้าใจรากที่สอง</h2>
-            <p>ในส่วนนี้ เราจะเรียนรู้เกี่ยวกับความหมายที่แท้จริงของรากที่สอง และแก้ไขความเข้าใจผิดที่พบบ่อย</p>
-            <button onclick="completeAndGoTo('exercise1Score', 9, 'exercise-module-1')">ไปทำแบบฝึกหัด 1</button>
+            <h2>ชั่วโมงที่ 1: ห้องแห่งความเข้าใจที่คลาดเคลื่อน</h2>
+            <p>ก่อนจะเรียนรู้พลังที่แท้จริงของรากที่สอง เรามาสลายความเชื่อผิดๆ ที่หลายคนเคยเจอกันก่อน!</p>
+            <div class="myth-buster">
+                <h3>ความเชื่อผิดๆ #1:  √9 = ±3</h3>
+                <p><strong>ความจริง:</strong> สัญลักษณ์ √a ถูกนิยามให้หมายถึง "รากที่สองที่เป็นบวก" ของ a เท่านั้น ดังนั้น แม้ว่าคำตอบของสมการ x² = 9 คือ x = 3 และ -3 แต่ค่าของ √9 คือ 3 เพียงค่าเดียว</p>
+            </div>
+            <div class="myth-buster">
+                <h3>ความเชื่อผิดๆ #2: ถ้า x² = 9 แล้ว x = 3 เท่านั้น</h3>
+                <p><strong>ความจริง:</strong> ในทางพีชคณิต เราต้องพิจารณาทุกคำตอบที่เป็นไปได้ ซึ่ง (-3)² ก็เท่ากับ 9 เช่นกัน ดังนั้น คำตอบของสมการนี้คือ x = 3 และ -3</p>
+            </div>
+            <div class="myth-buster">
+                <h3>ความเชื่อผิดๆ #3: √x² = x เสมอไป</h3>
+                <p><strong>ความจริง:</strong> ลองคิดดูว่าถ้า x = -3 จะเกิดอะไรขึ้น? √(-3)² = √9 = 3 ซึ่งไม่เท่ากับ -3! ดังนั้น ความจริงก็คือ √x² = |x| (ค่าสัมบูรณ์ของ x) เสมอ</p>
+            </div>
+            <button onclick="goToModule('exercise-module-1')">เข้าใจแล้ว! ไปทำแบบฝึกหัดกัน</button>
         </div>
 
         <div id="exercise-module-1" class="module">
-            <h2>แบบฝึกหัด 1 (จาก แบบฝึกหัด 6)</h2>
-            <p>นี่คือส่วนของแบบฝึกหัดที่ 1 (ในเวอร์ชันเต็มจะมีคำถามและตัวเลือก)</p>
-            <p>คะแนนที่ได้ (สมมติ): 9/10</p>
-            <button onclick="completeAndGoTo('exercise1Score', 9, 'content-module-2')">ทำแบบฝึกหัดเสร็จแล้ว</button>
+            <h2>แบบฝึกหัดที่ 1: รากที่สองและประเภทของจำนวน</h2>
+            <div id="ex1-question-container"></div>
+            <div id="ex1-feedback" class="feedback"></div>
+            <button id="ex1-next-btn" onclick="nextQuestion(1)">ข้อต่อไป</button>
         </div>
 
         <div id="content-module-2" class="module">
-            <h2>ชั่วโมงที่ 2: การคำนวณและเกม</h2>
-            <p>ในส่วนนี้ เราจะฝึกทักษะการคำนวณผ่านกิจกรรมและเกมที่สนุกสนาน</p>
-            <button onclick="completeAndGoTo('exercise2Score', 10, 'summary-module')">ไปที่หน้าสรุป (สมมติว่าทำกิจกรรมที่เหลือเสร็จแล้ว)</button>
+            <h2>ชั่วโมงที่ 2: เทคนิคการคำนวณ</h2>
+            <h3>การหารากที่สองโดยการแยกตัวประกอบ</h3>
+            <p>สำหรับจำนวนที่มากขึ้น เราสามารถใช้การแยกตัวประกอบเพื่อหาจำนวนที่เหมือนกันสองจำนวนคูณกันได้ เช่น 576</p>
+            <p>576 = 2 × 288 = 2 × 2 × 144 = 2 × 2 × 12 × 12 = (2 × 12) × (2 × 12) = 24 × 24</p>
+            <p>ดังนั้น รากที่สองของ 576 คือ 24 และ -24</p>
+            <button onclick="goToModule('exercise-module-2')">ไปทำแบบฝึกหัดที่ 2</button>
+        </div>
+
+        <div id="exercise-module-2" class="module">
+            <h2>แบบฝึกหัดที่ 2: การหารากที่สองโดยการแยกตัวประกอบ</h2>
+            <div id="ex2-question-container"></div>
+            <div id="ex2-feedback" class="feedback"></div>
+            <button id="ex2-next-btn" onclick="nextQuestion(2)">ข้อต่อไป</button>
+        </div>
+
+        <div id="game1-module" class="module">
+            <h2>เกมที่ 1: จับคู่รู้ราก (Radical Match-Up)</h2>
+            <p>คลิกการ์ดเพื่อเปิดหาคู่ที่สัมพันธ์กันให้เร็วที่สุด!</p>
+            <div id="game1-timer">เวลา: 0 วินาที</div>
+            <div id="game1-grid" class="game-grid"></div>
+            <button onclick="goToModule('game2-module')">เล่นเกมต่อไป</button>
+        </div>
+
+        <div id="game2-module" class="module">
+            <h2>เกมที่ 2: ควิซพิชิตรากที่สอง</h2>
+            <div id="game2-question-container"></div>
+            <div id="game2-options-container"></div>
+            <div id="game2-feedback" class="feedback"></div>
+            <button id="game2-next-btn" onclick="nextQuestion(3)">ข้อต่อไป</button>
+        </div>
+        
+        <div id="test-module" class="module">
+            <h2>แบบทดสอบวัดผลสัมฤทธิ์</h2>
+            <div id="test-question-container"></div>
+            <div id="test-feedback" class="feedback"></div>
+            <button id="test-next-btn" onclick="nextQuestion(4)">ข้อต่อไป</button>
         </div>
 
         <div id="summary-module" class="module">
             <h2>ภารกิจสำเร็จ!</h2>
             <p>สรุปผลการปฏิบัติภารกิจของคุณ:</p>
-            <ul>
+            <ul id="summary-list">
                 <li>คะแนนแบบฝึกหัด 1: <span id="summary-ex1">0</span> / 10</li>
-                <li>คะแนนแบบฝึกหัด 2: <span id="summary-ex2">0</span> / 10</li>
+                <li>คะแนนแบบฝึกหัด 2: <span id="summary-ex2">0</span> / 5</li>
                 <li>คะแนนเกมจับคู่: <span id="summary-game1">0</span></li>
-                <li>คะแนนควิซ: <span id="summary-game2">0</span></li>
-                <li>คะแนนสอบปลายภาค: <span id="summary-test">0</span> / 100</li>
+                <li>คะแนนควิซ: <span id="summary-game2">0</span> / 10</li>
+                <li>คะแนนสอบปลายภาค: <span id="summary-test">0</span> / 5</li>
+                <li style="font-weight: bold;">คะแนนรวม: <span id="summary-total">0</span></li>
             </ul>
-            <button id="submit-scores-btn" onclick="submitData()">ส่งคะแนน</button>
+            <button id="submit-scores-btn" onclick="submitData()">ส่งคะแนนและจบภารกิจ</button>
             <p id="submission-status"></p>
         </div>
     </div>
