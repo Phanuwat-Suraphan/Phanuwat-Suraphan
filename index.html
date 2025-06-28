@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ภารกิจพิชิตรากที่สอง</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app-container">
+        <div id="registration-module" class="module">
+            <h1>ภารกิจพิชิตรากที่สอง</h1>
+            <p>ยินดีต้อนรับสู่ภารกิจการเรียนรู้เรื่องรากที่สอง! กรุณากรอกข้อมูลเพื่อเริ่มภารกิจ</p>
+            <form id="registration-form">
+                <input type="text" id="fullName" placeholder="ชื่อ-นามสกุล (ไม่ต้องมีคำนำหน้า)" required>
+                <input type="number" id="studentId" placeholder="เลขที่ (เฉพาะตัวเลข)" required>
+                <select id="studentClass" required>
+                    <option value="" disabled selected>เลือกห้อง</option>
+                    <option value="ม.2/1">ม.2/1</option>
+                    <option value="ม.2/2">ม.2/2</option>
+                    <option value="ม.2/3">ม.2/3</option>
+                </select>
+                <button type="submit">เริ่มภารกิจ</button>
+            </form>
+        </div>
+
+        <div id="content-module-1" class="module">
+            <h2>ชั่วโมงที่ 1: รากฐาน - ทำความเข้าใจรากที่สอง</h2>
+            <p>เนื้อหาเกี่ยวกับบทนิยามและความเข้าใจที่คลาดเคลื่อน...</p>
+            <button onclick="completeAndGoTo('exercise1Score', 9, 'exercise-module-1')">ไปทำแบบฝึกหัด 1</button>
+        </div>
+
+        <div id="exercise-module-1" class="module">
+            <h2>แบบฝึกหัด 1 (จาก แบบฝึกหัด 6)</h2>
+            <p>เนื้อหาแบบฝึกหัด...</p>
+            <button onclick="completeAndGoTo('exercise1Score', 9, 'content-module-2')">ทำแบบฝึกหัดเสร็จแล้ว (ได้ 9/10)</button>
+        </div>
+
+        <div id="content-module-2" class="module">
+            <h2>ชั่วโมงที่ 2: การคำนวณและเกม</h2>
+            <p>เนื้อหาเกี่ยวกับการแยกตัวประกอบและประมาณค่า...</p>
+            <button onclick="completeAndGoTo('exercise2Score', 10, 'summary-module')">ไปที่หน้าสรุป (สมมติว่าทำกิจกรรมที่เหลือเสร็จแล้ว)</button>
+        </div>
+
+        <div id="summary-module" class="module">
+            <h2>ภารกิจสำเร็จ!</h2>
+            <p>สรุปผลการปฏิบัติภารกิจของคุณ:</p>
+            <ul>
+                <li>คะแนนแบบฝึกหัด 1: <span id="summary-ex1">0</span> / 10</li>
+                <li>คะแนนแบบฝึกหัด 2: <span id="summary-ex2">0</span> / 10</li>
+                <li>คะแนนเกมจับคู่: <span id="summary-game1">0</span></li>
+                <li>คะแนนควิซ: <span id="summary-game2">0</span></li>
+                <li>คะแนนสอบปลายภาค: <span id="summary-test">0</span> / 100</li>
+            </ul>
+            <button id="submit-scores-btn" onclick="submitData()">ส่งคะแนน</button>
+            <p id="submission-status"></p>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
