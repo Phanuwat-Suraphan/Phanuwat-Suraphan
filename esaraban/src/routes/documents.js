@@ -108,6 +108,10 @@ router.get('/documents/new', requirePage((ctx) => {
             <input type="text" name="externalDocNumber" placeholder="เช่น ศธ 04123/55 หรือเว้นว่างถ้าไม่มี" />
           </div>
           <div class="field">
+            <label>ลงวันที่ (วันที่ในหนังสือต้นฉบับ)</label>
+            <input type="date" name="externalDocDate" />
+          </div>
+          <div class="field">
             <label>ประเภทเอกสาร *</label>
             <select name="docTypeId" required>${listTypeOptions()}</select>
           </div>
@@ -187,7 +191,7 @@ router.post('/documents', requireApi(async (ctx) => {
     direction: b.direction === 'outgoing' ? 'outgoing' : 'incoming',
     title: b.title.trim(), subject: b.subject?.trim(), docTypeId: b.docTypeId, departmentId: b.departmentId,
     priority: b.priority, secretLevel: b.secretLevel, correspondentName: b.correspondentName.trim(),
-    externalDocNumber: b.externalDocNumber?.trim(), dueDate: b.dueDate || null, createdBy: ctx.user.id,
+    externalDocNumber: b.externalDocNumber?.trim(), externalDocDate: b.externalDocDate || null, dueDate: b.dueDate || null, createdBy: ctx.user.id,
   });
   let warn = '';
   if (b.fileDataBase64) {
@@ -324,6 +328,7 @@ router.get('/documents/:id', requirePage((ctx) => {
             <tbody>
               <tr><td class="text-muted">${doc.direction === 'incoming' ? 'หน่วยงานต้นทาง' : 'หน่วยงานปลายทาง'}</td><td>${esc(doc.correspondent_name)}</td></tr>
               ${doc.external_doc_number ? `<tr><td class="text-muted">เลขหนังสืออ้างอิง</td><td>${esc(doc.external_doc_number)}</td></tr>` : ''}
+              ${doc.external_doc_date ? `<tr><td class="text-muted">ลงวันที่</td><td>${esc(doc.external_doc_date)}</td></tr>` : ''}
               <tr><td class="text-muted">ประเภท</td><td>${esc(doc.type_name)}</td></tr>
               <tr><td class="text-muted">ฝ่าย</td><td>${esc(doc.dept_name)}</td></tr>
               ${doc.due_date ? `<tr><td class="text-muted">กำหนดเสร็จ</td><td>${esc(doc.due_date)}</td></tr>` : ''}

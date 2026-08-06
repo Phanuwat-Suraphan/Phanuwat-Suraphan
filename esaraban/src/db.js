@@ -119,6 +119,7 @@ export function migrate() {
     year_be INTEGER NOT NULL,
     doc_number_display TEXT NOT NULL, -- e.g. 0001/2569
     external_doc_number TEXT, -- เลขหนังสือจากหน่วยงานต้นทาง/เลขที่เราจะส่ง
+    external_doc_date TEXT, -- ลงวันที่ (วันที่ระบุในหนังสือต้นฉบับ ตามแบบทะเบียนหนังสือรับ-ส่ง)
     title TEXT NOT NULL,
     subject TEXT,
     doc_type_id TEXT NOT NULL REFERENCES document_types(id),
