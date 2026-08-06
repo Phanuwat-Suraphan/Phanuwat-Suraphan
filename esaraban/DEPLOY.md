@@ -9,6 +9,11 @@ Any provider works (DigitalOcean, Vultr, Linode, Hetzner, AWS Lightsail...) — 
 DigitalOcean/Vultr naming but are the same everywhere. Budget: cheapest Ubuntu droplet is
 usually $4–6/month.
 
+**Want it free?** [`deploy/ORACLE_CLOUD.md`](./deploy/ORACLE_CLOUD.md) covers Oracle Cloud's
+"Always Free" tier, which gives a real persistent VPS at no cost indefinitely (not a trial).
+Read that first if you're going that route — steps 1-2 below differ slightly on Oracle, then
+everything from step 3 onward is identical.
+
 ## 1. Create the server
 
 - Create a droplet/instance: **Ubuntu 24.04 LTS**, smallest size, any region near the school
