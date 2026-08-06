@@ -42,6 +42,10 @@ ufw enable
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt install -y nodejs
 node --version   # confirm v22.x — required for node:sqlite
+
+# optional: OCR auto-fill on the new-document form (Tesseract — free, no API key/cost)
+# skip this if you don't need the "อ่านข้อมูลจากไฟล์อัตโนมัติ" button; the app works fine without it
+apt install -y tesseract-ocr tesseract-ocr-tha poppler-utils
 ```
 
 ## 3. Deploy the app

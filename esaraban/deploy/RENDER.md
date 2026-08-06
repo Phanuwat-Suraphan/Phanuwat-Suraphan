@@ -40,3 +40,11 @@ This is fine for showing someone what the system looks and feels like. It is **n
 for the school to actually use to store real documents — for that, see
 [`../DEPLOY.md`](../DEPLOY.md) (any VPS, persistent disk) or
 [`ORACLE_CLOUD.md`](./ORACLE_CLOUD.md) (free VPS with a real persistent disk).
+
+## OCR auto-fill doesn't work here either
+
+The "อ่านข้อมูลจากไฟล์อัตโนมัติ (OCR)" button needs the `tesseract` and `pdftoppm` system
+programs installed on the server. Render's free Node runtime doesn't allow installing system
+packages (`apt install`), so that button will show a "ไม่พบโปรแกรม" error here — it works once
+you're on a real VPS (see `DEPLOY.md`, step 2), where those packages are just an `apt install`
+away.

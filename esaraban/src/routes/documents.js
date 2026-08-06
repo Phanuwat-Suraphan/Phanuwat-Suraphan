@@ -7,6 +7,7 @@ import {
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
   voidDocument, archiveDocument, httpError,
 } from '../services/workflow.js';
+import { extractTextFromPdf, guessFieldsFromText } from '../services/ocr.js';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -153,6 +154,9 @@ router.get('/documents/new', requirePage((ctx) => {
           <input type="file" id="fileInput" accept="application/pdf" onchange="attachFilePreview(this,'filePreview')" />
           <div id="filePreview" class="help-text"></div>
           <div class="help-text">รองรับเฉพาะไฟล์ PDF ขนาดไม่เกิน 10MB (ระบบจะตรวจ magic number และคำนวณ SHA-256 hash)</div>
+          <button type="button" class="btn btn-outline btn-sm" style="margin-top:.5rem" onclick="runOcrExtract(this)">🔍 อ่านข้อมูลจากไฟล์อัตโนมัติ (OCR)</button>
+          <div class="help-text">ใช้ Tesseract OCR อ่านตัวอักษรจากไฟล์ที่แนบไว้ด้านบน แล้วลองกรอกฟิลด์ให้อัตโนมัติ — <strong>เป็นการเดาเบื้องต้นเท่านั้น กรุณาตรวจสอบความถูกต้องทุกครั้งก่อนบันทึก</strong></div>
+          <div id="ocrResult"></div>
         </div>
         <button class="btn btn-primary" type="submit">บันทึกและออกเลข${direction === 'incoming' ? 'รับ' : 'ส่ง'}อัตโนมัติ</button>
         <a class="btn btn-outline" href="/documents?direction=${direction}">ยกเลิก</a>
@@ -163,6 +167,7 @@ router.get('/documents/new', requirePage((ctx) => {
         e.preventDefault();
         submitWithFile(this, 'fileInput', '/documents', { submitLabel: 'บันทึก' });
       });
+      window.runOcrExtract = function(btn){ ocrExtractInto(btn, 'fileInput', 'ocrResult', document.getElementById('docForm')); };
     </script>`;
   html(ctx, 200, layout({ user: ctx.user, title: 'สร้างเอกสารใหม่', path: '/documents/new', content }));
 }));
@@ -186,6 +191,21 @@ function saveAttachment({ documentId, fileName, fileType, fileDataBase64, upload
   audit({ userId: uploadedBy, action: 'attachment_uploaded', tableName: 'attachments', recordId: id, detail: { documentId, hash, duplicateOf: dup ? dup.doc_number_display : null } });
   return { id, duplicateWarning: dup ? `พบไฟล์นี้ซ้ำกับเอกสาร ${dup.doc_number_display} (Hash ตรงกัน)` : null };
 }
+
+// ---------------- OCR auto-fill (Tesseract, best-effort — ผู้ใช้ต้องตรวจสอบก่อนบันทึกเสมอ) ----------------
+router.post('/documents/ocr-extract', requireApi(async (ctx) => {
+  const { fileType, fileDataBase64 } = ctx.body;
+  if (!fileDataBase64) throw httpError(400, 'ไม่พบไฟล์ที่จะอ่าน');
+  if (fileType !== 'application/pdf') throw httpError(400, 'อนุญาตเฉพาะไฟล์ PDF เท่านั้น');
+  const buf = Buffer.from(fileDataBase64, 'base64');
+  if (buf.length > MAX_FILE_BYTES) throw httpError(413, 'ไฟล์มีขนาดใหญ่เกิน 10MB');
+  if (buf.subarray(0, 5).toString('latin1') !== '%PDF-') throw httpError(400, 'ไฟล์ไม่ใช่ PDF ที่ถูกต้อง (ตรวจสอบ file signature ไม่ผ่าน)');
+
+  const text = await extractTextFromPdf(buf);
+  const fields = guessFieldsFromText(text);
+  audit({ userId: ctx.user.id, action: 'ocr_extract_attempted', tableName: 'documents', recordId: null, detail: { textLength: text.length } });
+  json(ctx, 200, fields);
+}));
 
 // ---------------- create ----------------
 router.post('/documents', requireApi(async (ctx) => {

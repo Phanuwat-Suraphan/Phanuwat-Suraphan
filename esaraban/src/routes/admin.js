@@ -18,11 +18,12 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
       <div class="card">
         <h3 class="mt-0">รายชื่อผู้ใช้ (${users.length})</h3>
         <div class="table-wrap"><table>
-          <thead><tr><th>รหัส</th><th>ชื่อ</th><th>ฝ่าย</th><th>บทบาท</th><th>สถานะ</th></tr></thead>
+          <thead><tr><th>รหัส</th><th>ชื่อ</th><th>ฝ่าย</th><th>บทบาท</th><th>สถานะ</th><th></th></tr></thead>
           <tbody>${users.map((u) => `<tr>
             <td>${esc(u.employee_code)}</td><td>${esc(u.prefix || '')}${esc(u.first_name)} ${esc(u.last_name)}</td>
             <td>${esc(u.dept_name || '-')}</td><td>${esc(u.role_names || '-')}</td>
             <td><span class="badge ${u.status === 'active' ? 'badge-success' : 'badge-muted'}">${u.status === 'active' ? 'ใช้งาน' : 'ระงับ'}</span></td>
+            <td>${u.id === ctx.user.id ? '' : `<button class="btn btn-outline btn-sm" onclick="deleteUser('${u.id}','${esc(u.first_name)} ${esc(u.last_name)}')">🗑️ ลบ</button>`}</td>
           </tr>`).join('')}</tbody>
         </table></div>
       </div>
@@ -63,6 +64,13 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
               .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
               .catch(e => alert(e.message));
           });
+          function deleteUser(id, name) {
+            if (!confirm('ยืนยันลบผู้ใช้ "' + name + '"? (บัญชีจะถูกระงับการใช้งานถาวร แต่ประวัติเอกสาร/audit log ที่เกี่ยวข้องยังคงอยู่)')) return;
+            fetch('/admin/users/' + id + '/delete', {method:'POST'})
+              .then(r => r.json().then(d => ({ok:r.ok,d})))
+              .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
+              .catch(e => alert(e.message));
+          }
         </script>
       </div>
     </div>`;
@@ -88,6 +96,30 @@ router.post('/admin/users', requireApi(async (ctx) => {
   db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)').run(id, b.roleId);
   audit({ userId: ctx.user.id, action: 'user_created', tableName: 'users', recordId: id, detail: { employeeCode: b.employeeCode } });
   json(ctx, 201, { ok: true });
+}));
+
+router.post('/admin/users/:id/delete', requireApi(async (ctx) => {
+  if (!ctx.user.roleCodes.includes('admin')) return json(ctx, 403, { error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
+  const targetId = ctx.params.id;
+  if (targetId === ctx.user.id) return json(ctx, 400, { error: 'ไม่สามารถลบบัญชีของตัวเองได้' });
+  const target = db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+  if (!target) return json(ctx, 404, { error: 'ไม่พบผู้ใช้นี้' });
+
+  const isAdmin = db.prepare(`
+    SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? AND r.name = 'admin'
+  `).get(targetId);
+  if (isAdmin) {
+    const adminCount = db.prepare(`
+      SELECT COUNT(DISTINCT u.id) c FROM users u
+      JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
+      WHERE r.name = 'admin' AND u.deleted_at IS NULL
+    `).get().c;
+    if (adminCount <= 1) return json(ctx, 409, { error: 'ไม่สามารถลบผู้ดูแลระบบคนสุดท้ายได้ ต้องมีผู้ดูแลระบบอย่างน้อย 1 คนเสมอ' });
+  }
+
+  db.prepare(`UPDATE users SET deleted_at = ?, status = 'suspended', updated_at = ? WHERE id = ?`).run(nowIso(), nowIso(), targetId);
+  audit({ userId: ctx.user.id, action: 'user_deleted', tableName: 'users', recordId: targetId, detail: { employeeCode: target.employee_code } });
+  json(ctx, 200, { ok: true });
 }));
 
 router.get('/admin/audit', requireRole('admin')(requirePage((ctx) => {
