@@ -550,6 +550,14 @@ router.post('/documents/:id/comment', requireApi(async (ctx) => {
   json(ctx, 200, { ok: true });
 }));
 
+// Node's raw HTTP headers only accept Latin-1 bytes — a Thai filename (the norm here) throws
+// "Invalid character in header content" if put straight into Content-Disposition. RFC 5987's
+// filename* carries the real UTF-8 name; filename= keeps an ASCII-only fallback for old clients.
+function contentDispositionHeader(filename) {
+  const asciiFallback = filename.replace(/[^\x20-\x7E]/g, '').replace(/"/g, '') || 'document.pdf';
+  return `inline; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
 // ---------------- file serving (ACL-checked, not static — proxied even for Google Drive so ACL always applies) ----------------
 router.get('/files/:attachmentId', requirePage(async (ctx) => {
   const att = db.prepare('SELECT * FROM attachments WHERE id = ?').get(ctx.params.attachmentId);
@@ -570,7 +578,7 @@ router.get('/files/:attachmentId', requirePage(async (ctx) => {
     audit({ userId: ctx.user.id, action: 'attachment_opened', tableName: 'attachments', recordId: att.id, ip: ctx.ip });
     ctx.res.writeHead(200, {
       'Content-Type': 'application/pdf',
-      'Content-Disposition': `inline; filename="${att.filename.replace(/"/g, '')}"`,
+      'Content-Disposition': contentDispositionHeader(att.filename),
       'Cache-Control': 'private, no-store',
       'X-Content-Type-Options': 'nosniff',
     });
@@ -583,7 +591,7 @@ router.get('/files/:attachmentId', requirePage(async (ctx) => {
   audit({ userId: ctx.user.id, action: 'attachment_opened', tableName: 'attachments', recordId: att.id, ip: ctx.ip });
   ctx.res.writeHead(200, {
     'Content-Type': 'application/pdf',
-    'Content-Disposition': `inline; filename="${att.filename.replace(/"/g, '')}"`,
+    'Content-Disposition': contentDispositionHeader(att.filename),
     'Cache-Control': 'private, no-store',
     'X-Content-Type-Options': 'nosniff',
   });
