@@ -1,7 +1,16 @@
-import { router, html, json } from '../router.js';
+import { router, html, json, redirect } from '../router.js';
 import { layout, esc, fmtDate, emptyState } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { db, uuid, nowIso, hashSecret, audit } from '../db.js';
+import {
+  isGoogleDriveEnabled, isGoogleDriveConnected, getOAuthClientConfig, exchangeCodeForTokens, DRIVE_SCOPE, AUTH_URL,
+} from '../services/googleDrive.js';
+
+function oauthRedirectUri(ctx) {
+  const proto = ctx.req.headers['x-forwarded-proto'] || 'https';
+  const host = ctx.req.headers.host;
+  return `${proto}://${host}/admin/google-drive/callback`;
+}
 
 router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
   const users = db.prepare(`
@@ -141,4 +150,74 @@ router.get('/admin/audit', requireRole('admin')(requirePage((ctx) => {
       </table></div>` : emptyState('🧾', 'ยังไม่มีบันทึก')}
     </div>`;
   html(ctx, 200, layout({ user: ctx.user, title: 'Audit Log', path: '/admin/audit', content }));
+})));
+
+// ---------------- Google Drive OAuth connection (admin only) ----------------
+router.get('/admin/google-drive', requireRole('admin')(requirePage((ctx) => {
+  let clientConfigured = true;
+  try { getOAuthClientConfig(); } catch (e) { clientConfigured = false; }
+  const connected = isGoogleDriveConnected();
+  const enabled = isGoogleDriveEnabled();
+
+  const content = `
+    <h2>🗂️ เชื่อมต่อ Google Drive</h2>
+    <div class="card">
+      <table>
+        <tbody>
+          <tr><td class="text-muted">STORAGE_PROVIDER</td><td>${enabled ? '<span class="badge badge-success">google_drive (เปิดใช้งาน)</span>' : '<span class="badge badge-muted">local (ยังไม่เปิดใช้ Google Drive)</span>'}</td></tr>
+          <tr><td class="text-muted">GOOGLE_OAUTH_CLIENT_ID / SECRET</td><td>${clientConfigured ? '<span class="badge badge-success">ตั้งค่าแล้ว</span>' : '<span class="badge badge-danger">ยังไม่ได้ตั้งค่า</span>'}</td></tr>
+          <tr><td class="text-muted">เชื่อมต่อบัญชี Google แล้วหรือยัง</td><td>${connected ? '<span class="badge badge-success">เชื่อมต่อแล้ว</span>' : '<span class="badge badge-muted">ยังไม่เชื่อมต่อ</span>'}</td></tr>
+        </tbody>
+      </table>
+      ${!clientConfigured ? `<div class="alert alert-warning" style="margin-top:1rem">ต้องตั้งค่า <code>GOOGLE_OAUTH_CLIENT_ID</code> และ <code>GOOGLE_OAUTH_CLIENT_SECRET</code> เป็น environment variable ก่อน (ดูขั้นตอนสร้างใน <code>deploy/GOOGLE_DRIVE.md</code>) แล้ว redeploy จึงจะกดเชื่อมต่อได้</div>` : ''}
+      ${clientConfigured ? `<a class="btn btn-primary" style="margin-top:1rem" href="/admin/google-drive/start">${connected ? '🔄 เชื่อมต่อบัญชีใหม่ (เปลี่ยนบัญชี)' : '🔗 เชื่อมต่อบัญชี Google'}</a>` : ''}
+      <p class="text-muted" style="font-size:.8rem;margin-top:1rem">ไฟล์ที่อัปโหลดหลังเชื่อมต่อจะไปอยู่ในโฟลเดอร์ "ระบบสารบรรณอิเล็กทรอนิกส์ (esaraban)" ในบัญชี Google Drive ที่เชื่อมต่อ นับพื้นที่ในโควตา 15GB ปกติของบัญชีนั้น</p>
+    </div>`;
+  html(ctx, 200, layout({ user: ctx.user, title: 'เชื่อมต่อ Google Drive', path: '/admin/google-drive', content }));
+})));
+
+router.get('/admin/google-drive/start', requireRole('admin')(requirePage((ctx) => {
+  const { clientId } = getOAuthClientConfig();
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: oauthRedirectUri(ctx),
+    response_type: 'code',
+    scope: DRIVE_SCOPE,
+    access_type: 'offline',
+    prompt: 'consent', // บังคับให้ Google ส่ง refresh_token กลับมาทุกครั้ง (ปกติส่งแค่ครั้งแรกที่ยินยอม)
+  });
+  redirect(ctx, `${AUTH_URL}?${params.toString()}`);
+})));
+
+router.get('/admin/google-drive/callback', requireRole('admin')(requirePage(async (ctx) => {
+  if (ctx.query.error) {
+    return html(ctx, 400, layout({ user: ctx.user, title: 'เชื่อมต่อไม่สำเร็จ', path: '/admin/google-drive',
+      content: `<div class="alert alert-danger">Google ปฏิเสธคำขอ: ${esc(ctx.query.error)}</div><a class="btn btn-outline" href="/admin/google-drive">กลับ</a>` }));
+  }
+  if (!ctx.query.code) {
+    return html(ctx, 400, layout({ user: ctx.user, title: 'เชื่อมต่อไม่สำเร็จ', path: '/admin/google-drive',
+      content: '<div class="alert alert-danger">ไม่พบ authorization code</div>' }));
+  }
+  let tokens;
+  try {
+    tokens = await exchangeCodeForTokens({ code: ctx.query.code, redirectUri: oauthRedirectUri(ctx) });
+  } catch (err) {
+    return html(ctx, err.statusCode || 500, layout({ user: ctx.user, title: 'เชื่อมต่อไม่สำเร็จ', path: '/admin/google-drive',
+      content: `<div class="alert alert-danger">${esc(err.message)}</div><a class="btn btn-outline" href="/admin/google-drive">กลับ</a>` }));
+  }
+  audit({ userId: ctx.user.id, action: 'google_drive_connected', tableName: 'system', recordId: null });
+
+  const content = `
+    <h2>✅ เชื่อมต่อสำเร็จ</h2>
+    <div class="card">
+      ${tokens.refresh_token ? `
+        <p>คัดลอกค่านี้ไปตั้งเป็น environment variable <code>GOOGLE_OAUTH_REFRESH_TOKEN</code> บนเซิร์ฟเวอร์ แล้ว redeploy อีกครั้ง (ค่านี้เป็นความลับ ห้ามแชร์ให้ใครเห็น):</p>
+        <textarea readonly style="width:100%;font-family:monospace;font-size:.85rem" rows="3" onclick="this.select()">${esc(tokens.refresh_token)}</textarea>
+        <p class="text-muted" style="font-size:.8rem;margin-top:.5rem">อย่าลืมตั้ง <code>STORAGE_PROVIDER=google_drive</code> ด้วยถ้ายังไม่ได้ตั้ง</p>
+      ` : `
+        <div class="alert alert-warning">Google ไม่ได้ส่ง refresh token กลับมารอบนี้ (มักเกิดเมื่อเคยยินยอมมาก่อนแล้ว) — ไปที่ <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">การอนุญาตของบัญชี Google</a> เพิกถอนสิทธิ์ของแอปนี้ก่อน แล้วกด "เชื่อมต่อบัญชีใหม่" อีกครั้ง</div>
+      `}
+      <a class="btn btn-outline" style="margin-top:1rem" href="/admin/google-drive">กลับหน้าเชื่อมต่อ</a>
+    </div>`;
+  html(ctx, 200, layout({ user: ctx.user, title: 'เชื่อมต่อสำเร็จ', path: '/admin/google-drive', content }));
 })));

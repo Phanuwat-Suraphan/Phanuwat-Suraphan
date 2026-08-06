@@ -1,75 +1,58 @@
-import { createSign } from 'node:crypto';
-import { httpError } from './workflow.js';
+// httpError คัดลอกไว้ในไฟล์นี้เอง (ไม่ import จาก workflow.js) เพื่อเลี่ยง circular import —
+// workflow.js เองก็ต้อง import จากไฟล์นี้ (สำหรับ forceDeleteDocument ลบไฟล์บน Drive)
+export function httpError(statusCode, message) {
+  return Object.assign(new Error(message), { statusCode });
+}
 
 // ใช้ Google Drive เป็นที่เก็บไฟล์แนบแทน local disk — เหมาะกับ hosting ที่ไม่มี disk ถาวร
 // (เช่น Render free tier) เพราะไฟล์อยู่นอกเซิร์ฟเวอร์ ไม่หายตอน redeploy
 // เปิดใช้งานด้วย env var STORAGE_PROVIDER=google_drive (ค่าเริ่มต้นคือ local disk เหมือนเดิม)
-// ต้องตั้งค่า GOOGLE_SERVICE_ACCOUNT_JSON และ GOOGLE_DRIVE_ROOT_FOLDER_ID ด้วย
-// ดูขั้นตอนติดตั้งทั้งหมดใน deploy/GOOGLE_DRIVE.md
+//
+// ใช้ OAuth2 "act as the real Google account" แทน Service Account — เพราะ Service Account
+// ไม่มีโควตาพื้นที่เก็บข้อมูลเป็นของตัวเองบนบัญชี Gmail ทั่วไป (ไม่ใช่ Google Workspace) ทำให้อัปโหลด
+// fail ด้วย "Service Accounts do not have storage quota" เสมอ — พิสูจน์แล้วจากการใช้งานจริง
+// ไฟล์ที่อัปโหลดจะนับพื้นที่ในโควตา 15GB ของบัญชี Google ที่เชื่อมต่อจริง ไม่ใช่โควตาแยกต่างหาก
+// ดูขั้นตอนติดตั้งทั้งหมดใน deploy/GOOGLE_DRIVE.md — เชื่อมต่อผ่านหน้า /admin/google-drive
 
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
-const TOKEN_URL = 'https://oauth2.googleapis.com/token';
+export const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+export const TOKEN_URL = 'https://oauth2.googleapis.com/token';
+export const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const API_BASE = 'https://www.googleapis.com/drive/v3/files';
 const UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3/files';
+const ROOT_FOLDER_NAME = 'ระบบสารบรรณอิเล็กทรอนิกส์ (esaraban)';
 
 export function isGoogleDriveEnabled() {
   return process.env.STORAGE_PROVIDER === 'google_drive';
 }
 
-let cachedCreds = null;
-function getCredentials() {
-  if (cachedCreds) return cachedCreds;
-  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!raw) throw httpError(500, 'ไม่ได้ตั้งค่า GOOGLE_SERVICE_ACCOUNT_JSON — ดูขั้นตอนใน deploy/GOOGLE_DRIVE.md');
-  try {
-    cachedCreds = JSON.parse(raw);
-  } catch (e) {
-    throw httpError(500, 'GOOGLE_SERVICE_ACCOUNT_JSON ไม่ใช่ JSON ที่ถูกต้อง');
+export function getOAuthClientConfig() {
+  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    throw httpError(500, 'ยังไม่ได้ตั้งค่า GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET — ดูขั้นตอนใน deploy/GOOGLE_DRIVE.md');
   }
-  if (!cachedCreds.client_email || !cachedCreds.private_key) {
-    throw httpError(500, 'GOOGLE_SERVICE_ACCOUNT_JSON ไม่มี client_email หรือ private_key');
-  }
-  return cachedCreds;
+  return { clientId, clientSecret };
 }
 
-function getRootFolderId() {
-  const id = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
-  if (!id) throw httpError(500, 'ไม่ได้ตั้งค่า GOOGLE_DRIVE_ROOT_FOLDER_ID — ดูขั้นตอนใน deploy/GOOGLE_DRIVE.md');
-  return id;
-}
-
-function base64url(input) {
-  return Buffer.from(input).toString('base64url');
-}
-
-function signJwt(creds) {
-  const now = Math.floor(Date.now() / 1000);
-  const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-  const claims = base64url(JSON.stringify({
-    iss: creds.client_email,
-    scope: DRIVE_SCOPE,
-    aud: TOKEN_URL,
-    iat: now,
-    exp: now + 3600,
-  }));
-  const unsigned = `${header}.${claims}`;
-  const signature = createSign('RSA-SHA256').update(unsigned).sign(creds.private_key, 'base64url');
-  return `${unsigned}.${signature}`;
+export function isGoogleDriveConnected() {
+  return Boolean(process.env.GOOGLE_OAUTH_REFRESH_TOKEN);
 }
 
 let cachedToken = null; // { accessToken, expiresAt }
 async function getAccessToken() {
   if (cachedToken && cachedToken.expiresAt > Date.now() + 60_000) return cachedToken.accessToken;
-  const creds = getCredentials();
-  const jwt = signJwt(creds);
+  const { clientId, clientSecret } = getOAuthClientConfig();
+  const refreshToken = process.env.GOOGLE_OAUTH_REFRESH_TOKEN;
+  if (!refreshToken) throw httpError(500, 'ยังไม่ได้เชื่อมต่อ Google Drive — ไปที่หน้า /admin/google-drive เพื่อเชื่อมต่อบัญชี Google ก่อน');
+
   const res = await fetch(TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: jwt }),
+    body: new URLSearchParams({ grant_type: 'refresh_token', client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw httpError(502, `เชื่อมต่อ Google Drive ไม่สำเร็จ (ขอ access token ล้มเหลว): ${data.error_description || data.error || res.statusText}`);
+    throw httpError(502, `เชื่อมต่อ Google Drive ไม่สำเร็จ (ต่ออายุ token ล้มเหลว): ${data.error_description || data.error || res.statusText} — อาจต้องเชื่อมต่อบัญชีใหม่ที่ /admin/google-drive`);
   }
   cachedToken = { accessToken: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 };
   return cachedToken.accessToken;
@@ -82,6 +65,8 @@ async function driveFetch(url, opts = {}) {
 }
 
 // ค้นหาโฟลเดอร์ชื่อ name ใต้ parentId ถ้าไม่มีให้สร้างใหม่ — ใช้จัดหมวดหมู่ ปี/ประเภทหนังสือ
+// หมายเหตุ: scope drive.file ทำให้แอปมองเห็นเฉพาะไฟล์/โฟลเดอร์ที่แอปสร้างเองเท่านั้น จึงต้องให้แอป
+// เป็นผู้สร้างโฟลเดอร์รากเองเสมอ (ห้ามให้ผู้ใช้สร้างโฟลเดอร์เองแล้วส่ง ID มาให้ จะมองไม่เห็น)
 async function findOrCreateFolder(name, parentId) {
   const escaped = name.replace(/'/g, "\\'");
   const q = encodeURIComponent(`name='${escaped}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`);
@@ -100,9 +85,9 @@ async function findOrCreateFolder(name, parentId) {
   return createData.id;
 }
 
-// จัดหมวดหมู่: root / ปี พ.ศ. / ประเภทหนังสือ — ตรงกับที่โรงเรียนคุ้นเคยจากตู้เอกสารจริง
+// จัดหมวดหมู่: root (แอปสร้างเอง) / ปี พ.ศ. / ประเภทหนังสือ — ตรงกับที่โรงเรียนคุ้นเคยจากตู้เอกสารจริง
 export async function ensureCategoryFolder({ yearBe, typeName }) {
-  const root = getRootFolderId();
+  const root = await findOrCreateFolder(ROOT_FOLDER_NAME, 'root');
   const yearFolder = await findOrCreateFolder(String(yearBe), root);
   return findOrCreateFolder(typeName, yearFolder);
 }
@@ -154,4 +139,18 @@ export async function deleteFile(fileId) {
     const errData = await res.json().catch(() => ({}));
     throw httpError(502, `ลบไฟล์บน Google Drive ไม่สำเร็จ: ${errData.error?.message || res.statusText}`);
   }
+}
+
+export async function exchangeCodeForTokens({ code, redirectUri }) {
+  const { clientId, clientSecret } = getOAuthClientConfig();
+  const res = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code, client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri, grant_type: 'authorization_code',
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw httpError(502, `แลก authorization code ไม่สำเร็จ: ${data.error_description || data.error || res.statusText}`);
+  return data; // { access_token, refresh_token, expires_in, ... } — refresh_token มาเฉพาะครั้งแรกที่ยินยอม (prompt=consent)
 }

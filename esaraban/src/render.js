@@ -106,6 +106,7 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
     <div class="nav-section-label">ระบบ</div>
     ${user.roleCodes.includes('admin') ? navItem('/admin/users', '⚙️', 'จัดการผู้ใช้', currentPath) : ''}
     ${user.roleCodes.includes('admin') ? navItem('/admin/audit', '🧾', 'Audit Log', currentPath) : ''}
+    ${user.roleCodes.includes('admin') ? navItem('/admin/google-drive', '🗂️', 'เชื่อมต่อ Google Drive', currentPath) : ''}
     ${navItem('/profile', '👤', 'โปรไฟล์ของฉัน', currentPath)}
     <a class="nav-link" href="/logout">${'<span class="icon">🚪</span><span>ออกจากระบบ</span>'}</a>
   </aside>

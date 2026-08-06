@@ -1,6 +1,13 @@
 import { db, uuid, nowIso, beYear, audit, computeRetentionUntil } from '../db.js';
 import { nextRunningNumber } from '../numbering.js';
 import { notifyUser } from './notify.js';
+import { deleteFile as deleteDriveFile, isGoogleDriveEnabled } from './googleDrive.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
 
 /**
  * Create a new incoming/outgoing document with an atomic running number.
@@ -187,6 +194,35 @@ export function voidDocument({ documentId, reason, actorUser }) {
   }
   db.prepare(`UPDATE documents SET status = 'voided', void_reason = ?, updated_at = ? WHERE id = ?`).run(reason, nowIso(), documentId);
   audit({ userId: actorUser.id, action: 'document_voided', tableName: 'documents', recordId: documentId, detail: { reason } });
+}
+
+// ลบเอกสารถาวรโดยแอดมิน — ต่างจาก voidDocument ตรงที่ไม่จำกัดสถานะ (ใช้เก็บกวาดเอกสาร
+// ที่ผิดพลาด/ค้างจากบั๊ก เช่น สร้างเอกสารสำเร็จแต่แนบไฟล์ไม่สำเร็จ) แต่ก็ยังเป็น soft-delete
+// (ตั้ง deleted_at) ไม่ใช่ DELETE จริง เพื่อไม่ให้ audit_logs/workflow_steps ที่อ้างอิงเอกสารนี้เสียหาย
+// และเลขที่เอกสารจะยังไม่ถูกนำไปใช้ซ้ำ (เอกสารแค่หายไปจากทุกหน้าจอ ไม่ใช่เลขว่างให้ใช้ใหม่)
+export async function forceDeleteDocument({ documentId, reason, actorUser }) {
+  if (!actorUser.roleCodes.includes('admin')) throw httpError(403, 'เฉพาะผู้ดูแลระบบเท่านั้นที่ลบเอกสารได้');
+  const doc = db.prepare('SELECT * FROM documents WHERE id = ? AND deleted_at IS NULL').get(documentId);
+  if (!doc) throw httpError(404, 'ไม่พบเอกสาร');
+  if (!reason?.trim()) throw httpError(400, 'กรุณาระบุเหตุผลที่ลบเอกสาร');
+
+  const attachments = db.prepare('SELECT * FROM attachments WHERE document_id = ?').all(documentId);
+  for (const att of attachments) {
+    try {
+      if (att.storage_provider === 'google_drive' && att.drive_file_id && isGoogleDriveEnabled()) {
+        await deleteDriveFile(att.drive_file_id);
+      } else if (att.filepath) {
+        const filePath = path.join(UPLOAD_DIR, att.filepath);
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      }
+    } catch (e) {
+      // ไฟล์ลบไม่สำเร็จไม่ควรทำให้การลบเอกสารทั้งฉบับล้มเหลว — บันทึกไว้แล้วลบเมทาดาต้าต่อ
+      audit({ userId: actorUser.id, action: 'force_delete_attachment_cleanup_failed', tableName: 'attachments', recordId: att.id, detail: { error: e.message } });
+    }
+  }
+
+  db.prepare(`UPDATE documents SET deleted_at = ?, updated_at = ? WHERE id = ?`).run(nowIso(), nowIso(), documentId);
+  audit({ userId: actorUser.id, action: 'document_force_deleted', tableName: 'documents', recordId: documentId, detail: { reason, docNumberDisplay: doc.doc_number_display, previousStatus: doc.status } });
 }
 
 export function archiveDocument({ documentId, actorUser }) {

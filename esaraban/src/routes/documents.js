@@ -5,7 +5,7 @@ import { db, uuid, nowIso, audit, RETENTION_LABEL } from '../db.js';
 import {
   createDocument, getDocument, canUserSeeDocument, getWorkflowSteps, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
-  voidDocument, archiveDocument, httpError,
+  voidDocument, archiveDocument, forceDeleteDocument, httpError,
 } from '../services/workflow.js';
 import { extractTextFromPdf, guessFieldsFromText } from '../services/ocr.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream } from '../services/googleDrive.js';
@@ -278,6 +278,7 @@ router.get('/documents/:id', requirePage((ctx) => {
   const canAssign = ['registered', 'returned'].includes(doc.status) && isCreatorOrAdmin;
   const canVoid = ['draft', 'registered'].includes(doc.status) && isCreatorOrAdmin;
   const canArchive = doc.status === 'completed' && isCreatorOrAdmin;
+  const canForceDelete = ctx.user.roleCodes.includes('admin');
 
   const timelineHtml = steps.length ? `<ul class="timeline">
     ${steps.map((s) => {
@@ -372,8 +373,21 @@ router.get('/documents/:id', requirePage((ctx) => {
       <div class="chip-row">
         ${canVoid ? `<button class="btn btn-outline btn-sm" onclick="actionWithReason(this, '/documents/${doc.id}/void', 'ระบุเหตุผลที่ยกเลิกเอกสาร (เลขที่จะยังคงอยู่ในลำดับ ไม่ถูกนำไปใช้ซ้ำ)')">ยกเลิกเอกสาร</button>` : ''}
         ${canArchive ? `<button class="btn btn-outline btn-sm" onclick="fetch('/documents/${doc.id}/archive',{method:'POST'}).then(()=>location.reload())">📦 จัดเก็บเข้าแฟ้ม</button>` : ''}
+        ${canForceDelete ? `<button class="btn btn-danger btn-sm" onclick="forceDeleteThisDoc(this)">🗑️ ลบเอกสาร (แอดมิน)</button>` : ''}
       </div>
     </div>
+    ${canForceDelete ? `<script>
+      function forceDeleteThisDoc(btn){
+        var reason = prompt('สำหรับผู้ดูแลระบบเท่านั้น: ระบุเหตุผลที่ลบเอกสารนี้ถาวร (ใช้กับเอกสารที่ผิดพลาด/ค้างจากบั๊กเท่านั้น เอกสารจริงควรใช้ปุ่มยกเลิก/ทำลายตามขั้นตอนปกติแทน)');
+        if (reason === null) return;
+        if (!confirm('ยืนยันลบเอกสารนี้ถาวร? การกระทำนี้ย้อนกลับไม่ได้')) return;
+        btn.disabled = true;
+        fetch('/documents/${doc.id}/force-delete', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({reason: reason}) })
+          .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+          .then(function(res){ if(!res.ok) throw new Error(res.d.error); window.location.href = '/documents'; })
+          .catch(function(e){ alert(e.message); btn.disabled = false; });
+      }
+    </script>` : ''}
 
     <div class="grid-2">
       <div>
@@ -491,6 +505,11 @@ router.post('/documents/:id/workflow/:stepId/return', requireApi(async (ctx) => 
 
 router.post('/documents/:id/void', requireApi(async (ctx) => {
   voidDocument({ documentId: ctx.params.id, reason: ctx.body.reason, actorUser: ctx.user });
+  json(ctx, 200, { ok: true });
+}));
+
+router.post('/documents/:id/force-delete', requireApi(async (ctx) => {
+  await forceDeleteDocument({ documentId: ctx.params.id, reason: ctx.body.reason, actorUser: ctx.user });
   json(ctx, 200, { ok: true });
 }));
 
