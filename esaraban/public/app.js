@@ -184,4 +184,20 @@
       btn.disabled = false;
     }
   };
+
+  // ---------- keyboard shortcuts (UI/UX Bible §28) ----------
+  // Ctrl/Cmd+K -> focus search. Ctrl/Cmd+N -> new document (note: some browsers reserve
+  // Ctrl+N for "new window" and never deliver the keydown event to the page at all — no
+  // workaround exists for that case, it's a browser-level reservation, not a bug here).
+  document.addEventListener('keydown', function (e) {
+    const mod = e.ctrlKey || e.metaKey;
+    if (!mod) return;
+    if (e.key === 'k' || e.key === 'K') {
+      const input = document.getElementById('globalSearchInput');
+      if (input) { e.preventDefault(); input.focus(); input.select(); }
+    } else if (e.key === 'n' || e.key === 'N') {
+      e.preventDefault();
+      window.location.href = '/documents/new?direction=incoming';
+    }
+  });
 })();

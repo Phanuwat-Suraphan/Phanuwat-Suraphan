@@ -4,6 +4,8 @@ import { createHmac, randomBytes } from 'node:crypto';
 const SESSION_COOKIE = 'esaraban_sid';
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000; // 8 hours
 const SECRET = process.env.SESSION_SECRET || 'dev-secret-change-me-esaraban-school';
+const MAX_FAILED_ATTEMPTS = 5;
+const LOCKOUT_MS = 15 * 60 * 1000; // 15 minutes — Security Bible §7
 
 function sign(value) {
   const h = createHmac('sha256', SECRET).update(value).digest('hex');
@@ -29,9 +31,28 @@ export function login(employeeCode, password, ip) {
     audit({ action: 'login_failed', detail: { employeeCode, reason: 'no_user' }, ip });
     return { ok: false, error: 'บัญชีผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' };
   }
+
+  if (user.locked_until && new Date(user.locked_until) > new Date()) {
+    const minutesLeft = Math.ceil((new Date(user.locked_until) - new Date()) / 60000);
+    audit({ userId: user.id, action: 'login_blocked_locked', detail: { employeeCode }, ip });
+    return { ok: false, error: `บัญชีถูกล็อกชั่วคราวเนื่องจากกรอกรหัสผ่านผิดหลายครั้ง กรุณาลองใหม่อีกครั้งในอีก ${minutesLeft} นาที` };
+  }
+
   if (!verifySecret(password, user.password_hash)) {
-    audit({ userId: user.id, action: 'login_failed', detail: { employeeCode, reason: 'bad_password' }, ip });
+    const failedCount = (user.failed_login_count || 0) + 1;
+    if (failedCount >= MAX_FAILED_ATTEMPTS) {
+      const lockedUntil = new Date(Date.now() + LOCKOUT_MS).toISOString();
+      db.prepare('UPDATE users SET failed_login_count = 0, locked_until = ? WHERE id = ?').run(lockedUntil, user.id);
+      audit({ userId: user.id, action: 'account_locked', detail: { employeeCode, attempts: failedCount }, ip });
+      return { ok: false, error: `กรอกรหัสผ่านผิดครบ ${MAX_FAILED_ATTEMPTS} ครั้ง บัญชีถูกล็อกชั่วคราว 15 นาที` };
+    }
+    db.prepare('UPDATE users SET failed_login_count = ? WHERE id = ?').run(failedCount, user.id);
+    audit({ userId: user.id, action: 'login_failed', detail: { employeeCode, reason: 'bad_password', attempts: failedCount }, ip });
     return { ok: false, error: 'บัญชีผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' };
+  }
+
+  if (user.failed_login_count > 0 || user.locked_until) {
+    db.prepare('UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE id = ?').run(user.id);
   }
   const sessionId = uuid();
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();

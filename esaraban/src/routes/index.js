@@ -6,3 +6,5 @@ import './reports.js';
 import './profile.js';
 import './admin.js';
 import './retention.js';
+import './health.js';
+import './leave.js';

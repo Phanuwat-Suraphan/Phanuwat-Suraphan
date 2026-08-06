@@ -51,6 +51,9 @@ node server.js         # http://localhost:3000
 Requires Node.js ≥ 22.5 (for `node:sqlite`). No `npm install` step — there is nothing to install.
 The SQLite DB is created and seeded automatically on first run at `data/esaraban.db` (gitignored).
 
+Run the test suite with `npm test` (uses a throwaway SQLite file via `DB_PATH`, never touches
+`data/esaraban.db`).
+
 ### Test accounts (seeded automatically)
 
 | Username | Password | PIN | Role |
@@ -81,19 +84,39 @@ The SQLite DB is created and seeded automatically on first run at `data/esaraban
   ข้อมูลเด็ดขาด" requirement) recording login, document, workflow, attachment, and export events
 - Void (not delete) for draft/registered documents only, with mandatory reason — documents
   already in workflow cannot be voided, and running numbers are never reused
-- Dashboard (role-aware KPIs), "งานของฉัน" task list, in-app notifications, CSV report export
+- Dashboard (role-aware KPIs, plus an executive summary panel for admin/director/vice_director:
+  average time-to-completion, pending-document load per department)
+- "งานของฉัน" task list, in-app notifications, CSV report export
 - Responsive layout: fixed sidebar on desktop ≥900px, bottom nav + slide-out drawer on mobile,
-  light/dark theme
+  light/dark theme, keyboard shortcuts (Ctrl/Cmd+K search, Ctrl/Cmd+N new document)
+- 6 official document types per ระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ, plus a ลงวันที่
+  (external document date) field matching the standard's ทะเบียนหนังสือรับ/ส่ง register format
+- Retention/destruction workflow (หมวด 3 of the same ระเบียบ): retention class + auto-computed
+  expiry per document, a destruction-batch proposal/approval flow requiring a named committee
+  and a director/admin sign-off distinct from whoever proposed it — never a direct delete
+- Optional OCR auto-fill on the new-document form (Tesseract, shells out via `child_process` —
+  no npm package — see `deploy/*.md` for the system packages it needs) and optional Google
+  Drive attachment storage (`STORAGE_PROVIDER=google_drive`) for hosts without persistent disk
+- Admin user management: create + soft-delete (self-delete and last-admin-delete both blocked);
+  every user (including admin) can edit their own name/email/position and change their password
+- ระบบลา/ไปราชการ (leave & official-travel requests): submit → single named approver
+  approves/rejects, reusing the same notification/audit plumbing as documents
+- Login rate limiting (5 bad attempts locks the account 15 minutes), security response headers
+  (HSTS/CSP/X-Frame-Options/etc. on every response), `/health` endpoint for uptime monitoring
+- Automated test suite (`npm test` — Node's built-in `node:test`, zero packages) covering auth,
+  atomic numbering, the full workflow lifecycle, void rules, ACL, and retention math
 
 ## Explicitly deferred (documented, not built)
 
 These were flagged throughout the spec review as later-phase items; the schema/routes don't
 block adding them, but they are **not implemented** here:
 
-- OCR, Thai full-text search, AI features (Part 4, 11)
+- Thai full-text search, LLM-based AI features (summarization, chat, classification — the OCR
+  auto-fill above uses plain regex heuristics on OCR text, not an AI model)
 - PDF annotation/stamp layer, cryptographic signature engine, PKI/digital certificates (Part 6)
 - Email/LINE notifications (only in-app notifications exist)
-- Multi-tenant `school_id` scoping, Docker/CI-CD/monitoring stack (Part 9, 10)
+- Multi-tenant `school_id` scoping, Docker/CI-CD/monitoring stack (Part 9, 10) — see Part 12-20
+  in the project history for the long-term enterprise-platform vision this would grow into
 - Delegation/"รักษาการแทน" automation (the `user_delegations` table exists in the schema but
   no UI/automatic routing uses it yet)
 

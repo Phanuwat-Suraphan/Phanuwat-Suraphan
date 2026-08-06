@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dbPath = path.join(__dirname, '..', 'data', 'esaraban.db');
+const dbPath = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'esaraban.db');
 
 export const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA journal_mode = WAL;');
@@ -92,6 +92,8 @@ export function migrate() {
     password_hash TEXT NOT NULL,
     pin_hash TEXT,
     status TEXT NOT NULL DEFAULT 'active', -- active | suspended
+    failed_login_count INTEGER NOT NULL DEFAULT 0,
+    locked_until TEXT, -- login rate limiting (Security Bible §7): lock 15 min after 5 bad attempts
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT
@@ -176,6 +178,27 @@ export function migrate() {
     batch_id TEXT NOT NULL REFERENCES destruction_batches(id),
     document_id TEXT NOT NULL REFERENCES documents(id)
   );
+
+  -- ระบบลาและไปราชการ (Part 14 §61 leave_requests) — single-approver flow, reuses notifications/audit
+  CREATE TABLE IF NOT EXISTS leave_requests (
+    id TEXT PRIMARY KEY,
+    requester_id TEXT NOT NULL REFERENCES users(id),
+    leave_type TEXT NOT NULL, -- sick | personal | vacation | maternity | ordination | official_travel
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    days_count REAL NOT NULL,
+    reason TEXT NOT NULL,
+    destination TEXT, -- สถานที่ไปราชการ (เฉพาะ leave_type = official_travel)
+    contact_info TEXT, -- ช่องทางติดต่อระหว่างลา
+    status TEXT NOT NULL DEFAULT 'pending', -- pending | approved | rejected | cancelled
+    approver_id TEXT NOT NULL REFERENCES users(id),
+    decision_note TEXT,
+    decided_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_leave_requester ON leave_requests(requester_id);
+  CREATE INDEX IF NOT EXISTS idx_leave_approver ON leave_requests(approver_id, status);
 
   CREATE TABLE IF NOT EXISTS document_access_grants (
     id TEXT PRIMARY KEY,

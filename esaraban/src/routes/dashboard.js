@@ -29,6 +29,37 @@ router.get('/', requirePage((ctx) => {
     WHERE d.deleted_at IS NULL ORDER BY d.created_at DESC LIMIT 8
   `).all();
 
+  // Executive KPI (Master Spec §32) — avg completion time + pending load per department, ผู้บริหาร/แอดมินเท่านั้น
+  const isExecutive = user.roleCodes.some((r) => ['admin', 'director', 'vice_director'].includes(r));
+  let execKpiHtml = '';
+  if (isExecutive) {
+    const avgDays = db.prepare(`
+      SELECT AVG(julianday(updated_at) - julianday(created_at)) as avg_days FROM documents
+      WHERE status = 'completed' AND deleted_at IS NULL
+    `).get().avg_days;
+    const byDept = db.prepare(`
+      SELECT dep.name as dept_name, COUNT(*) as pending_count FROM documents d
+      JOIN departments dep ON dep.id = d.department_id
+      WHERE d.status IN ('registered', 'in_progress', 'returned') AND d.deleted_at IS NULL
+      GROUP BY dep.id ORDER BY pending_count DESC
+    `).all();
+    const maxCount = Math.max(1, ...byDept.map((r) => r.pending_count));
+
+    execKpiHtml = `
+    <div class="card">
+      <h3 class="mt-0">📊 ภาพรวมสำหรับผู้บริหาร</h3>
+      <div class="kpi-grid" style="margin-bottom:1rem">
+        ${kpi(avgDays != null ? avgDays.toFixed(1) : '-', 'เวลาเฉลี่ยจนปิดงาน (วัน)', '⏱️')}
+        ${kpi(byDept.reduce((s, r) => s + r.pending_count, 0), 'งานค้างทั้งหมดทุกฝ่าย', '📋')}
+      </div>
+      ${byDept.length ? byDept.map((r) => `
+        <div style="margin-bottom:.5rem">
+          <div class="flex" style="justify-content:space-between;font-size:.85rem"><span>${esc(r.dept_name)}</span><span class="text-muted">${r.pending_count} รายการ</span></div>
+          <div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden"><div style="background:var(--primary);height:100%;width:${(r.pending_count / maxCount) * 100}%"></div></div>
+        </div>`).join('') : '<p class="text-muted">ไม่มีงานค้าง</p>'}
+    </div>`;
+  }
+
   const content = `
     <div class="card-header">
       <h2 class="mt-0">สวัสดี, ${esc(user.prefix || '')}${esc(user.first_name)} ${esc(user.last_name)} 👋</h2>
@@ -45,6 +76,8 @@ router.get('/', requirePage((ctx) => {
       ${kpi(overdue, 'เกินกำหนด', '⏰')}
       ${kpi(completedToday, 'เสร็จสิ้นวันนี้', '✅')}
     </div>
+
+    ${execKpiHtml}
 
     <div class="grid-2">
       <div class="card">

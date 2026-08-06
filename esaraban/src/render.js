@@ -91,6 +91,7 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
     ${navItem('/documents?direction=outgoing', '📤', 'หนังสือออก', currentPath)}
     ${navItem('/tasks', '📌', 'งานของฉัน', currentPath)}
     ${navItem('/notifications', '🔔', 'การแจ้งเตือน', currentPath)}
+    ${navItem('/leave', '🗓️', 'ลา/ไปราชการ', currentPath)}
     ${navItem('/reports', '📊', 'รายงาน', currentPath)}
     ${user.roleCodes.some((r) => ['admin', 'registrar', 'director', 'vice_director'].includes(r)) ? navItem('/retention', '🗄️', 'อายุการเก็บ/ทำลายหนังสือ', currentPath) : ''}
     <div class="nav-section-label">ระบบ</div>
@@ -106,7 +107,7 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
       <div class="topbar-search">
         <span>🔍</span>
         <form action="/documents" method="get" style="width:100%">
-          <input type="text" name="q" placeholder="ค้นหา..." />
+          <input type="text" id="globalSearchInput" name="q" placeholder="ค้นหา... (Ctrl+K)" />
         </form>
       </div>
       <div class="topbar-spacer"></div>

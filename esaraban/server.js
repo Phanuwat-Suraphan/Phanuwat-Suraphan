@@ -52,8 +52,33 @@ function unreadNotificationCount(userId) {
   return db.prepare('SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND is_read = 0').get(userId).c;
 }
 
+// Security Bible §31 — applied via setHeader so every response gets them regardless of which
+// route handler eventually calls writeHead(); a route can still override a specific header.
+// CSP allows 'unsafe-inline' for script/style because the whole app is server-rendered HTML with
+// inline <script> blocks (no build step to inject nonces) — a real weakening of CSP's XSS defense,
+// but input is already escaped via esc() everywhere, and a nonce-based rewrite of every inline
+// script in the codebase is a much larger change than "add security headers" warrants right now.
+function applySecurityHeaders(res) {
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; '));
+}
+
 const server = http.createServer(async (req, res) => {
   try {
+    applySecurityHeaders(res);
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pathname = decodeURIComponent(url.pathname);
 
