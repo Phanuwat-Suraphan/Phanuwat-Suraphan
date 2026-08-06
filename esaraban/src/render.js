@@ -19,11 +19,11 @@ const PRIORITY_BADGE = { normal: 'badge-muted', urgent: 'badge-warning', very_ur
 const SECRET_LABEL = { normal: 'ปกติ', internal: 'ภายใน', secret: 'ลับ', top_secret: 'ลับมาก' };
 const STATUS_LABEL = {
   draft: 'ร่าง', registered: 'ลงทะเบียนแล้ว', in_progress: 'กำลังดำเนินการ',
-  returned: 'ส่งกลับแก้ไข', rejected: 'ไม่อนุมัติ', completed: 'เสร็จสิ้น', archived: 'จัดเก็บแล้ว', voided: 'ยกเลิก',
+  returned: 'ส่งกลับแก้ไข', rejected: 'ไม่อนุมัติ', completed: 'เสร็จสิ้น', archived: 'จัดเก็บแล้ว', voided: 'ยกเลิก', destroyed: 'ทำลายแล้ว',
 };
 const STATUS_BADGE = {
   draft: 'badge-muted', registered: 'badge-info', in_progress: 'badge-warning',
-  returned: 'badge-warning', rejected: 'badge-danger', completed: 'badge-success', archived: 'badge-muted', voided: 'badge-danger',
+  returned: 'badge-warning', rejected: 'badge-danger', completed: 'badge-success', archived: 'badge-muted', voided: 'badge-danger', destroyed: 'badge-danger',
 };
 
 export function priorityBadge(p) {
@@ -92,6 +92,7 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
     ${navItem('/tasks', '📌', 'งานของฉัน', currentPath)}
     ${navItem('/notifications', '🔔', 'การแจ้งเตือน', currentPath)}
     ${navItem('/reports', '📊', 'รายงาน', currentPath)}
+    ${user.roleCodes.some((r) => ['admin', 'registrar', 'director', 'vice_director'].includes(r)) ? navItem('/retention', '🗄️', 'อายุการเก็บ/ทำลายหนังสือ', currentPath) : ''}
     <div class="nav-section-label">ระบบ</div>
     ${user.roleCodes.includes('admin') ? navItem('/admin/users', '⚙️', 'จัดการผู้ใช้', currentPath) : ''}
     ${user.roleCodes.includes('admin') ? navItem('/admin/audit', '🧾', 'Audit Log', currentPath) : ''}

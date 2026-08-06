@@ -1,7 +1,7 @@
 import { router, html, json, redirect } from '../router.js';
 import { layout, esc, fmtDate, priorityBadge, secretBadge, statusBadge, emptyState, LABELS } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
-import { db, uuid, nowIso, audit } from '../db.js';
+import { db, uuid, nowIso, audit, RETENTION_LABEL } from '../db.js';
 import {
   createDocument, getDocument, canUserSeeDocument, getWorkflowSteps, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
@@ -137,6 +137,12 @@ router.get('/documents/new', requirePage((ctx) => {
             <label>กำหนดเสร็จ (ถ้ามี)</label>
             <input type="date" name="dueDate" />
           </div>
+          <div class="field">
+            <label>อายุการเก็บ</label>
+            <select name="retentionClass">
+              ${Object.entries(RETENTION_LABEL).map(([k, v]) => `<option value="${k}" ${k === 'normal_10y' ? 'selected' : ''}>${esc(v)}</option>`).join('')}
+            </select>
+          </div>
         </div>
         <div class="field">
           <label>สาระสำคัญ / หมายเหตุ</label>
@@ -191,7 +197,8 @@ router.post('/documents', requireApi(async (ctx) => {
     direction: b.direction === 'outgoing' ? 'outgoing' : 'incoming',
     title: b.title.trim(), subject: b.subject?.trim(), docTypeId: b.docTypeId, departmentId: b.departmentId,
     priority: b.priority, secretLevel: b.secretLevel, correspondentName: b.correspondentName.trim(),
-    externalDocNumber: b.externalDocNumber?.trim(), externalDocDate: b.externalDocDate || null, dueDate: b.dueDate || null, createdBy: ctx.user.id,
+    externalDocNumber: b.externalDocNumber?.trim(), externalDocDate: b.externalDocDate || null, dueDate: b.dueDate || null,
+    retentionClass: b.retentionClass, createdBy: ctx.user.id,
   });
   let warn = '';
   if (b.fileDataBase64) {
@@ -332,12 +339,14 @@ router.get('/documents/:id', requirePage((ctx) => {
               <tr><td class="text-muted">ประเภท</td><td>${esc(doc.type_name)}</td></tr>
               <tr><td class="text-muted">ฝ่าย</td><td>${esc(doc.dept_name)}</td></tr>
               ${doc.due_date ? `<tr><td class="text-muted">กำหนดเสร็จ</td><td>${esc(doc.due_date)}</td></tr>` : ''}
+              <tr><td class="text-muted">อายุการเก็บ</td><td>${esc(RETENTION_LABEL[doc.retention_class] || doc.retention_class)}${doc.retention_until ? ` (ครบกำหนด ${esc(doc.retention_until)})` : ''}</td></tr>
               <tr><td class="text-muted">ผู้บันทึก</td><td>${esc(doc.creator_first)} ${esc(doc.creator_last)}</td></tr>
               <tr><td class="text-muted">วันที่บันทึก</td><td>${fmtDate(doc.created_at)}</td></tr>
             </tbody>
           </table>
           ${doc.subject ? `<p style="margin-top:.75rem"><strong>สาระสำคัญ:</strong><br/>${esc(doc.subject).replace(/\n/g, '<br/>')}</p>` : ''}
           ${doc.void_reason ? `<div class="alert alert-danger">ยกเลิกแล้ว: ${esc(doc.void_reason)}</div>` : ''}
+          ${doc.status === 'destroyed' ? `<div class="alert alert-danger">🗄️ ทำลายแล้วตามมติคณะกรรมการทำลายหนังสือ เมื่อ ${fmtDate(doc.destroyed_at)} (ไฟล์แนบถูกลบออกจากระบบถาวร รายการทะเบียน/เลขที่ยังคงอยู่เป็นหลักฐาน)</div>` : ''}
         </div>
 
         <div class="card">

@@ -23,6 +23,23 @@ export function beYear(date = new Date()) {
   return date.getFullYear() + 543;
 }
 
+// ระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ หมวด 3: อายุการเก็บหนังสือ
+export const RETENTION_YEARS = { normal_10y: 10, financial_5y: 5, routine_1y: 1, permanent: null };
+export const RETENTION_LABEL = {
+  normal_10y: 'ปกติ (อย่างน้อย 10 ปี)',
+  financial_5y: 'การเงิน (5 ปี)',
+  routine_1y: 'เรื่องธรรมดา (อย่างน้อย 1 ปี)',
+  permanent: 'เก็บตลอดไป (ประวัติศาสตร์/หลักฐานสำคัญ)',
+};
+
+// นับอายุการเก็บจากปี พ.ศ. ที่ออกเลขหนังสือ ครบกำหนดวันที่ 31 ธันวาคมของปีสุดท้าย
+export function computeRetentionUntil(yearBe, retentionClass) {
+  const years = RETENTION_YEARS[retentionClass];
+  if (years === null || years === undefined) return null; // permanent
+  const untilYearAd = yearBe + years - 543;
+  return `${untilYearAd}-12-31`;
+}
+
 export function hashSecret(plain) {
   const salt = randomBytes(16).toString('hex');
   const hash = scryptSync(plain, salt, 64).toString('hex');
@@ -127,13 +144,37 @@ export function migrate() {
     priority TEXT NOT NULL DEFAULT 'normal', -- normal | urgent | very_urgent | most_urgent
     secret_level TEXT NOT NULL DEFAULT 'normal', -- normal | internal | secret | top_secret
     correspondent_name TEXT, -- หน่วยงาน/บุคคลภายนอก (ผู้ส่ง สำหรับ incoming, ผู้รับ สำหรับ outgoing)
-    status TEXT NOT NULL DEFAULT 'draft', -- draft|registered|in_progress|returned|completed|archived|voided
+    status TEXT NOT NULL DEFAULT 'draft', -- draft|registered|in_progress|returned|completed|archived|voided|destroyed
     due_date TEXT,
     created_by TEXT NOT NULL REFERENCES users(id),
     void_reason TEXT,
+    -- อายุการเก็บ ตามระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ หมวด 3
+    retention_class TEXT NOT NULL DEFAULT 'normal_10y', -- normal_10y | permanent | routine_1y | financial_5y
+    retention_until TEXT, -- วันครบกำหนดเก็บ (NULL = permanent เก็บตลอดไป)
+    destroyed_at TEXT,
+    destroyed_by TEXT REFERENCES users(id),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT
+  );
+
+  -- บัญชีหนังสือขอทำลาย + การอนุมัติของคณะกรรมการทำลายหนังสือ
+  CREATE TABLE IF NOT EXISTS destruction_batches (
+    id TEXT PRIMARY KEY,
+    committee_names TEXT NOT NULL, -- รายชื่อคณะกรรมการทำลายหนังสือ (ระเบียบกำหนดอย่างน้อย 3 คน)
+    reason TEXT,
+    status TEXT NOT NULL DEFAULT 'pending_approval', -- pending_approval | approved | rejected
+    created_by TEXT NOT NULL REFERENCES users(id),
+    decided_by TEXT REFERENCES users(id),
+    decision_note TEXT,
+    created_at TEXT NOT NULL,
+    decided_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS destruction_batch_items (
+    id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL REFERENCES destruction_batches(id),
+    document_id TEXT NOT NULL REFERENCES documents(id)
   );
 
   CREATE TABLE IF NOT EXISTS document_access_grants (
@@ -213,6 +254,8 @@ export function migrate() {
   CREATE INDEX IF NOT EXISTS idx_workflow_doc ON workflow_steps(document_id);
   CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read);
   CREATE INDEX IF NOT EXISTS idx_audit_record ON audit_logs(table_name, record_id);
+  CREATE INDEX IF NOT EXISTS idx_documents_retention ON documents(retention_until);
+  CREATE INDEX IF NOT EXISTS idx_destruction_items_batch ON destruction_batch_items(batch_id);
   `);
 }
 

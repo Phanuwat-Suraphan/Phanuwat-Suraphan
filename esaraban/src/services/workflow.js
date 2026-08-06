@@ -1,4 +1,4 @@
-import { db, uuid, nowIso, beYear, audit } from '../db.js';
+import { db, uuid, nowIso, beYear, audit, computeRetentionUntil } from '../db.js';
 import { nextRunningNumber } from '../numbering.js';
 import { notifyUser } from './notify.js';
 
@@ -8,19 +8,21 @@ import { notifyUser } from './notify.js';
  * document insert cannot interleave with another request (resolved
  * decision: Part 4 review #2/#3 — sequential, gapless, concurrency-safe).
  */
-export function createDocument({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, externalDocNumber, externalDocDate, dueDate, createdBy }) {
+export function createDocument({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, externalDocNumber, externalDocDate, dueDate, retentionClass, createdBy }) {
   let result;
   db.exec('BEGIN IMMEDIATE');
   try {
     const { runningNumber, yearBe, display } = nextRunningNumber({ departmentId, docTypeId, direction });
     const id = uuid();
     const now = nowIso();
+    const retClass = retentionClass || 'normal_10y';
+    const retentionUntil = computeRetentionUntil(yearBe, retClass);
     db.prepare(`
       INSERT INTO documents (id, direction, running_number, year_be, doc_number_display, external_doc_number, external_doc_date, title, subject,
-        doc_type_id, department_id, priority, secret_level, correspondent_name, status, due_date, created_by, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', ?, ?, ?, ?)
+        doc_type_id, department_id, priority, secret_level, correspondent_name, status, due_date, retention_class, retention_until, created_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', ?, ?, ?, ?, ?, ?)
     `).run(id, direction, runningNumber, yearBe, display, externalDocNumber || null, externalDocDate || null, title, subject || null,
-      docTypeId, departmentId, priority || 'normal', secretLevel || 'normal', correspondentName || null, dueDate || null, createdBy, now, now);
+      docTypeId, departmentId, priority || 'normal', secretLevel || 'normal', correspondentName || null, dueDate || null, retClass, retentionUntil, createdBy, now, now);
     db.exec('COMMIT');
     result = { id, docNumberDisplay: display };
   } catch (e) {
