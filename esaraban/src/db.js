@@ -95,6 +95,7 @@ export function migrate() {
     failed_login_count INTEGER NOT NULL DEFAULT 0,
     locked_until TEXT, -- login rate limiting (Security Bible §7): lock 15 min after 5 bad attempts
     signature_image TEXT, -- ลายเซ็นสแกนของผู้ใช้แต่ละคน (data URL, base64) — ของใครของมัน
+    avatar_emoji TEXT, -- อวตารอิโมจิที่ผู้ใช้เลือกเอง (UX Bible Part 21 §8) — NULL แปลว่ายังไม่เลือก ใช้ตัวอักษรย่อชื่อแทน
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT
@@ -283,6 +284,13 @@ export function migrate() {
   CREATE INDEX IF NOT EXISTS idx_documents_retention ON documents(retention_until);
   CREATE INDEX IF NOT EXISTS idx_destruction_items_batch ON destruction_batch_items(batch_id);
   `);
+
+  // ฐานข้อมูลที่ deploy ไปแล้วก่อนหน้านี้ยังไม่มีคอลัมน์นี้ — SQLite ไม่มี "ADD COLUMN IF NOT EXISTS"
+  // จึงต้องเช็ค pragma ก่อนแล้วค่อย ALTER (CREATE TABLE ด้านบนใช้กับฐานข้อมูลใหม่ที่ยังไม่มีตารางเท่านั้น)
+  const userCols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
+  if (!userCols.includes('avatar_emoji')) {
+    db.exec('ALTER TABLE users ADD COLUMN avatar_emoji TEXT');
+  }
 }
 
 export function audit({ userId, action, tableName, recordId, detail, ip }) {

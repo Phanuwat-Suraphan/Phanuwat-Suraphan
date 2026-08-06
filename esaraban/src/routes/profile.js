@@ -1,7 +1,10 @@
 import { router, html, json } from '../router.js';
-import { layout, esc, fmtDate } from '../render.js';
+import { layout, esc, fmtDate, avatarContent } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, nowIso, hashSecret, verifySecret, audit } from '../db.js';
+
+// อวตารอิโมจิให้เลือก (UX Bible Part 21 §8) — คัดเฉพาะที่เหมาะกับบุคลากรโรงเรียน
+const AVATAR_EMOJIS = ['👩‍🏫', '👨‍🏫', '🧑‍🏫', '👩‍💼', '👨‍💼', '🧑‍💼', '🎓', '📚', '🦉', '🐱', '🐶', '🦊', '🐰', '🐢', '🐼', '🌿', '⭐', '😊'];
 
 router.get('/profile', requirePage((ctx) => {
   const dept = db.prepare('SELECT * FROM departments WHERE id = ?').get(ctx.user.department_id);
@@ -11,10 +14,17 @@ router.get('/profile', requirePage((ctx) => {
     <div class="grid-2">
       <div class="card">
         <div class="flex items-center gap-2" style="margin-bottom:1rem">
-          <div class="avatar" style="width:56px;height:56px;font-size:1.1rem">${esc((ctx.user.first_name[0] || '') + (ctx.user.last_name[0] || ''))}</div>
+          <div class="avatar" id="profileAvatarPreview" style="width:56px;height:56px;font-size:1.1rem">${avatarContent(ctx.user)}</div>
           <div>
             <div style="font-weight:700;font-size:1.05rem">${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)}</div>
             <div class="text-muted">${esc(ctx.user.position || '')}</div>
+          </div>
+        </div>
+        <div class="field">
+          <label>เลือกอวตาร</label>
+          <div class="chip-row">
+            ${AVATAR_EMOJIS.map((e) => `<button type="button" class="avatar-pick${ctx.user.avatar_emoji === e ? ' active' : ''}" onclick="pickAvatar('${e}')" title="ใช้อวตารนี้">${e}</button>`).join('')}
+            ${ctx.user.avatar_emoji ? `<button type="button" class="avatar-pick" onclick="pickAvatar(null)" title="กลับไปใช้ตัวอักษรย่อชื่อ">↺</button>` : ''}
           </div>
         </div>
         <table>
@@ -119,6 +129,12 @@ router.get('/profile', requirePage((ctx) => {
               .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
               .catch(e => alert(e.message));
           };
+          window.pickAvatar = function(emoji){
+            fetch('/profile/avatar', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({emoji: emoji})})
+              .then(r => r.json().then(d => ({ok:r.ok,d})))
+              .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
+              .catch(e => alert(e.message));
+          };
         </script>
       </div>
       <div class="card">
@@ -180,6 +196,14 @@ router.post('/profile/signature', requireApi(async (ctx) => {
 
   db.prepare('UPDATE users SET signature_image = ?, updated_at = ? WHERE id = ?').run(dataUrl, nowIso(), ctx.user.id);
   audit({ userId: ctx.user.id, action: 'signature_uploaded', tableName: 'users', recordId: ctx.user.id });
+  json(ctx, 200, { ok: true });
+}));
+
+router.post('/profile/avatar', requireApi(async (ctx) => {
+  const { emoji } = ctx.body;
+  if (emoji !== null && !AVATAR_EMOJIS.includes(emoji)) return json(ctx, 400, { error: 'อวตารที่เลือกไม่ถูกต้อง' });
+  db.prepare('UPDATE users SET avatar_emoji = ?, updated_at = ? WHERE id = ?').run(emoji, nowIso(), ctx.user.id);
+  audit({ userId: ctx.user.id, action: 'avatar_changed', tableName: 'users', recordId: ctx.user.id, detail: { emoji } });
   json(ctx, 200, { ok: true });
 }));
 

@@ -52,8 +52,14 @@ function navItem(href, icon, label, currentPath) {
   return `<a class="nav-link${active ? ' active' : ''}" href="${href}"><span class="icon">${icon}</span><span>${esc(label)}</span></a>`;
 }
 
+// อวตาร: ถ้าผู้ใช้เลือกอิโมจิไว้ (UX Bible Part 21 §8) ใช้อิโมจินั้น ไม่งั้น fallback เป็นตัวอักษรย่อชื่อ
+export function avatarContent(user) {
+  if (user?.avatar_emoji) return esc(user.avatar_emoji);
+  return esc((user?.first_name?.[0] || '') + (user?.last_name?.[0] || ''));
+}
+
 export function layout({ user, title, path: currentPath, content, flash }) {
-  const initials = user ? (user.first_name?.[0] || '') + (user.last_name?.[0] || '') : '';
+  const initials = avatarContent(user);
   return `<!doctype html>
 <html lang="th">
 <head>

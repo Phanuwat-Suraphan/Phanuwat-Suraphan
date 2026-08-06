@@ -17,8 +17,8 @@
   --info-bg: #e8effd;
   --secret-bg: #f1e6fb;
   --secret: #6b2fb3;
-  --radius: 10px;
-  --shadow: 0 1px 3px rgba(20, 30, 45, 0.08), 0 1px 2px rgba(20, 30, 45, 0.06);
+  --radius: 12px;
+  --shadow: 0 2px 8px rgba(20, 30, 45, 0.07), 0 1px 3px rgba(20, 30, 45, 0.05);
   --sidebar-w: 240px;
   --header-h: 60px;
   --bottom-nav-h: 60px;
@@ -43,7 +43,7 @@
   --info-bg: #16223a;
   --secret-bg: #2a1c3d;
   --secret: #b78af0;
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow: 0 4px 12px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -66,7 +66,7 @@
     --info-bg: #16223a;
     --secret-bg: #2a1c3d;
     --secret: #b78af0;
-    --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    --shadow: 0 4px 12px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.3);
   }
 }
 
@@ -130,7 +130,7 @@ img { max-width: 100%; }
   font-weight: 500;
 }
 .nav-link:hover { background: var(--surface-2); text-decoration: none; }
-.nav-link.active { background: var(--info-bg); color: var(--primary); }
+.nav-link.active { background: var(--info-bg); color: var(--primary); box-shadow: inset 3px 0 0 var(--primary); }
 .nav-link .icon { width: 20px; text-align: center; }
 .nav-section-label {
   font-size: .72rem; text-transform: uppercase; letter-spacing: .05em;
@@ -191,7 +191,10 @@ img { max-width: 100%; }
   background: var(--primary); color: var(--primary-contrast);
   display: flex; align-items: center; justify-content: center;
   font-weight: 700; font-size: .8rem; flex-shrink: 0;
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--border);
 }
+a.avatar { transition: box-shadow .15s ease; }
+a.avatar:hover { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--primary); }
 .notif-dot {
   position: absolute; top: -2px; right: -2px;
   background: var(--danger); color: #fff; border-radius: 999px;
@@ -206,6 +209,13 @@ img { max-width: 100%; }
   max-width: 1200px;
   width: 100%;
   margin: 0 auto;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .content { animation: contentFadeIn .25s ease; }
+}
+@keyframes contentFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 @media (min-width: 900px) {
   .content { padding: 1.5rem 2rem; padding-bottom: 2rem; }
@@ -261,7 +271,7 @@ img { max-width: 100%; }
   background: var(--surface-2); color: var(--text);
 }
 .btn:hover { text-decoration: none; filter: brightness(0.97); }
-.btn-primary { background: var(--primary); color: var(--primary-contrast); }
+.btn-primary { background: var(--primary); color: var(--primary-contrast); box-shadow: 0 2px 6px color-mix(in srgb, var(--primary) 35%, transparent); }
 .btn-primary:hover { background: var(--primary-hover); }
 .btn-success { background: var(--success); color: #fff; }
 .btn-danger { background: var(--danger); color: #fff; }
@@ -287,7 +297,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); o
 /* ---------- Badges ---------- */
 .badge {
   display: inline-flex; align-items: center; gap: .3rem;
-  border-radius: 999px; padding: .18rem .6rem; font-size: .74rem; font-weight: 700;
+  border-radius: 999px; padding: .22rem .65rem; font-size: .74rem; font-weight: 700;
+  letter-spacing: .01em;
 }
 .badge-info { background: var(--info-bg); color: var(--primary); }
 .badge-success { background: var(--success-bg); color: var(--success); }
@@ -331,11 +342,22 @@ tbody tr:last-child td { border-bottom: none; }
 /* ---------- Login page ---------- */
 .login-wrap {
   min-height: 100vh; display: flex; align-items: center; justify-content: center;
-  padding: 1.5rem; background: var(--bg);
+  padding: 1.5rem;
+  background:
+    radial-gradient(ellipse 60% 50% at 15% 10%, color-mix(in srgb, var(--primary) 12%, transparent), transparent),
+    radial-gradient(ellipse 55% 45% at 90% 90%, color-mix(in srgb, var(--success) 10%, transparent), transparent),
+    var(--bg);
 }
 .login-card {
   width: 100%; max-width: 380px; background: var(--surface); border: 1px solid var(--border);
-  border-radius: 14px; padding: 2rem 1.6rem; box-shadow: var(--shadow);
+  border-radius: 16px; padding: 2rem 1.6rem; box-shadow: 0 8px 28px rgba(20, 30, 45, 0.12), var(--shadow);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .login-card { animation: loginCardIn .35s ease; }
+}
+@keyframes loginCardIn {
+  from { opacity: 0; transform: translateY(10px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 .login-logo { text-align: center; margin-bottom: 1.2rem; }
 .login-logo .logo-dot { margin: 0 auto .6rem; width: 52px; height: 52px; border-radius: 12px; font-size: 1.3rem; }
@@ -359,10 +381,19 @@ tbody tr:last-child td { border-bottom: none; }
 .modal-backdrop.show { display: flex; }
 .modal { background: var(--surface); border-radius: 12px; padding: 1.3rem; max-width: 380px; width: 100%; box-shadow: var(--shadow); }
 
+/* ---------- Avatar picker (UX Bible Part 21 §8) ---------- */
+.avatar-pick {
+  width: 40px; height: 40px; border-radius: 50%; border: 2px solid transparent;
+  background: var(--surface-2); font-size: 1.15rem; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.avatar-pick:hover { background: var(--info-bg); }
+.avatar-pick.active { border-color: var(--primary); background: var(--info-bg); }
+
 /* ---------- Delight: micro-animations (UX Bible Part 21 §12 — all <=200ms, no motion sickness) ---------- */
 @media (prefers-reduced-motion: no-preference) {
-  .btn { transition: transform .12s ease, filter .12s ease, background-color .12s ease; }
-  .btn:active { transform: scale(.96); }
+  .btn, .avatar-pick { transition: transform .12s ease, filter .12s ease, background-color .12s ease; }
+  .btn:active, .avatar-pick:active { transform: scale(.9); }
   .kpi-card, .card { transition: box-shadow .2s ease, transform .2s ease; }
   .kpi-card:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(20, 30, 45, 0.1); }
   tbody tr[onclick] { transition: background-color .12s ease; }
