@@ -312,7 +312,19 @@ router.get('/documents/:id', requirePage((ctx) => {
         </div>
         <div class="field">
           <label>ความเห็น/ข้อความเกษียณ</label>
-          <textarea id="stepComment" placeholder="เช่น มอบฝ่ายวิชาการดำเนินการ, เห็นชอบ, โปรดพิจารณา"></textarea>
+          <div class="chip-row" style="margin-bottom:.4rem">
+            <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('เห็นชอบ')">เห็นชอบ</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('อนุมัติ')">อนุมัติ</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('ทราบ')">ทราบ</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('มอบฝ่าย', ' ดำเนินการ')">มอบฝ่าย...ดำเนินการ</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('เพื่อพิจารณา')">เพื่อพิจารณา</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('เพื่อทราบและดำเนินการ')">เพื่อทราบและดำเนินการ</button>
+          </div>
+          <textarea id="stepComment" placeholder="เลือกจากปุ่มด้านบน แล้วพิมพ์ข้อความเพิ่มเติมได้ตามต้องการ — หรือพิมพ์เองทั้งหมดก็ได้"></textarea>
+          <div class="help-text">
+            "อนุมัติ" ใช้เมื่อใช้อำนาจตามระเบียบ (เช่น อนุมัติโครงการ/งบประมาณ) · "เห็นชอบ" ใช้เมื่อเห็นด้วยกับหลักการ
+            แล้วให้หน่วยที่เกี่ยวข้องไปจัดทำรายละเอียดต่อ · "ทราบ" ใช้รับทราบเฉยๆ ไม่ได้สั่งการเพิ่ม
+          </div>
         </div>
         <div class="chip-row">
           <button class="btn btn-success" data-pin-title="ยืนยัน PIN เพื่ออนุมัติและส่งต่อ" onclick="doApprove(this)">✅ อนุมัติและส่งต่อ</button>
@@ -332,6 +344,16 @@ router.get('/documents/:id', requirePage((ctx) => {
       function doAcknowledge(btn){
         var comment = document.getElementById('stepComment').value;
         actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/acknowledge', { comment: comment });
+      }
+      // แทรกคำเกษียณมาตรฐานลงในกล่องข้อความ — ไม่ทับของเดิม เพิ่มขึ้นบรรทัดใหม่ พิมพ์ต่อได้ตามปกติ
+      // ถ้ามี tailText (เช่น "มอบฝ่าย...ดำเนินการ") จะวางเคอร์เซอร์ไว้ระหว่างกลางให้พิมพ์ชื่อฝ่ายแทรกได้เลย
+      function insertQuickPhrase(head, tail){
+        var el = document.getElementById('stepComment');
+        var sep = el.value.trim() ? '\\n' : '';
+        var insertPos = el.value.length + sep.length + head.length;
+        el.value = el.value + sep + head + (tail || '');
+        el.focus();
+        el.setSelectionRange(insertPos, insertPos);
       }
     </script>` : '';
 

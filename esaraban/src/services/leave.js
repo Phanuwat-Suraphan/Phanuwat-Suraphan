@@ -14,6 +14,13 @@ export const LEAVE_TYPE_LABEL = {
   official_travel: 'ไปราชการ',
 };
 
+// "อนุมัติ" ใช้เมื่อใช้อำนาจตามระเบียบ/เกี่ยวข้องกับงบประมาณหน่วยงาน (ไปราชการ) — "อนุญาต" ใช้กับ
+// เรื่องส่วนตัวที่ไม่เกี่ยวข้องกับงบประมาณ/ความรับผิดชอบของหน่วยงาน (ลาป่วย/ลากิจ/ลาพักผ่อน ฯลฯ)
+// อ้างอิงหลักการใช้คำจากคู่มืองานสารบรรณ (อนุมัติ-อนุญาต-เห็นชอบ ต่างกันอย่างไร)
+export function decisionVerb(leaveType) {
+  return leaveType === 'official_travel' ? 'อนุมัติ' : 'อนุญาต';
+}
+
 function countDays(startDate, endDate) {
   const start = new Date(startDate);
   const end = new Date(endDate);
@@ -41,7 +48,7 @@ export function createLeaveRequest({ requesterId, leaveType, startDate, endDate,
   const requester = db.prepare('SELECT * FROM users WHERE id = ?').get(requesterId);
   notifyUser({
     userId: approverId,
-    title: `คำขอ${LEAVE_TYPE_LABEL[leaveType]}ใหม่รออนุมัติ`,
+    title: `คำขอ${LEAVE_TYPE_LABEL[leaveType]}ใหม่รอ${decisionVerb(leaveType)}`,
     message: `${requester.prefix || ''}${requester.first_name} ${requester.last_name} — ${startDate} ถึง ${endDate} (${daysCount} วัน)`,
     priority: 'info',
   });
@@ -89,17 +96,17 @@ export function approveLeaveRequest({ id, note, actorUser }) {
   assertPendingAndOwnedByApprover(req, actorUser);
   db.prepare(`UPDATE leave_requests SET status = 'approved', decision_note = ?, decided_at = ?, updated_at = ? WHERE id = ?`)
     .run(note?.trim() || null, nowIso(), nowIso(), id);
-  notifyUser({ userId: req.requester_id, title: `คำขอ${LEAVE_TYPE_LABEL[req.leave_type]}ได้รับการอนุมัติ`, message: `${req.start_date} ถึง ${req.end_date}`, priority: 'success' });
+  notifyUser({ userId: req.requester_id, title: `คำขอ${LEAVE_TYPE_LABEL[req.leave_type]}ได้รับการ${decisionVerb(req.leave_type)}`, message: `${req.start_date} ถึง ${req.end_date}`, priority: 'success' });
   audit({ userId: actorUser.id, action: 'leave_request_approved', tableName: 'leave_requests', recordId: id });
 }
 
 export function rejectLeaveRequest({ id, note, actorUser }) {
   const req = getLeaveRequest(id);
   assertPendingAndOwnedByApprover(req, actorUser);
-  if (!note?.trim()) throw httpError(400, 'กรุณาระบุเหตุผลที่ไม่อนุมัติ');
+  if (!note?.trim()) throw httpError(400, `กรุณาระบุเหตุผลที่ไม่${decisionVerb(req.leave_type)}`);
   db.prepare(`UPDATE leave_requests SET status = 'rejected', decision_note = ?, decided_at = ?, updated_at = ? WHERE id = ?`)
     .run(note.trim(), nowIso(), nowIso(), id);
-  notifyUser({ userId: req.requester_id, title: `คำขอ${LEAVE_TYPE_LABEL[req.leave_type]}ไม่ได้รับการอนุมัติ`, message: note.trim(), priority: 'warning' });
+  notifyUser({ userId: req.requester_id, title: `คำขอ${LEAVE_TYPE_LABEL[req.leave_type]}ไม่ได้รับการ${decisionVerb(req.leave_type)}`, message: note.trim(), priority: 'warning' });
   audit({ userId: actorUser.id, action: 'leave_request_rejected', tableName: 'leave_requests', recordId: id, detail: { note } });
 }
 

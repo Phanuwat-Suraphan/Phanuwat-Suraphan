@@ -3,14 +3,16 @@ import { layout, esc, fmtDate } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db } from '../db.js';
 import {
-  LEAVE_TYPE_LABEL, createLeaveRequest, getLeaveRequest, listMyLeaveRequests, listPendingApprovals,
+  LEAVE_TYPE_LABEL, decisionVerb, createLeaveRequest, getLeaveRequest, listMyLeaveRequests, listPendingApprovals,
   approveLeaveRequest, rejectLeaveRequest, cancelLeaveRequest,
 } from '../services/leave.js';
 
-const STATUS_LABEL = { pending: 'รออนุมัติ', approved: 'อนุมัติแล้ว', rejected: 'ไม่อนุมัติ', cancelled: 'ยกเลิกแล้ว' };
 const STATUS_BADGE = { pending: 'badge-warning', approved: 'badge-success', rejected: 'badge-danger', cancelled: 'badge-muted' };
-function leaveStatusBadge(s) {
-  return `<span class="badge ${STATUS_BADGE[s] || 'badge-muted'}">${esc(STATUS_LABEL[s] || s)}</span>`;
+// ป้ายสถานะใช้คำ "อนุมัติ" หรือ "อนุญาต" ตามประเภทการลา (ไปราชการ = อนุมัติ, ลาส่วนตัว = อนุญาต)
+function leaveStatusBadge(status, leaveType) {
+  const verb = decisionVerb(leaveType);
+  const label = { pending: `รอ${verb}`, approved: `${verb}แล้ว`, rejected: `ไม่${verb}`, cancelled: 'ยกเลิกแล้ว' }[status] || status;
+  return `<span class="badge ${STATUS_BADGE[status] || 'badge-muted'}">${esc(label)}</span>`;
 }
 
 function listApproverOptions(excludeId) {
@@ -33,7 +35,7 @@ router.get('/leave', requirePage((ctx) => {
       ${showRequester ? `<td>${esc(r.requester_prefix || '')}${esc(r.requester_first)} ${esc(r.requester_last)}</td>` : ''}
       <td>${esc(r.start_date)} — ${esc(r.end_date)}</td>
       <td>${r.days_count} วัน</td>
-      <td>${leaveStatusBadge(r.status)}</td>
+      <td>${leaveStatusBadge(r.status, r.leave_type)}</td>
       <td class="text-muted">${fmtDate(r.created_at)}</td>
     </tr>`;
 
@@ -45,7 +47,7 @@ router.get('/leave', requirePage((ctx) => {
 
     ${pending.length ? `
     <div class="card">
-      <h3 class="mt-0">รออนุมัติจากคุณ (${pending.length})</h3>
+      <h3 class="mt-0">รอพิจารณาจากคุณ (${pending.length})</h3>
       <div class="table-wrap"><table>
         <thead><tr><th>ประเภท</th><th>ผู้ขอ</th><th>ช่วงวันที่</th><th>จำนวนวัน</th><th>สถานะ</th><th>ยื่นเมื่อ</th></tr></thead>
         <tbody>${pending.map((r) => rowHtml(r, true)).join('')}</tbody>
@@ -76,7 +78,7 @@ router.get('/leave/new', requirePage((ctx) => {
             </select>
           </div>
           <div class="field">
-            <label>ผู้อนุมัติ *</label>
+            <label>ผู้อนุมัติ/อนุญาต *</label>
             <select id="approverId" required>${listApproverOptions(ctx.user.id)}</select>
           </div>
           <div class="field">
@@ -136,9 +138,9 @@ router.get('/leave/:id', requirePage((ctx) => {
     <div class="card">
       <table>
         <tbody>
-          <tr><td class="text-muted">สถานะ</td><td>${leaveStatusBadge(req.status)}</td></tr>
+          <tr><td class="text-muted">สถานะ</td><td>${leaveStatusBadge(req.status, req.leave_type)}</td></tr>
           <tr><td class="text-muted">ผู้ขอ</td><td>${esc(req.requester_prefix || '')}${esc(req.requester_first)} ${esc(req.requester_last)}</td></tr>
-          <tr><td class="text-muted">ผู้อนุมัติ</td><td>${esc(req.approver_first)} ${esc(req.approver_last)}</td></tr>
+          <tr><td class="text-muted">ผู้${esc(decisionVerb(req.leave_type))}</td><td>${esc(req.approver_first)} ${esc(req.approver_last)}</td></tr>
           <tr><td class="text-muted">ช่วงวันที่</td><td>${esc(req.start_date)} — ${esc(req.end_date)} (${req.days_count} วัน)</td></tr>
           ${req.destination ? `<tr><td class="text-muted">สถานที่</td><td>${esc(req.destination)}</td></tr>` : ''}
           <tr><td class="text-muted">เหตุผล</td><td>${esc(req.reason)}</td></tr>
@@ -149,14 +151,14 @@ router.get('/leave/:id', requirePage((ctx) => {
       </table>
       ${canDecide ? `
       <div class="chip-row" style="margin-top:1rem">
-        <button class="btn btn-primary btn-sm" onclick="decide('approve')">✅ อนุมัติ</button>
-        <button class="btn btn-outline btn-sm" onclick="decide('reject')">❌ ไม่อนุมัติ</button>
+        <button class="btn btn-primary btn-sm" onclick="decide('approve')">✅ ${esc(decisionVerb(req.leave_type))}</button>
+        <button class="btn btn-outline btn-sm" onclick="decide('reject')">❌ ไม่${esc(decisionVerb(req.leave_type))}</button>
       </div>` : ''}
       ${canCancel ? `<button class="btn btn-outline btn-sm" style="margin-top:1rem" onclick="cancelRequest()">ยกเลิกคำขอ</button>` : ''}
     </div>
     <script>
       function decide(action) {
-        var note = prompt(action === 'reject' ? 'ระบุเหตุผลที่ไม่อนุมัติ' : 'หมายเหตุ (ถ้ามี)');
+        var note = prompt(action === 'reject' ? 'ระบุเหตุผลที่ไม่${esc(decisionVerb(req.leave_type))}' : 'หมายเหตุ (ถ้ามี)');
         if (note === null) return;
         if (action === 'reject' && !note.trim()) { alert('กรุณาระบุเหตุผล'); return; }
         fetch('/leave/${req.id}/' + action, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({note})})
