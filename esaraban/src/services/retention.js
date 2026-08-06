@@ -1,4 +1,5 @@
 import { db, uuid, nowIso, audit } from '../db.js';
+import { isGoogleDriveEnabled, deleteFile as deleteDriveFile } from './googleDrive.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -76,22 +77,28 @@ export function createDestructionBatch({ documentIds, committeeNames, reason, ac
   return batchId;
 }
 
-export function approveDestructionBatch({ batchId, actorUser, note }) {
+export async function approveDestructionBatch({ batchId, actorUser, note }) {
   const batch = getBatch(batchId);
   if (!batch) throw httpError(404, 'ไม่พบบัญชีทำลายหนังสือ');
   if (batch.status !== 'pending_approval') throw httpError(409, 'บัญชีนี้ถูกพิจารณาไปแล้ว');
 
   const now = nowIso();
+  const driveFilesToDelete = [];
   db.exec('BEGIN IMMEDIATE');
   try {
     for (const doc of batch.items) {
       db.prepare(`UPDATE documents SET status = 'destroyed', destroyed_at = ?, destroyed_by = ?, updated_at = ? WHERE id = ?`)
         .run(now, actorUser.id, now, doc.id);
-      // ลบไฟล์แนบจริงออกจากดิสก์ — คงรายการทะเบียน/เลขที่ไว้เป็นหลักฐานว่าเคยมีและถูกทำลายแล้วตามระเบียบ (ไม่ใช้เลขซ้ำ)
+      // ลบไฟล์แนบจริงออก (local disk ทันที, Google Drive หลัง commit — เพราะเป็น network call ไม่ควรถือ DB transaction ค้างไว้)
+      // คงรายการทะเบียน/เลขที่ไว้เป็นหลักฐานว่าเคยมีและถูกทำลายแล้วตามระเบียบ (ไม่ใช้เลขซ้ำ)
       const atts = db.prepare('SELECT * FROM attachments WHERE document_id = ?').all(doc.id);
       for (const att of atts) {
-        const filePath = path.join(UPLOAD_DIR, att.filepath);
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        if (att.storage_provider === 'google_drive' && att.drive_file_id) {
+          driveFilesToDelete.push(att.drive_file_id);
+        } else if (att.filepath) {
+          const filePath = path.join(UPLOAD_DIR, att.filepath);
+          if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        }
       }
     }
     db.prepare(`UPDATE destruction_batches SET status = 'approved', decided_by = ?, decision_note = ?, decided_at = ? WHERE id = ?`)
@@ -101,6 +108,18 @@ export function approveDestructionBatch({ batchId, actorUser, note }) {
     db.exec('ROLLBACK');
     throw e;
   }
+
+  if (isGoogleDriveEnabled()) {
+    for (const fileId of driveFilesToDelete) {
+      try {
+        await deleteDriveFile(fileId);
+      } catch (e) {
+        // เอกสารถูกอนุมัติทำลายแล้ว (สถานะใน DB เปลี่ยนแล้ว) — ถ้าลบไฟล์บน Drive ไม่สำเร็จ บันทึกไว้เพื่อให้แอดมินลบเองภายหลัง ไม่ทำให้การอนุมัติล้มเหลว
+        audit({ userId: actorUser.id, action: 'destruction_drive_delete_failed', tableName: 'attachments', recordId: fileId, detail: { error: e.message } });
+      }
+    }
+  }
+
   audit({ userId: actorUser.id, action: 'destruction_batch_approved', tableName: 'destruction_batches', recordId: batchId, detail: { count: batch.items.length } });
 }
 

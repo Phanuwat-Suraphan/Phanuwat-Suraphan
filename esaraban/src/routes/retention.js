@@ -146,7 +146,7 @@ router.post('/retention/batches', requireApi(async (ctx) => {
 
 router.post('/retention/batches/:id/approve', requireApi(async (ctx) => {
   if (!ctx.user.roleCodes.some((r) => CAN_APPROVE.includes(r))) return json(ctx, 403, { error: 'เฉพาะผู้บริหาร/ผู้ดูแลระบบเท่านั้นที่อนุมัติได้' });
-  approveDestructionBatch({ batchId: ctx.params.id, actorUser: ctx.user, note: ctx.body.note });
+  await approveDestructionBatch({ batchId: ctx.params.id, actorUser: ctx.user, note: ctx.body.note });
   json(ctx, 200, { ok: true });
 }));
 

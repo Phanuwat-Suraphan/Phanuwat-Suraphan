@@ -28,11 +28,17 @@ route handlers here map cleanly to REST endpoints, and the SQL schema maps to a 
 ## Deploying
 
 - **Quick demo link, no setup**: [`deploy/RENDER.md`](./deploy/RENDER.md) — free, ~2 minutes,
-  but data doesn't persist (fine for showing someone the UI, not for real use)
+  but data doesn't persist (fine for showing someone the UI, not for real use) — *unless* you also
+  set up [`deploy/GOOGLE_DRIVE.md`](./deploy/GOOGLE_DRIVE.md) (free 15GB), which moves file storage
+  off Render's ephemeral disk. The SQLite database itself still resets on Render, though — full
+  persistence still needs a VPS.
 - **Real deployment**: [`DEPLOY.md`](./DEPLOY.md) — cloud VPS runbook (Ubuntu + systemd + Nginx +
   Let's Encrypt, matching the Part 10 deployment architecture from the spec), with a free-forever
   option at [`deploy/ORACLE_CLOUD.md`](./deploy/ORACLE_CLOUD.md). `deploy/` also has ready-to-use
   `esaraban.service` (systemd unit), `nginx.conf` (reverse proxy), and `backup.sh`.
+- **File storage**: local disk by default. [`deploy/GOOGLE_DRIVE.md`](./deploy/GOOGLE_DRIVE.md)
+  covers switching attached PDFs to Google Drive instead (`STORAGE_PROVIDER=google_drive`),
+  organized into `<ปี>/<ประเภทหนังสือ>` folders automatically.
 
 ## Run it
 

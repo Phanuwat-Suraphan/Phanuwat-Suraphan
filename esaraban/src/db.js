@@ -190,7 +190,9 @@ export function migrate() {
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL REFERENCES documents(id),
     filename TEXT NOT NULL,
-    filepath TEXT NOT NULL,
+    storage_provider TEXT NOT NULL DEFAULT 'local', -- local | google_drive
+    filepath TEXT, -- local safe filename (storage_provider = 'local')
+    drive_file_id TEXT, -- Google Drive file id (storage_provider = 'google_drive')
     filesize INTEGER NOT NULL,
     mime_type TEXT NOT NULL,
     hash_sha256 TEXT NOT NULL,

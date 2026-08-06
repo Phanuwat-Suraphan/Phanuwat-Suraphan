@@ -36,10 +36,16 @@ Render's **free** web services have no persistent disk:
 - The service also **spins down after ~15 minutes with no traffic**, and the next visitor waits
   ~30-60 seconds for it to wake back up
 
-This is fine for showing someone what the system looks and feels like. It is **not** suitable
-for the school to actually use to store real documents — for that, see
+[`GOOGLE_DRIVE.md`](./GOOGLE_DRIVE.md) moves the **PDF files** off Render's disk and into Google
+Drive, so those survive a redeploy. **This is only half the fix** — the SQLite database (every
+document's title, เลขที่, status, workflow history, user accounts... everything except the PDF
+binary itself) still lives on Render's ephemeral disk and still gets wiped. Google Drive alone
+does not make Render safe for real use; it only stops the PDFs specifically from being lost.
+
+For the database to survive too, there's no way around leaving Render — see
 [`../DEPLOY.md`](../DEPLOY.md) (any VPS, persistent disk) or
-[`ORACLE_CLOUD.md`](./ORACLE_CLOUD.md) (free VPS with a real persistent disk).
+[`ORACLE_CLOUD.md`](./ORACLE_CLOUD.md) (free VPS with a real persistent disk, no Google Drive
+integration needed at all since the whole disk is already persistent).
 
 ## OCR auto-fill doesn't work here either
 

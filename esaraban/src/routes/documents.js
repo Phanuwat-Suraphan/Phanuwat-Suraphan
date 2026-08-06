@@ -8,6 +8,8 @@ import {
   voidDocument, archiveDocument, httpError,
 } from '../services/workflow.js';
 import { extractTextFromPdf, guessFieldsFromText } from '../services/ocr.js';
+import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream } from '../services/googleDrive.js';
+import { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -172,7 +174,7 @@ router.get('/documents/new', requirePage((ctx) => {
   html(ctx, 200, layout({ user: ctx.user, title: 'สร้างเอกสารใหม่', path: '/documents/new', content }));
 }));
 
-function saveAttachment({ documentId, fileName, fileType, fileDataBase64, uploadedBy }) {
+async function saveAttachment({ documentId, fileName, fileType, fileDataBase64, uploadedBy }) {
   if (!fileDataBase64) return null;
   if (!ALLOWED_MIME.has(fileType)) throw httpError(400, 'อนุญาตเฉพาะไฟล์ PDF เท่านั้น');
   const buf = Buffer.from(fileDataBase64, 'base64');
@@ -183,12 +185,28 @@ function saveAttachment({ documentId, fileName, fileType, fileDataBase64, upload
   const dup = db.prepare('SELECT a.*, d.doc_number_display FROM attachments a JOIN documents d ON d.id = a.document_id WHERE a.hash_sha256 = ?').get(hash);
   const id = uuid();
   const safeName = `${id}.pdf`;
-  fs.writeFileSync(path.join(UPLOAD_DIR, safeName), buf);
+
+  let storageProvider = 'local';
+  let filepath = null;
+  let driveFileId = null;
+
+  if (isGoogleDriveEnabled()) {
+    const doc = db.prepare(`
+      SELECT d.year_be, dt.name as type_name FROM documents d JOIN document_types dt ON dt.id = d.doc_type_id WHERE d.id = ?
+    `).get(documentId);
+    const folderId = await ensureCategoryFolder({ yearBe: doc.year_be, typeName: doc.type_name });
+    driveFileId = await uploadFile({ buffer: buf, filename: `${safeName}__${fileName || 'document.pdf'}`, mimeType: fileType, folderId });
+    storageProvider = 'google_drive';
+  } else {
+    fs.writeFileSync(path.join(UPLOAD_DIR, safeName), buf);
+    filepath = safeName;
+  }
+
   db.prepare(`
-    INSERT INTO attachments (id, document_id, filename, filepath, filesize, mime_type, hash_sha256, uploaded_by, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, documentId, fileName || 'document.pdf', safeName, buf.length, fileType, hash, uploadedBy, nowIso());
-  audit({ userId: uploadedBy, action: 'attachment_uploaded', tableName: 'attachments', recordId: id, detail: { documentId, hash, duplicateOf: dup ? dup.doc_number_display : null } });
+    INSERT INTO attachments (id, document_id, filename, storage_provider, filepath, drive_file_id, filesize, mime_type, hash_sha256, uploaded_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, documentId, fileName || 'document.pdf', storageProvider, filepath, driveFileId, buf.length, fileType, hash, uploadedBy, nowIso());
+  audit({ userId: uploadedBy, action: 'attachment_uploaded', tableName: 'attachments', recordId: id, detail: { documentId, hash, storageProvider, duplicateOf: dup ? dup.doc_number_display : null } });
   return { id, duplicateWarning: dup ? `พบไฟล์นี้ซ้ำกับเอกสาร ${dup.doc_number_display} (Hash ตรงกัน)` : null };
 }
 
@@ -222,7 +240,7 @@ router.post('/documents', requireApi(async (ctx) => {
   });
   let warn = '';
   if (b.fileDataBase64) {
-    const att = saveAttachment({ documentId: doc.id, fileName: b.fileName, fileType: b.fileType, fileDataBase64: b.fileDataBase64, uploadedBy: ctx.user.id });
+    const att = await saveAttachment({ documentId: doc.id, fileName: b.fileName, fileType: b.fileType, fileDataBase64: b.fileDataBase64, uploadedBy: ctx.user.id });
     if (att?.duplicateWarning) warn = `&warn=${encodeURIComponent(att.duplicateWarning)}`;
   }
   json(ctx, 201, { redirect: `/documents/${doc.id}?created=1${warn}` });
@@ -231,7 +249,7 @@ router.post('/documents', requireApi(async (ctx) => {
 router.post('/documents/:id/attachments', requireApi(async (ctx) => {
   const doc = getDocument(ctx.params.id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
-  const att = saveAttachment({ documentId: doc.id, fileName: ctx.body.fileName, fileType: ctx.body.fileType, fileDataBase64: ctx.body.fileDataBase64, uploadedBy: ctx.user.id });
+  const att = await saveAttachment({ documentId: doc.id, fileName: ctx.body.fileName, fileType: ctx.body.fileType, fileDataBase64: ctx.body.fileDataBase64, uploadedBy: ctx.user.id });
   json(ctx, 200, { redirect: `/documents/${doc.id}${att?.duplicateWarning ? '?warn=' + encodeURIComponent(att.duplicateWarning) : ''}` });
 }));
 
@@ -481,14 +499,34 @@ router.post('/documents/:id/comment', requireApi(async (ctx) => {
   json(ctx, 200, { ok: true });
 }));
 
-// ---------------- file serving (ACL-checked, not static) ----------------
-router.get('/files/:attachmentId', requirePage((ctx) => {
+// ---------------- file serving (ACL-checked, not static — proxied even for Google Drive so ACL always applies) ----------------
+router.get('/files/:attachmentId', requirePage(async (ctx) => {
   const att = db.prepare('SELECT * FROM attachments WHERE id = ?').get(ctx.params.attachmentId);
   if (!att) return html(ctx, 404, '<h1>404</h1>');
   const doc = getDocument(att.document_id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) {
     return html(ctx, 403, '<h1>403</h1><p>คุณไม่มีสิทธิ์เปิดไฟล์นี้</p>');
   }
+
+  if (att.storage_provider === 'google_drive') {
+    let stream;
+    try {
+      stream = await downloadFileStream(att.drive_file_id);
+    } catch (err) {
+      return html(ctx, err.statusCode || 502, `<h1>เกิดข้อผิดพลาด</h1><p>${esc(err.message)}</p>`);
+    }
+    if (!stream) return html(ctx, 404, '<h1>ไม่พบไฟล์บน Google Drive</h1>');
+    audit({ userId: ctx.user.id, action: 'attachment_opened', tableName: 'attachments', recordId: att.id, ip: ctx.ip });
+    ctx.res.writeHead(200, {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `inline; filename="${att.filename.replace(/"/g, '')}"`,
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    Readable.fromWeb(stream).pipe(ctx.res);
+    return;
+  }
+
   const filePath = path.join(UPLOAD_DIR, att.filepath);
   if (!fs.existsSync(filePath)) return html(ctx, 404, '<h1>ไม่พบไฟล์</h1>');
   audit({ userId: ctx.user.id, action: 'attachment_opened', tableName: 'attachments', recordId: att.id, ip: ctx.ip });
