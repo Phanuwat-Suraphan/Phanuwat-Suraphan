@@ -25,11 +25,14 @@ If/when this environment (or the real deployment target) has npm registry access
 the Part 8/9 stack (React + Express + Prisma + Postgres) is the natural next step — the
 route handlers here map cleanly to REST endpoints, and the SQL schema maps to a Prisma schema.
 
-## Deploying to a real server
+## Deploying
 
-See [`DEPLOY.md`](./DEPLOY.md) for a step-by-step cloud VPS runbook (Ubuntu + systemd + Nginx +
-Let's Encrypt, matching the Part 10 deployment architecture from the spec). `deploy/` contains
-ready-to-use `esaraban.service` (systemd unit), `nginx.conf` (reverse proxy), and `backup.sh`.
+- **Quick demo link, no setup**: [`deploy/RENDER.md`](./deploy/RENDER.md) — free, ~2 minutes,
+  but data doesn't persist (fine for showing someone the UI, not for real use)
+- **Real deployment**: [`DEPLOY.md`](./DEPLOY.md) — cloud VPS runbook (Ubuntu + systemd + Nginx +
+  Let's Encrypt, matching the Part 10 deployment architecture from the spec), with a free-forever
+  option at [`deploy/ORACLE_CLOUD.md`](./deploy/ORACLE_CLOUD.md). `deploy/` also has ready-to-use
+  `esaraban.service` (systemd unit), `nginx.conf` (reverse proxy), and `backup.sh`.
 
 ## Run it
 
