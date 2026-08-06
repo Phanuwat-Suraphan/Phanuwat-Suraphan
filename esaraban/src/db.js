@@ -257,7 +257,15 @@ function seedIfEmpty() {
     insRole.run(id, r.code, r.name_th, r.level, nowIso());
   }
 
-  const types = ['หนังสือราชการ', 'บันทึกข้อความ', 'คำสั่ง', 'ประกาศ', 'หนังสือเวียน', 'รายงาน'];
+  // ประเภทหนังสือราชการ 6 ชนิด ตามระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ
+  const types = [
+    'หนังสือภายนอก',
+    'หนังสือภายใน',
+    'หนังสือประทับตรา',
+    'หนังสือสั่งการ',
+    'หนังสือประชาสัมพันธ์',
+    'หนังสือที่เจ้าหน้าที่จัดทำขึ้นหรือรับไว้เป็นหลักฐาน',
+  ];
   const typeIds = {};
   const insType = db.prepare('INSERT INTO document_types (id, name) VALUES (?, ?)');
   for (const t of types) {
