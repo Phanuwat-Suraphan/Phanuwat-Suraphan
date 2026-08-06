@@ -94,6 +94,7 @@ export function migrate() {
     status TEXT NOT NULL DEFAULT 'active', -- active | suspended
     failed_login_count INTEGER NOT NULL DEFAULT 0,
     locked_until TEXT, -- login rate limiting (Security Bible §7): lock 15 min after 5 bad attempts
+    signature_image TEXT, -- ลายเซ็นสแกนของผู้ใช้แต่ละคน (data URL, base64) — ของใครของมัน
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT

@@ -49,6 +49,24 @@ router.get('/profile', requirePage((ctx) => {
           <div class="field"><label>PIN ใหม่ (6 หลัก)</label><input type="text" id="newPin" inputmode="numeric" maxlength="6" required /></div>
           <button class="btn btn-primary" type="submit">บันทึก PIN ใหม่</button>
         </form>
+
+        <h3 style="margin-top:1.2rem">ลายเซ็นสแกน (ของฉันเท่านั้น)</h3>
+        <p class="text-muted" style="font-size:.8rem">ใช้แสดงประกอบเมื่อคุณอนุมัติ/รับทราบเอกสาร — สแกนหรือถ่ายรูปลายเซ็นบนกระดาษขาว แล้วอัปโหลดเป็น PNG/JPG</p>
+        <div id="signaturePreviewWrap" style="margin-bottom:.6rem">
+          ${ctx.user.signature_image
+            ? `<img src="${esc(ctx.user.signature_image)}" alt="ลายเซ็นปัจจุบัน" style="max-height:80px;max-width:240px;border:1px solid var(--border);border-radius:6px;padding:.4rem;background:#fff" />`
+            : '<p class="text-muted" style="font-size:.85rem">ยังไม่มีลายเซ็นบันทึกไว้</p>'}
+        </div>
+        <form id="signatureForm" class="stack">
+          <div class="field">
+            <input type="file" id="signatureFile" accept="image/png,image/jpeg" />
+            <div class="help-text">รองรับ PNG/JPG ขนาดไม่เกิน 1MB — แนะนำพื้นหลังสีขาว/โปร่งใส</div>
+          </div>
+          <div class="chip-row">
+            <button class="btn btn-primary btn-sm" type="submit">บันทึกลายเซ็น</button>
+            ${ctx.user.signature_image ? `<button class="btn btn-outline btn-sm" type="button" onclick="deleteSignature()">ลบลายเซ็น</button>` : ''}
+          </div>
+        </form>
         <script>
           document.getElementById('infoForm').addEventListener('submit', function(e){
             e.preventDefault();
@@ -83,6 +101,24 @@ router.get('/profile', requirePage((ctx) => {
               .then(({ok,d}) => { if(!ok) throw new Error(d.error); alert('เปลี่ยน PIN สำเร็จ'); e.target.reset(); })
               .catch(e => alert(e.message));
           });
+          document.getElementById('signatureForm').addEventListener('submit', async function(e){
+            e.preventDefault();
+            var file = document.getElementById('signatureFile').files[0];
+            if (!file) { alert('กรุณาเลือกไฟล์รูปลายเซ็น'); return; }
+            if (file.size > 1024 * 1024) { alert('ไฟล์ต้องมีขนาดไม่เกิน 1MB'); return; }
+            var dataUrl = await window.fileToDataUrl(file);
+            fetch('/profile/signature', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dataUrl})})
+              .then(r => r.json().then(d => ({ok:r.ok,d})))
+              .then(({ok,d}) => { if(!ok) throw new Error(d.error); alert('บันทึกลายเซ็นสำเร็จ'); location.reload(); })
+              .catch(e => alert(e.message));
+          });
+          window.deleteSignature = function(){
+            if (!confirm('ยืนยันลบลายเซ็นที่บันทึกไว้?')) return;
+            fetch('/profile/signature', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dataUrl: null})})
+              .then(r => r.json().then(d => ({ok:r.ok,d})))
+              .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
+              .catch(e => alert(e.message));
+          };
         </script>
       </div>
       <div class="card">
@@ -115,6 +151,35 @@ router.post('/profile/password', requireApi(async (ctx) => {
   if (!verifySecret(currentPassword, row.password_hash)) return json(ctx, 401, { error: 'รหัสผ่านปัจจุบันไม่ถูกต้อง' });
   db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').run(hashSecret(newPassword), nowIso(), ctx.user.id);
   audit({ userId: ctx.user.id, action: 'password_changed', tableName: 'users', recordId: ctx.user.id });
+  json(ctx, 200, { ok: true });
+}));
+
+const MAX_SIGNATURE_BYTES = 1024 * 1024; // 1MB
+
+router.post('/profile/signature', requireApi(async (ctx) => {
+  const { dataUrl } = ctx.body;
+
+  if (dataUrl === null || dataUrl === undefined || dataUrl === '') {
+    db.prepare('UPDATE users SET signature_image = NULL, updated_at = ? WHERE id = ?').run(nowIso(), ctx.user.id);
+    audit({ userId: ctx.user.id, action: 'signature_removed', tableName: 'users', recordId: ctx.user.id });
+    return json(ctx, 200, { ok: true });
+  }
+
+  const match = /^data:(image\/png|image\/jpeg);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  if (!match) return json(ctx, 400, { error: 'รูปแบบไฟล์ไม่ถูกต้อง (รองรับเฉพาะ PNG/JPG)' });
+  const [, mimeType, base64Data] = match;
+  const buf = Buffer.from(base64Data, 'base64');
+  if (buf.length > MAX_SIGNATURE_BYTES) return json(ctx, 413, { error: 'ไฟล์มีขนาดใหญ่เกิน 1MB' });
+
+  // magic-number check — don't trust the declared MIME type alone
+  const isPng = buf.subarray(0, 8).toString('hex') === '89504e470d0a1a0a';
+  const isJpeg = buf.subarray(0, 3).toString('hex') === 'ffd8ff';
+  if ((mimeType === 'image/png' && !isPng) || (mimeType === 'image/jpeg' && !isJpeg)) {
+    return json(ctx, 400, { error: 'ไฟล์ไม่ใช่รูปภาพที่ถูกต้อง (ตรวจสอบ file signature ไม่ผ่าน)' });
+  }
+
+  db.prepare('UPDATE users SET signature_image = ?, updated_at = ? WHERE id = ?').run(dataUrl, nowIso(), ctx.user.id);
+  audit({ userId: ctx.user.id, action: 'signature_uploaded', tableName: 'users', recordId: ctx.user.id });
   json(ctx, 200, { ok: true });
 }));
 

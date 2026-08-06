@@ -283,10 +283,12 @@ router.get('/documents/:id', requirePage((ctx) => {
     ${steps.map((s) => {
       const cls = s.status === 'waiting' ? '' : (s.status === 'rejected' || s.status === 'returned' ? 'rejected' : 'done');
       const statusText = { waiting: 'รอดำเนินการ', approved: 'อนุมัติ ส่งต่อแล้ว', acknowledged: 'รับทราบ/เสร็จสิ้น', rejected: 'ไม่อนุมัติ', returned: 'ส่งกลับแก้ไข' }[s.status];
+      const showSignature = ['approved', 'acknowledged'].includes(s.status) && s.signature_image;
       return `<li class="${cls}">
         <div class="t-title">ขั้นที่ ${s.step_order}: ${esc(s.prefix || '')}${esc(s.first_name)} ${esc(s.last_name)} — ${statusText}</div>
         <div class="t-meta">มอบหมาย ${fmtDate(s.created_at)}${s.decided_at ? ' · ดำเนินการ ' + fmtDate(s.decided_at) : ''}</div>
         ${s.instruction ? `<div class="t-note">${esc(s.instruction).replace(/\n/g, '<br/>')}</div>` : ''}
+        ${showSignature ? `<div class="t-note"><img src="${esc(s.signature_image)}" alt="ลายเซ็น ${esc(s.first_name)} ${esc(s.last_name)}" style="max-height:60px;max-width:180px;border-bottom:1px solid var(--border);padding-bottom:2px" /></div>` : ''}
       </li>`;
     }).join('')}
   </ul>` : emptyState('🕒', 'ยังไม่มีการมอบหมายงาน (Workflow)');

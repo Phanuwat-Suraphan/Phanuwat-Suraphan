@@ -56,7 +56,7 @@ export function canUserSeeDocument(user, doc) {
 
 export function getWorkflowSteps(documentId) {
   return db.prepare(`
-    SELECT ws.*, u.first_name, u.last_name, u.prefix
+    SELECT ws.*, u.first_name, u.last_name, u.prefix, u.signature_image
     FROM workflow_steps ws JOIN users u ON u.id = ws.assignee_id
     WHERE ws.document_id = ? ORDER BY ws.step_order ASC
   `).all(documentId);

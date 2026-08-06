@@ -83,6 +83,16 @@
     });
   }
 
+  // keeps the "data:image/png;base64,..." prefix — used where the value is stored/rendered as-is (signature image)
+  window.fileToDataUrl = function (file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
   // ---------- OCR auto-fill (Tesseract, ต้องติดตั้งบนเซิร์ฟเวอร์ — ดู DEPLOY.md) ----------
   window.ocrExtractInto = async function (btn, fileInputId, resultId, formEl) {
     const fileInput = document.getElementById(fileInputId);
