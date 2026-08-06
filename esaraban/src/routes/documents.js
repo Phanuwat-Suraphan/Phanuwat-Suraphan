@@ -1,5 +1,5 @@
 import { router, html, json, redirect } from '../router.js';
-import { layout, esc, fmtDate, priorityBadge, secretBadge, statusBadge, emptyState, LABELS } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateLong, priorityBadge, secretBadge, statusBadge, emptyState, LABELS } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, nowIso, audit, RETENTION_LABEL } from '../db.js';
 import {
@@ -288,7 +288,15 @@ router.get('/documents/:id', requirePage((ctx) => {
         <div class="t-title">ขั้นที่ ${s.step_order}: ${esc(s.prefix || '')}${esc(s.first_name)} ${esc(s.last_name)} — ${statusText}</div>
         <div class="t-meta">มอบหมาย ${fmtDate(s.created_at)}${s.decided_at ? ' · ดำเนินการ ' + fmtDate(s.decided_at) : ''}</div>
         ${s.instruction ? `<div class="t-note">${esc(s.instruction).replace(/\n/g, '<br/>')}</div>` : ''}
-        ${showSignature ? `<div class="t-note"><img src="${esc(s.signature_image)}" alt="ลายเซ็น ${esc(s.first_name)} ${esc(s.last_name)}" style="max-height:60px;max-width:180px;border-bottom:1px solid var(--border);padding-bottom:2px" /></div>` : ''}
+        ${showSignature ? `
+        <div class="t-note" style="text-align:center;max-width:220px;margin-top:.4rem">
+          <img src="${esc(s.signature_image)}" alt="ลายเซ็น ${esc(s.first_name)} ${esc(s.last_name)}" style="max-height:60px;max-width:180px" />
+          <div style="border-top:1px solid var(--border);padding-top:.25rem;font-size:.82rem">
+            <div>(${esc(s.prefix || '')}${esc(s.first_name)} ${esc(s.last_name)})</div>
+            ${s.position ? `<div class="text-muted">${esc(s.position)}</div>` : ''}
+            <div class="text-muted">${fmtThaiDateLong(s.decided_at)}</div>
+          </div>
+        </div>` : ''}
       </li>`;
     }).join('')}
   </ul>` : emptyState('🕒', 'ยังไม่มีการมอบหมายงาน (Workflow)');

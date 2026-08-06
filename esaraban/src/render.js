@@ -14,6 +14,15 @@ export function fmtDate(iso) {
   return d.toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
+// รูปแบบ "วัน เดือน ปี" ตามระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ พ.ศ. 2526 ภาคผนวก 2 —
+// "ให้ลงตัวเลขของวันที่ ชื่อเต็มของเดือน และตัวเลขของปีพุทธศักราชที่ออกหนังสือ" (เลขวันที่ + ชื่อเดือนเต็ม
+// + ปี พ.ศ. ไม่ย่อเดือน ไม่มีเวลา) ใช้เฉพาะบล็อกลงนามที่ต้องเป็นทางการ ส่วนอื่นยังใช้ fmtDate ตามเดิม
+export function fmtThaiDateLong(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  return d.toLocaleString('th-TH', { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
 const PRIORITY_LABEL = { normal: 'ปกติ', urgent: 'ด่วน', very_urgent: 'ด่วนมาก', most_urgent: 'ด่วนที่สุด' };
 const PRIORITY_BADGE = { normal: 'badge-muted', urgent: 'badge-warning', very_urgent: 'badge-danger', most_urgent: 'badge-danger' };
 const SECRET_LABEL = { normal: 'ปกติ', internal: 'ภายใน', secret: 'ลับ', top_secret: 'ลับมาก' };
