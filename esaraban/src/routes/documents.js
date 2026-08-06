@@ -56,7 +56,7 @@ router.get('/documents', requirePage((ctx) => {
 
   const rowsHtml = rows.map((d) => `
     <tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer">
-      <td><strong>${esc(d.doc_number_display)}</strong></td>
+      <td><strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong></td>
       <td>${esc(d.title)}${d.secret_level !== 'normal' ? ' 🔒' : ''}</td>
       <td>${esc(d.type_name)}</td>
       <td>${esc(d.dept_name)}</td>
@@ -289,12 +289,12 @@ router.get('/documents/:id', requirePage((ctx) => {
         <div class="t-meta">มอบหมาย ${fmtDate(s.created_at)}${s.decided_at ? ' · ดำเนินการ ' + fmtDate(s.decided_at) : ''}</div>
         ${s.instruction ? `<div class="t-note">${esc(s.instruction).replace(/\n/g, '<br/>')}</div>` : ''}
         ${showSignature ? `
-        <div class="t-note" style="text-align:center;max-width:220px;margin-top:.4rem">
+        <div class="t-note" style="text-align:center;max-width:220px;margin-top:.4rem;color:var(--primary)">
           <img src="${esc(s.signature_image)}" alt="ลายเซ็น ${esc(s.first_name)} ${esc(s.last_name)}" style="max-height:60px;max-width:180px" />
-          <div style="border-top:1px solid var(--border);padding-top:.25rem;font-size:.82rem">
+          <div style="border-top:1px solid var(--primary);padding-top:.25rem;font-size:.82rem">
             <div>(${esc(s.prefix || '')}${esc(s.first_name)} ${esc(s.last_name)})</div>
-            ${s.position ? `<div class="text-muted">${esc(s.position)}</div>` : ''}
-            <div class="text-muted">${fmtThaiDateLong(s.decided_at)}</div>
+            ${s.position ? `<div>${esc(s.position)}</div>` : ''}
+            <div>${fmtThaiDateLong(s.decided_at)}</div>
           </div>
         </div>` : ''}
       </li>`;
@@ -366,7 +366,7 @@ router.get('/documents/:id', requirePage((ctx) => {
     ${ctx.query.warn ? `<div class="alert alert-warning">⚠️ ${esc(ctx.query.warn)}</div>` : ''}
     <div class="card-header">
       <div>
-        <h2 class="mt-0">${esc(doc.doc_number_display)} — ${esc(doc.title)}</h2>
+        <h2 class="mt-0"><span style="color:var(--primary)">${esc(doc.doc_number_display)}</span> — ${esc(doc.title)}</h2>
         <div class="chip-row">${statusBadge(doc.status)}${priorityBadge(doc.priority)}${secretBadge(doc.secret_level)}</div>
       </div>
       <div class="chip-row">

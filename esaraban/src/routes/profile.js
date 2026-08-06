@@ -51,7 +51,7 @@ router.get('/profile', requirePage((ctx) => {
         </form>
 
         <h3 style="margin-top:1.2rem">ลายเซ็นสแกน (ของฉันเท่านั้น)</h3>
-        <p class="text-muted" style="font-size:.8rem">ใช้แสดงประกอบเมื่อคุณอนุมัติ/รับทราบเอกสาร — สแกนหรือถ่ายรูปลายเซ็นบนกระดาษขาว แล้วอัปโหลดเป็น PNG/JPG</p>
+        <p class="text-muted" style="font-size:.8rem">ใช้แสดงประกอบเมื่อคุณอนุมัติ/รับทราบเอกสาร — เซ็นด้วย<strong>ปากกาหมึกสีน้ำเงิน</strong>ตามธรรมเนียมราชการ (ใช้แยกต้นฉบับจากสำเนาถ่ายเอกสาร) บนกระดาษขาว แล้วสแกนหรือถ่ายรูปอัปโหลดเป็น PNG/JPG</p>
         <div id="signaturePreviewWrap" style="margin-bottom:.6rem">
           ${ctx.user.signature_image
             ? `<img src="${esc(ctx.user.signature_image)}" alt="ลายเซ็นปัจจุบัน" style="max-height:80px;max-width:240px;border:1px solid var(--border);border-radius:6px;padding:.4rem;background:#fff" />`
