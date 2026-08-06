@@ -1,0 +1,7 @@
+import './auth.js';
+import './dashboard.js';
+import './documents.js';
+import './notifications.js';
+import './reports.js';
+import './profile.js';
+import './admin.js';
