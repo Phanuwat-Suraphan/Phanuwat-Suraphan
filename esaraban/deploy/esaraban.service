@@ -1,0 +1,23 @@
+[Unit]
+Description=e-Saraban school document system
+After=network.target
+
+[Service]
+Type=simple
+User=esaraban
+WorkingDirectory=/opt/esaraban
+# Generate a real secret with: openssl rand -hex 32
+Environment=SESSION_SECRET=REPLACE_WITH_OPENSSL_RAND_HEX_32
+Environment=PORT=3000
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node --no-warnings server.js
+Restart=on-failure
+RestartSec=5
+# hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/esaraban/data /opt/esaraban/uploads
+
+[Install]
+WantedBy=multi-user.target
