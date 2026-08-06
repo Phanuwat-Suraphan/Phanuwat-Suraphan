@@ -7,6 +7,16 @@ function kpi(value, label, emoji) {
   return `<div class="kpi-card"><div class="kpi-value">${emoji ? emoji + ' ' : ''}${value}</div><div class="kpi-label">${esc(label)}</div></div>`;
 }
 
+// ทักทายตามช่วงเวลา (UX Bible Part 21 §1) — ใช้เวลาของเซิร์ฟเวอร์ตรงๆ ไม่ผูก timezone ผู้ใช้
+// เพราะโรงเรียนเดียว ผู้ใช้ทั้งหมดอยู่โซนเวลาเดียวกับเซิร์ฟเวอร์อยู่แล้ว
+function timeGreeting() {
+  const hour = new Date().getHours();
+  if (hour >= 5 && hour < 12) return { text: 'สวัสดีตอนเช้าครับ', emoji: '☀️' };
+  if (hour >= 12 && hour < 17) return { text: 'สวัสดีตอนบ่ายครับ', emoji: '🌤️' };
+  if (hour >= 17 && hour < 20) return { text: 'สวัสดีตอนเย็นครับ', emoji: '🌇' };
+  return { text: 'ทำงานดึกแล้วนะครับ พักผ่อนด้วยนะครับ', emoji: '🌙' };
+}
+
 router.get('/', requirePage((ctx) => {
   const user = ctx.user;
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
@@ -60,9 +70,15 @@ router.get('/', requirePage((ctx) => {
     </div>`;
   }
 
+  const greeting = timeGreeting();
   const content = `
     <div class="card-header">
-      <h2 class="mt-0">สวัสดี, ${esc(user.prefix || '')}${esc(user.first_name)} ${esc(user.last_name)} 👋</h2>
+      <div>
+        <h2 class="mt-0">${greeting.emoji} ${greeting.text} ${esc(user.prefix || '')}${esc(user.first_name)}</h2>
+        <p class="text-muted" style="margin:-.3rem 0 0;font-size:.85rem">
+          วันนี้มีหนังสือเข้าใหม่ ${inToday} ฉบับ${myTasks > 0 ? ` · ยังไม่ได้ดำเนินการ ${myTasks} ฉบับ` : ' · งานของคุณครบหมดแล้ว 🎉'}
+        </p>
+      </div>
       <div class="chip-row">
         <a class="btn btn-primary btn-sm" href="/documents/new?direction=incoming">+ รับหนังสือ</a>
         <a class="btn btn-outline btn-sm" href="/documents/new?direction=outgoing">+ ส่งหนังสือ</a>
@@ -87,7 +103,7 @@ router.get('/', requirePage((ctx) => {
           <tbody>${myPending.map((d) => `<tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer">
             <td>${esc(d.doc_number_display)}</td><td>${esc(d.title)}</td><td>${esc(d.type_name)}</td>
             <td>${priorityBadge(d.priority)}</td><td>${statusBadge(d.status)}</td></tr>`).join('')}</tbody>
-        </table></div>` : emptyState('🎉', 'ไม่มีงานค้าง ทำได้ดีมาก!')}
+        </table></div>` : emptyState('🎉', 'วันนี้ไม่มีงานค้างแล้ว พักผ่อนสบายๆ ได้เลยครับ ☕')}
       </div>
       <div class="card">
         <h3 class="mt-0">🕒 เอกสารล่าสุดในระบบ</h3>
@@ -95,9 +111,10 @@ router.get('/', requirePage((ctx) => {
           <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
             <a href="/documents/${d.id}" style="font-weight:600">${esc(d.doc_number_display)}</a> ${statusBadge(d.status)}
             <div class="text-muted" style="font-size:.82rem">${esc(d.title)}</div>
-          </div>`).join('') : emptyState('📭', 'ยังไม่มีเอกสารในระบบ')}
+          </div>`).join('') : emptyState('📝', 'ยังไม่มีเอกสารในระบบ เริ่มต้นสร้างรายการแรกได้เลยครับ')}
       </div>
-    </div>`;
+    </div>
+    ${ctx.query.celebrate === '1' && myTasks === 0 ? '<div id="celebrateTrigger" hidden></div>' : ''}`;
 
   html(ctx, 200, layout({ user, title: 'แดชบอร์ด', path: '/', content }));
 }));
@@ -118,7 +135,7 @@ router.get('/tasks', requirePage((ctx) => {
           <td>${esc(d.doc_number_display)}</td><td>${esc(d.title)}</td><td>${esc(d.type_name)}</td>
           <td>${priorityBadge(d.priority)}</td><td>${d.secret_level !== 'normal' ? '🔒 ' + esc(d.secret_level) : '-'}</td>
           <td class="text-muted">${fmtDate(d.assigned_at)}</td></tr>`).join('')}</tbody>
-      </table></div>` : emptyState('🎉', 'ไม่มีงานค้างสำหรับคุณ')}
+      </table></div>` : emptyState('🎉', 'ไม่มีงานค้างสำหรับคุณเลยครับ พักผ่อนสบายๆ ได้เลยครับ ☕')}
     </div>`;
   html(ctx, 200, layout({ user: ctx.user, title: 'งานของฉัน', path: '/tasks', content }));
 }));

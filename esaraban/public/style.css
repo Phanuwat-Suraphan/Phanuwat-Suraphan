@@ -358,3 +358,34 @@ tbody tr:last-child td { border-bottom: none; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(10,16,24,.5); display: none; align-items: center; justify-content: center; z-index: 60; padding: 1rem; }
 .modal-backdrop.show { display: flex; }
 .modal { background: var(--surface); border-radius: 12px; padding: 1.3rem; max-width: 380px; width: 100%; box-shadow: var(--shadow); }
+
+/* ---------- Delight: micro-animations (UX Bible Part 21 §12 — all <=200ms, no motion sickness) ---------- */
+@media (prefers-reduced-motion: no-preference) {
+  .btn { transition: transform .12s ease, filter .12s ease, background-color .12s ease; }
+  .btn:active { transform: scale(.96); }
+  .kpi-card, .card { transition: box-shadow .2s ease, transform .2s ease; }
+  .kpi-card:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(20, 30, 45, 0.1); }
+  tbody tr[onclick] { transition: background-color .12s ease; }
+  .nav-link { transition: background-color .12s ease, color .12s ease; }
+}
+
+/* ---------- Delight: cute button loading (UX Bible Part 21 §13) ---------- */
+.loading-book { display: inline-block; animation: bookPulse .9s ease-in-out infinite; }
+@keyframes bookPulse {
+  0%, 100% { transform: scale(1) rotate(0deg); }
+  50% { transform: scale(1.15) rotate(-6deg); }
+}
+
+/* ---------- Delight: confetti on "all caught up" (UX Bible Part 21 §11) ---------- */
+.confetti-layer { position: fixed; inset: 0; pointer-events: none; z-index: 70; overflow: hidden; }
+.confetti-piece {
+  position: absolute; top: -12px; width: 8px; height: 8px; border-radius: 2px;
+  animation: confettiFall 1.1s ease-in forwards;
+}
+@keyframes confettiFall {
+  0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(100vh) rotate(360deg); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .confetti-layer { display: none; }
+}

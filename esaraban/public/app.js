@@ -43,7 +43,7 @@
     opts = opts || {};
     const fileInput = document.getElementById(fileInputId);
     const btn = formEl.querySelector('[type=submit]');
-    if (btn) { btn.disabled = true; btn.textContent = 'กำลังบันทึก...'; }
+    if (btn) window.setBtnLoading(btn, opts.submitLabel ? 'กำลัง' + opts.submitLabel + '...' : 'กำลังบันทึก...');
     try {
       const formData = new FormData(formEl);
       const payload = {};
@@ -52,7 +52,7 @@
       if (fileInput && fileInput.files[0]) {
         if (fileInput.files[0].size > 10 * 1024 * 1024) {
           alert('ไฟล์ต้องมีขนาดไม่เกิน 10MB');
-          if (btn) { btn.disabled = false; btn.textContent = opts.submitLabel || 'บันทึก'; }
+          if (btn) window.restoreBtn(btn);
           return;
         }
         payload.fileName = fileInput.files[0].name;
@@ -70,7 +70,7 @@
       window.location.href = data.redirect || window.location.href;
     } catch (err) {
       alert(err.message || 'เกิดข้อผิดพลาด');
-      if (btn) { btn.disabled = false; btn.textContent = opts.submitLabel || 'บันทึก'; }
+      if (btn) window.restoreBtn(btn);
     }
   };
 
@@ -154,12 +154,14 @@
     if (pinResolver) { pinResolver(val); pinResolver = null; }
   };
 
-  // action buttons that require PIN before POST
-  window.actionWithPin = async function (btn, endpoint, extra) {
+  // action buttons that require PIN before POST — pass redirectTo to land somewhere other
+  // than a plain reload (e.g. acknowledge sends users back to the dashboard so the
+  // "all caught up" confetti in dashboard.js has a place to fire from)
+  window.actionWithPin = async function (btn, endpoint, extra, redirectTo) {
     const title = btn.dataset.pinTitle || 'ยืนยันตัวตนด้วย PIN';
     const pin = await window.askPin(title);
     if (!pin) return;
-    btn.disabled = true;
+    window.setBtnLoading(btn, 'กำลังบันทึก...');
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -168,10 +170,11 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
-      window.location.reload();
+      if (redirectTo) window.location.href = redirectTo;
+      else window.location.reload();
     } catch (err) {
       alert(err.message || 'เกิดข้อผิดพลาด');
-      btn.disabled = false;
+      window.restoreBtn(btn);
     }
   };
 
@@ -179,7 +182,7 @@
   window.actionWithReason = async function (btn, endpoint, promptText) {
     const reason = prompt(promptText || 'ระบุเหตุผล');
     if (reason === null) return;
-    btn.disabled = true;
+    window.setBtnLoading(btn, 'กำลังบันทึก...');
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -191,9 +194,44 @@
       window.location.reload();
     } catch (err) {
       alert(err.message || 'เกิดข้อผิดพลาด');
-      btn.disabled = false;
+      window.restoreBtn(btn);
     }
   };
+
+  // ---------- button loading state with a little 📚 flourish (UX Bible Part 21 §13) ----------
+  window.setBtnLoading = function (btn, text) {
+    if (!btn) return;
+    if (btn.dataset.origHtml === undefined) btn.dataset.origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading-book" aria-hidden="true">📚</span> ' + (text || 'กำลังบันทึก...');
+  };
+  window.restoreBtn = function (btn) {
+    if (!btn) return;
+    btn.disabled = false;
+    if (btn.dataset.origHtml !== undefined) btn.innerHTML = btn.dataset.origHtml;
+  };
+
+  // ---------- confetti when every task is cleared (UX Bible Part 21 §11) ----------
+  // triggered by a hidden marker element the server renders only when the user just
+  // acknowledged their last pending item — never replays on a plain revisit with 0 tasks
+  window.fireConfetti = function () {
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const colors = ['#2059c9', '#17875a', '#b4720a', '#c62b3a', '#6b2fb3'];
+    const layer = document.createElement('div');
+    layer.className = 'confetti-layer';
+    for (let i = 0; i < 40; i++) {
+      const piece = document.createElement('span');
+      piece.className = 'confetti-piece';
+      piece.style.left = Math.random() * 100 + 'vw';
+      piece.style.background = colors[i % colors.length];
+      piece.style.animationDelay = (Math.random() * 0.3) + 's';
+      piece.style.transform = 'rotate(' + Math.floor(Math.random() * 360) + 'deg)';
+      layer.appendChild(piece);
+    }
+    document.body.appendChild(layer);
+    setTimeout(function () { layer.remove(); }, 1400);
+  };
+  if (document.getElementById('celebrateTrigger')) window.fireConfetti();
 
   // ---------- keyboard shortcuts (UI/UX Bible §28) ----------
   // Ctrl/Cmd+K -> focus search. Ctrl/Cmd+N -> new document (note: some browsers reserve

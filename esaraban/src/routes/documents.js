@@ -343,7 +343,7 @@ router.get('/documents/:id', requirePage((ctx) => {
       }
       function doAcknowledge(btn){
         var comment = document.getElementById('stepComment').value;
-        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/acknowledge', { comment: comment });
+        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/acknowledge', { comment: comment }, '/?celebrate=1');
       }
       // แทรกคำเกษียณมาตรฐานลงในกล่องข้อความ — ไม่ทับของเดิม เพิ่มขึ้นบรรทัดใหม่ พิมพ์ต่อได้ตามปกติ
       // ถ้ามี tailText (เช่น "มอบฝ่าย...ดำเนินการ") จะวางเคอร์เซอร์ไว้ระหว่างกลางให้พิมพ์ชื่อฝ่ายแทรกได้เลย
