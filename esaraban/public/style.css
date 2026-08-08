@@ -8,9 +8,9 @@
   --primary: #2059c9;
   --primary-hover: #1a48a3;
   --primary-contrast: #ffffff;
-  --success: #17875a;
+  --success: #13764f; /* darkened from #17875a — original only hit 4.03:1 on --success-bg, fails WCAG AA (4.5:1) for small badge text */
   --success-bg: #e5f6ee;
-  --warning: #b4720a;
+  --warning: #96600a; /* darkened from #b4720a — original only hit 3.56:1 on --warning-bg, fails WCAG AA (4.5:1) for small badge text */
   --warning-bg: #fef3dd;
   --danger: #c62b3a;
   --danger-bg: #fdeaec;
@@ -78,6 +78,9 @@ body {
   color: var(--text);
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
+  /* ภาษาไทยมีสระ/วรรณยุกต์ซ้อนบน-ล่างตัวอักษร ต้องใช้ line-height สูงกว่าอักษรละตินทั่วไป
+     (แนะนำอย่างน้อย 1.55 ขึ้นไป) ไม่งั้นเสี่ยงสระ/วรรณยุกต์ชนบรรทัดถัดไปหรือถูกตัด */
+  line-height: 1.6;
 }
 a { color: var(--primary); text-decoration: none; }
 a:hover { text-decoration: underline; }
