@@ -8,3 +8,4 @@ import './admin.js';
 import './retention.js';
 import './health.js';
 import './leave.js';
+import './announcements.js';

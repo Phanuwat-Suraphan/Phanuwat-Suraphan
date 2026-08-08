@@ -107,6 +107,7 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
     ${navItem('/tasks', '📌', 'งานของฉัน', currentPath)}
     ${navItem('/notifications', '🔔', 'การแจ้งเตือน', currentPath)}
     ${navItem('/leave', '🗓️', 'ลา/ไปราชการ', currentPath)}
+    ${navItem('/announcements', '📢', 'ประกาศ/ประชาสัมพันธ์', currentPath)}
     ${navItem('/reports', '📊', 'รายงาน', currentPath)}
     ${user.roleCodes.some((r) => ['admin', 'registrar', 'director', 'vice_director'].includes(r)) ? navItem('/retention', '🗄️', 'อายุการเก็บ/ทำลายหนังสือ', currentPath) : ''}
     <div class="nav-section-label">ระบบ</div>

@@ -206,6 +206,26 @@ export function migrate() {
   CREATE INDEX IF NOT EXISTS idx_leave_requester ON leave_requests(requester_id);
   CREATE INDEX IF NOT EXISTS idx_leave_approver ON leave_requests(approver_id, status);
 
+  -- บอร์ดประกาศ/ประชาสัมพันธ์ — โมดูลแยกต่างหากจากงานสารบรรณ (ไม่มี running number/workflow)
+  -- ใช้แจ้งข่าวสารทั่วไปให้บุคลากรทั้งโรงเรียน แนบไฟล์ได้ 1 ไฟล์ต่อประกาศ
+  CREATE TABLE IF NOT EXISTS announcements (
+    id TEXT PRIMARY KEY,
+    category TEXT NOT NULL DEFAULT 'ประกาศ', -- ประกาศ | ประชาสัมพันธ์
+    title TEXT NOT NULL,
+    body TEXT,
+    file_storage_provider TEXT, -- local | google_drive | NULL (ไม่มีไฟล์แนบ)
+    file_path TEXT,
+    file_drive_id TEXT,
+    file_name TEXT,
+    file_size INTEGER,
+    file_mime TEXT,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_announcements_category ON announcements(category);
+
   CREATE TABLE IF NOT EXISTS document_access_grants (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL REFERENCES documents(id),
