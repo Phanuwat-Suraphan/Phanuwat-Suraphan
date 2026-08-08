@@ -262,6 +262,83 @@ router.post('/documents/:id/attachments', requireApi(async (ctx) => {
   json(ctx, 200, { redirect: `/documents/${doc.id}${att?.duplicateWarning ? '?warn=' + encodeURIComponent(att.duplicateWarning) : ''}` });
 }));
 
+// ---------------- print view: หนังสือ/บันทึกข้อความรูปแบบทางการ พร้อมลายเซ็นทุกขั้นตอน ----------------
+// รูปแบบอ้างอิงระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ พ.ศ. 2526 ภาคผนวก 4 (บันทึกข้อความ):
+// ส่วนราชการ / ที่ / วันที่ / เรื่อง / เรียน ตามลำดับ ตามด้วยเนื้อความ แล้วจบด้วยบล็อกลงชื่อ-ตำแหน่ง
+router.get('/documents/:id/print', requirePage((ctx) => {
+  const doc = db.prepare(`
+    SELECT d.*, dt.name as type_name, dep.name as dept_name, u.first_name as creator_first, u.last_name as creator_last
+    FROM documents d JOIN document_types dt ON dt.id = d.doc_type_id JOIN departments dep ON dep.id = d.department_id
+    JOIN users u ON u.id = d.created_by WHERE d.id = ? AND d.deleted_at IS NULL
+  `).get(ctx.params.id);
+  if (!doc || !canUserSeeDocument(ctx.user, doc)) {
+    return html(ctx, 404, layout({ user: ctx.user, title: 'ไม่พบเอกสาร', path: '/documents',
+      content: emptyState('🔍', 'ไม่พบเอกสารนี้ หรือคุณไม่มีสิทธิ์เข้าถึง') }));
+  }
+  const steps = getWorkflowSteps(doc.id);
+  const signedSteps = steps.filter((s) => ['approved', 'acknowledged'].includes(s.status) && s.signature_image);
+
+  // เรียน: หนังสือส่ง -> หน่วยงาน/บุคคลปลายทางจริง; หนังสือรับ -> ผู้รับขั้นแรกในสายงาน (คนที่บันทึกนี้
+  // ถูกเสนอให้ภายในโรงเรียน) เพราะ correspondent_name ของหนังสือรับคือ "ผู้ส่งจากภายนอก" ไม่ใช่ผู้รับ
+  const addressee = doc.direction === 'outgoing'
+    ? doc.correspondent_name
+    : (steps[0] ? `${steps[0].prefix || ''}${steps[0].first_name} ${steps[0].last_name}` : 'ผู้เกี่ยวข้อง');
+
+  const referenceLine = doc.direction === 'incoming'
+    ? `<p>อ้างถึง หนังสือจาก ${esc(doc.correspondent_name)}${doc.external_doc_number ? ` ที่ ${esc(doc.external_doc_number)}` : ''}${doc.external_doc_date ? ` ลงวันที่ ${fmtThaiDateLong(doc.external_doc_date)}` : ''}</p>`
+    : '';
+
+  const signatureBlocksHtml = signedSteps.length ? signedSteps.map((s) => `
+    <div class="sig-block">
+      <img src="${esc(s.signature_image)}" alt="ลายเซ็น ${esc(s.first_name)} ${esc(s.last_name)}" />
+      <div class="sig-line">(${esc(s.prefix || '')}${esc(s.first_name)} ${esc(s.last_name)})</div>
+      ${s.position ? `<div class="sig-line">${esc(s.position)}</div>` : ''}
+      <div class="sig-line">${fmtThaiDateLong(s.decided_at)}</div>
+    </div>`).join('') : '<p class="text-muted" style="text-align:center;padding:1rem 0">ยังไม่มีผู้ลงนามในขั้นตอนใดเลย</p>';
+
+  const content = `<!doctype html>
+<html lang="th"><head><meta charset="utf-8" />
+<title>${esc(doc.doc_number_display)} — พิมพ์เอกสาร</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: "Noto Sans Thai", "TH Sarabun New", "Sarabun", sans-serif; font-size: 16pt; line-height: 1.7; max-width: 210mm; margin: 0 auto; padding: 20mm 20mm; color: #111; }
+  .toolbar { display: flex; justify-content: flex-end; gap: .5rem; margin-bottom: 1.5rem; }
+  .toolbar button, .toolbar a { font-family: inherit; font-size: 11pt; padding: .5rem 1rem; border-radius: 8px; border: 1px solid #ccc; background: #f4f4f4; cursor: pointer; text-decoration: none; color: #111; }
+  h1 { text-align: center; font-size: 22pt; margin: 0 0 1.2rem; }
+  .header-row { display: flex; justify-content: space-between; gap: 1rem; }
+  .field-label { font-weight: 700; }
+  p { margin: .3rem 0; }
+  .body-text { margin: 1.2rem 0; text-indent: 2.5em; white-space: pre-wrap; }
+  .sig-block { text-align: center; margin: 0 0 0 auto; width: 220px; margin-top: 2.5rem; }
+  .sig-block img { max-height: 70px; max-width: 200px; }
+  .sig-line { border-top: 1px dotted #111; margin-top: .3rem; padding-top: .2rem; font-size: 14pt; }
+  .sig-block .sig-line:first-of-type { border-top: none; margin-top: 0; padding-top: 0; }
+  @media print {
+    .toolbar { display: none; }
+    body { padding: 0; }
+  }
+</style>
+</head>
+<body>
+  <div class="toolbar">
+    <a href="/documents/${doc.id}">← กลับหน้าเอกสาร</a>
+    <button onclick="window.print()">🖨️ พิมพ์ / บันทึกเป็น PDF</button>
+  </div>
+  <h1>บันทึกข้อความ</h1>
+  <p><span class="field-label">ส่วนราชการ</span> ${esc(doc.dept_name)} โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ 1</p>
+  <div class="header-row">
+    <p><span class="field-label">ที่</span> ${esc(doc.doc_number_display)}</p>
+    <p><span class="field-label">วันที่</span> ${fmtThaiDateLong(doc.created_at)}</p>
+  </div>
+  <p><span class="field-label">เรื่อง</span> ${esc(doc.title)}</p>
+  <p><span class="field-label">เรียน</span> ${esc(addressee)}</p>
+  ${referenceLine}
+  <div class="body-text">${esc(doc.subject || doc.title)}</div>
+  ${signatureBlocksHtml}
+</body></html>`;
+  html(ctx, 200, content);
+}));
+
 // ---------------- detail ----------------
 router.get('/documents/:id', requirePage((ctx) => {
   const doc = db.prepare(`
@@ -402,6 +479,7 @@ router.get('/documents/:id', requirePage((ctx) => {
         <div class="chip-row">${statusBadge(doc.status)}${priorityBadge(doc.priority)}${secretBadge(doc.secret_level)}</div>
       </div>
       <div class="chip-row">
+        <a class="btn btn-outline btn-sm" href="/documents/${doc.id}/print" target="_blank" rel="noopener">🖨️ ดูตัวอย่าง/พิมพ์เอกสาร</a>
         ${canVoid ? `<button class="btn btn-outline btn-sm" onclick="actionWithReason(this, '/documents/${doc.id}/void', 'ระบุเหตุผลที่ยกเลิกเอกสาร (เลขที่จะยังคงอยู่ในลำดับ ไม่ถูกนำไปใช้ซ้ำ)')">ยกเลิกเอกสาร</button>` : ''}
         ${canArchive ? `<button class="btn btn-outline btn-sm" onclick="fetch('/documents/${doc.id}/archive',{method:'POST'}).then(()=>location.reload())">📦 จัดเก็บเข้าแฟ้ม</button>` : ''}
         ${canForceDelete ? `<button class="btn btn-danger btn-sm" onclick="forceDeleteThisDoc(this)">🗑️ ลบเอกสาร (แอดมิน)</button>` : ''}
