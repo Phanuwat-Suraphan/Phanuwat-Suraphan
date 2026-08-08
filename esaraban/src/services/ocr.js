@@ -60,6 +60,25 @@ export async function extractTextFromPdf(pdfBuffer) {
   }
 }
 
+// เรนเดอร์หน้าแรกของ PDF เป็นภาพ PNG — ใช้เป็นพื้นหลังกล่องลากตำแหน่งตราประทับ/ลายเซ็นแทนการฝัง PDF
+// ตรงๆ ผ่าน <iframe> เพราะเบราว์เซอร์/เว็บวิวหลายตัว (โดยเฉพาะที่ตั้งค่า "ดาวน์โหลด PDF แทนการเปิดดู"
+// หรือเว็บวิวในแอป) ไม่แสดง PDF ที่ฝังใน iframe เลย ทำให้กล่องลากดูเหมือนพื้นที่ว่างเปล่า/ไอคอนพัง — ภาพ PNG
+// ธรรมดาแสดงได้แน่นอนในทุกเบราว์เซอร์
+export async function renderPdfFirstPageImage(pdfBuffer) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esaraban-preview-'));
+  const pdfPath = path.join(tmpDir, 'input.pdf');
+  const imgPrefix = path.join(tmpDir, 'page');
+  try {
+    fs.writeFileSync(pdfPath, pdfBuffer);
+    await run('pdftoppm', ['-png', '-r', '120', '-f', '1', '-l', '1', pdfPath, imgPrefix]);
+    const images = fs.readdirSync(tmpDir).filter((f) => f.startsWith('page') && f.endsWith('.png')).sort();
+    if (!images.length) throw httpError(422, 'ไม่สามารถแปลง PDF เป็นภาพเพื่อแสดงตัวอย่างได้ (ไฟล์อาจเสียหายหรือเข้ารหัสไว้)');
+    return fs.readFileSync(path.join(tmpDir, images[0]));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 const THAI_MONTHS = {
   'มกราคม': 1, 'กุมภาพันธ์': 2, 'มีนาคม': 3, 'เมษายน': 4, 'พฤษภาคม': 5, 'มิถุนายน': 6,
   'กรกฎาคม': 7, 'สิงหาคม': 8, 'กันยายน': 9, 'ตุลาคม': 10, 'พฤศจิกายน': 11, 'ธันวาคม': 12,

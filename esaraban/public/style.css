@@ -435,7 +435,7 @@ tbody tr:last-child td { border-bottom: none; }
 .grid-2 { display: grid; grid-template-columns: 1fr; gap: 1rem; }
 @media (min-width: 900px) { .grid-2 { grid-template-columns: 2fr 1fr; } }
 .stack { display: flex; flex-direction: column; gap: .6rem; }
-.pdf-frame { width: 100%; height: 70vh; border: 1px solid var(--border); border-radius: 8px; background: #525659; }
+.pdf-frame { width: 100%; height: 70vh; border: 1px solid var(--border); border-radius: 8px; background: #525659; object-fit: contain; display: block; }
 
 /* ---------- ตราประทับ "ลงรับ" ซ้อนบนตัวอย่าง PDF (ลากวางตำแหน่งได้) ---------- */
 .pdf-preview-wrap { position: relative; }

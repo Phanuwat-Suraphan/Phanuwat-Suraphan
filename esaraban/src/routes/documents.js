@@ -7,7 +7,7 @@ import {
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
   voidDocument, archiveDocument, forceDeleteDocument, httpError,
 } from '../services/workflow.js';
-import { extractTextFromPdf, guessFieldsFromText } from '../services/ocr.js';
+import { extractTextFromPdf, guessFieldsFromText, renderPdfFirstPageImage } from '../services/ocr.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream } from '../services/googleDrive.js';
 import { stampPdf, stampDirectorDecision, stampAcknowledgeMark } from '../services/pdfStamp.js';
 import { getActiveDelegateFor } from '../services/delegation.js';
@@ -692,6 +692,15 @@ router.get('/documents/:id', requirePage((ctx) => {
               });
             }
             function makeStampDraggable(wrap, stamp) { makeDraggable(wrap, stamp, saveStampPosition); }
+            window.pdfPreviewError = function(imgEl) {
+              if (imgEl.dataset.errored) return;
+              imgEl.dataset.errored = '1';
+              var note = document.createElement('div');
+              note.className = 'pdf-preview-fallback';
+              note.style.cssText = 'min-height:300px;display:flex;align-items:center;justify-content:center;text-align:center;padding:1rem;color:var(--text-muted,#666);background:var(--bg-muted,#f4f4f4);border-radius:6px';
+              note.textContent = 'ไม่สามารถแสดงตัวอย่างไฟล์ได้ (เซิร์ฟเวอร์อาจยังไม่ได้ติดตั้ง poppler-utils — ดู DEPLOY.md) — ยังคงลากกล่องด้านล่างเพื่อกำหนดตำแหน่งได้ตามปกติ โดยอ้างอิงจากขอบเขตพื้นที่นี้';
+              imgEl.replaceWith(note);
+            };
             window.applyStamp = function(attId, btn){
               if (!confirm('ยืนยันประทับตรา "ลงรับ" ลงในไฟล์ PDF จริง ณ ตำแหน่งที่ลากไว้ล่าสุด?\\nระบบจะสร้างไฟล์ใหม่ที่มีตราประทับ โดยเก็บไฟล์ต้นฉบับที่ไม่มีตราไว้เหมือนเดิม')) return;
               window.setBtnLoading(btn);
@@ -714,7 +723,7 @@ router.get('/documents/:id', requirePage((ctx) => {
                   var showMark = isFirstFile && CAN_MARK;
                   var showDecision = isFirstFile && CAN_DECIDE;
                   el.innerHTML = '<div class="pdf-preview-wrap" id="stampWrap">' +
-                    '<iframe class="pdf-frame" src="/files/' + id + '" title="ตัวอย่างไฟล์แนบ"></iframe>' +
+                    '<img class="pdf-frame" src="/files/' + id + '/preview.png" alt="ตัวอย่างไฟล์แนบ" onerror="window.pdfPreviewError(this)" />' +
                     (showStamp ? STAMP_HTML : '') +
                     (showMark ? MARK_HTML : '') +
                     (showDecision ? DECISION_HTML : '') +
@@ -1037,6 +1046,19 @@ function contentDispositionHeader(filename) {
 }
 
 // ---------------- file serving (ACL-checked, not static — proxied even for Google Drive so ACL always applies) ----------------
+// ภาพหน้าแรกของ PDF (พื้นหลังกล่องลากตำแหน่งตราประทับ) — ดู renderPdfFirstPageImage สำหรับเหตุผลที่ใช้ภาพ
+// แทนการฝัง PDF ตรงๆ ผ่าน iframe
+router.get('/files/:attachmentId/preview.png', requirePage(async (ctx) => {
+  const att = db.prepare('SELECT * FROM attachments WHERE id = ?').get(ctx.params.attachmentId);
+  if (!att) throw httpError(404, 'ไม่พบไฟล์แนบ');
+  const doc = getDocument(att.document_id);
+  if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(403, 'คุณไม่มีสิทธิ์เปิดไฟล์นี้');
+  const buf = await readAttachmentBytes(att, { preferStamped: ctx.query.original !== '1' });
+  const png = await renderPdfFirstPageImage(buf);
+  ctx.res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'private, no-store' });
+  ctx.res.end(png);
+}));
+
 // ค่าเริ่มต้นเปิดสำเนาที่ประทับตราแล้ว (ถ้ามี) — ต้นฉบับที่ไม่แตะต้องเลยเปิดได้ด้วย ?original=1
 router.get('/files/:attachmentId', requirePage(async (ctx) => {
   const att = db.prepare('SELECT * FROM attachments WHERE id = ?').get(ctx.params.attachmentId);

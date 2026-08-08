@@ -43,8 +43,10 @@ curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt install -y nodejs
 node --version   # confirm v22.x — required for node:sqlite
 
-# optional: OCR auto-fill on the new-document form (Tesseract — free, no API key/cost)
-# skip this if you don't need the "อ่านข้อมูลจากไฟล์อัตโนมัติ" button; the app works fine without it
+# OCR auto-fill on the new-document form (Tesseract — free, no API key/cost), AND the page-1
+# preview image shown behind the draggable stamp/signature boxes (poppler-utils' pdftoppm — without
+# it, that preview area just shows a plain "install poppler-utils" message instead of the page, but
+# dragging the boxes to a position still works fine since it's percentage-based, not pixel-based)
 apt install -y tesseract-ocr tesseract-ocr-tha poppler-utils
 
 # optional: burn the "received" stamp / director's signature box into the actual PDF file
