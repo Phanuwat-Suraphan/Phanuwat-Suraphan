@@ -391,8 +391,26 @@ tbody tr:last-child td { border-bottom: none; }
     var(--bg);
 }
 .login-card {
-  width: 100%; max-width: 380px; background: var(--surface); border: 1px solid var(--border);
-  border-radius: 16px; padding: 2rem 1.6rem; box-shadow: 0 8px 28px rgba(20, 30, 45, 0.12), var(--shadow);
+  width: 100%; max-width: 760px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 16px; box-shadow: 0 8px 28px rgba(20, 30, 45, 0.12), var(--shadow);
+  display: flex; overflow: hidden;
+}
+.login-illustration {
+  display: none; /* ซ่อนบนจอแคบ ให้ฟอร์มมีพื้นที่เต็มที่ — โชว์เฉพาะจอกว้างพอ */
+  flex: 1; flex-direction: column; align-items: center; justify-content: center;
+  gap: .4rem; padding: 2rem; text-align: center; color: #fff;
+  background: linear-gradient(135deg, var(--primary), color-mix(in srgb, var(--primary) 60%, var(--secret)));
+}
+.login-illustration h3 { margin: .5rem 0 0; color: #fff; }
+.login-illustration p { color: rgba(255, 255, 255, 0.85); font-size: .85rem; margin: 0; }
+@media (min-width: 640px) { .login-illustration { display: flex; } }
+.login-form-panel { flex: 1; min-width: 0; padding: 2rem 1.6rem; }
+.password-field { position: relative; }
+.password-field input { padding-right: 4.2rem; }
+.password-toggle {
+  position: absolute; right: .4rem; top: 50%; transform: translateY(-50%);
+  background: none; border: none; color: var(--primary); font-size: .78rem;
+  font-weight: 600; cursor: pointer; padding: .3rem .4rem;
 }
 @media (prefers-reduced-motion: no-preference) {
   .login-card { animation: loginCardIn .35s ease; }

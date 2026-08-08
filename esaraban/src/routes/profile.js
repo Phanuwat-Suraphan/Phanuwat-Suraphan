@@ -1,5 +1,5 @@
 import { router, html, json } from '../router.js';
-import { layout, esc, fmtDate, avatarContent } from '../render.js';
+import { layout, esc, fmtDate, avatarContent, parseUserAgent } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, nowIso, hashSecret, verifySecret, audit } from '../db.js';
 
@@ -9,6 +9,9 @@ const AVATAR_EMOJIS = ['👩‍🏫', '👨‍🏫', '🧑‍🏫', '👩‍💼
 router.get('/profile', requirePage((ctx) => {
   const dept = db.prepare('SELECT * FROM departments WHERE id = ?').get(ctx.user.department_id);
   const recentAudit = db.prepare('SELECT * FROM audit_logs WHERE user_id = ? ORDER BY created_at DESC LIMIT 10').all(ctx.user.id);
+  const loginHistory = db.prepare(`
+    SELECT * FROM audit_logs WHERE user_id = ? AND action IN ('login_success','logout') ORDER BY created_at DESC LIMIT 15
+  `).all(ctx.user.id);
   const content = `
     <h2>👤 โปรไฟล์ของฉัน</h2>
     <div class="grid-2">
@@ -60,23 +63,88 @@ router.get('/profile', requirePage((ctx) => {
           <button class="btn btn-primary" type="submit">บันทึก PIN ใหม่</button>
         </form>
 
-        <h3 style="margin-top:1.2rem">ลายเซ็นสแกน (ของฉันเท่านั้น)</h3>
-        <p class="text-muted" style="font-size:.8rem">ใช้แสดงประกอบเมื่อคุณอนุมัติ/รับทราบเอกสาร — เซ็นด้วย<strong>ปากกาหมึกสีน้ำเงิน</strong>ตามธรรมเนียมราชการ (ใช้แยกต้นฉบับจากสำเนาถ่ายเอกสาร) บนกระดาษขาว แล้วสแกนหรือถ่ายรูปอัปโหลดเป็น PNG/JPG</p>
+        <h3 style="margin-top:1.2rem">ลายเซ็น (ของฉันเท่านั้น)</h3>
+        <p class="text-muted" style="font-size:.8rem">ใช้แสดงประกอบเมื่อคุณอนุมัติ/รับทราบเอกสาร — ตามธรรมเนียมราชการนิยมใช้<strong>สีน้ำเงิน</strong>เพื่อแยกต้นฉบับจากสำเนาถ่ายเอกสาร</p>
         <div id="signaturePreviewWrap" style="margin-bottom:.6rem">
           ${ctx.user.signature_image
             ? `<img src="${esc(ctx.user.signature_image)}" alt="ลายเซ็นปัจจุบัน" style="max-height:80px;max-width:240px;border:1px solid var(--border);border-radius:6px;padding:.4rem;background:#fff" />`
             : '<p class="text-muted" style="font-size:.85rem">ยังไม่มีลายเซ็นบันทึกไว้</p>'}
         </div>
-        <form id="signatureForm" class="stack">
-          <div class="field">
-            <input type="file" id="signatureFile" accept="image/png,image/jpeg" />
-            <div class="help-text">รองรับ PNG/JPG ขนาดไม่เกิน 1MB — แนะนำพื้นหลังสีขาว/โปร่งใส</div>
+        <div class="chip-row" style="margin-bottom:.6rem">
+          <button type="button" class="btn btn-sm btn-outline" id="sigTabDrawBtn" onclick="switchSigTab('draw')">✏️ วาดลายเซ็น</button>
+          <button type="button" class="btn btn-sm btn-outline" id="sigTabUploadBtn" onclick="switchSigTab('upload')">📁 อัปโหลดไฟล์ (สแกน)</button>
+        </div>
+        <div id="sigDrawPanel">
+          <canvas id="sigCanvas" style="border:1px solid var(--border);border-radius:8px;background:#fff;touch-action:none;cursor:crosshair;width:100%;max-width:360px;height:140px;display:block"></canvas>
+          <div class="chip-row" style="margin-top:.5rem;font-weight:400">
+            <label style="display:flex;align-items:center;gap:.3rem"><input type="radio" name="sigColor" value="#1a3fa0" checked /> น้ำเงิน</label>
+            <label style="display:flex;align-items:center;gap:.3rem"><input type="radio" name="sigColor" value="#000000" /> ดำ</label>
           </div>
-          <div class="chip-row">
+          <div class="chip-row" style="margin-top:.6rem">
+            <button type="button" class="btn btn-outline btn-sm" onclick="clearSigCanvas()">ล้าง</button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="saveSigCanvas()">บันทึกลายเซ็น</button>
+          </div>
+          <div class="help-text">วาดด้วยเมาส์หรือนิ้ว (บนมือถือ/แท็บเล็ต) — พื้นหลังโปร่งใสอัตโนมัติ</div>
+        </div>
+        <div id="sigUploadPanel" style="display:none">
+          <form id="signatureForm" class="stack">
+            <div class="field">
+              <input type="file" id="signatureFile" accept="image/png,image/jpeg" />
+              <div class="help-text">รองรับ PNG/JPG ขนาดไม่เกิน 1MB — สแกนหรือถ่ายรูปลายเซ็นบนกระดาษขาว แนะนำพื้นหลังสีขาว/โปร่งใส</div>
+            </div>
             <button class="btn btn-primary btn-sm" type="submit">บันทึกลายเซ็น</button>
-            ${ctx.user.signature_image ? `<button class="btn btn-outline btn-sm" type="button" onclick="deleteSignature()">ลบลายเซ็น</button>` : ''}
-          </div>
-        </form>
+          </form>
+        </div>
+        ${ctx.user.signature_image ? `<button class="btn btn-outline btn-sm" style="margin-top:.6rem" type="button" onclick="deleteSignature()">ลบลายเซ็นที่บันทึกไว้</button>` : ''}
+        <script>
+          window.switchSigTab = function(tab){
+            document.getElementById('sigDrawPanel').style.display = tab === 'draw' ? '' : 'none';
+            document.getElementById('sigUploadPanel').style.display = tab === 'upload' ? '' : 'none';
+          };
+          (function(){
+            var canvas = document.getElementById('sigCanvas');
+            var c2d = canvas.getContext('2d');
+            var drawing = false, hasDrawn = false;
+            function fitCanvas(){
+              var rect = canvas.getBoundingClientRect();
+              var dpr = window.devicePixelRatio || 1;
+              canvas.width = rect.width * dpr;
+              canvas.height = rect.height * dpr;
+              c2d.scale(dpr, dpr);
+              c2d.lineWidth = 2.5;
+              c2d.lineCap = 'round';
+              c2d.lineJoin = 'round';
+            }
+            fitCanvas();
+            function pos(e){ var r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+            function currentColor(){ var c = document.querySelector('input[name=sigColor]:checked'); return c ? c.value : '#1a3fa0'; }
+            canvas.addEventListener('pointerdown', function(e){
+              drawing = true; hasDrawn = true;
+              var p = pos(e);
+              c2d.strokeStyle = currentColor();
+              c2d.beginPath();
+              c2d.moveTo(p.x, p.y);
+              canvas.setPointerCapture(e.pointerId);
+            });
+            canvas.addEventListener('pointermove', function(e){
+              if (!drawing) return;
+              var p = pos(e);
+              c2d.lineTo(p.x, p.y);
+              c2d.stroke();
+            });
+            canvas.addEventListener('pointerup', function(){ drawing = false; });
+            canvas.addEventListener('pointerleave', function(){ drawing = false; });
+            window.clearSigCanvas = function(){ c2d.clearRect(0, 0, canvas.width, canvas.height); hasDrawn = false; };
+            window.saveSigCanvas = function(){
+              if (!hasDrawn) { toast('กรุณาวาดลายเซ็นก่อนบันทึก', 'warning'); return; }
+              var dataUrl = canvas.toDataURL('image/png');
+              fetch('/profile/signature', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dataUrl: dataUrl})})
+                .then(r => r.json().then(d => ({ok:r.ok,d})))
+                .then(({ok,d}) => { if(!ok) throw new Error(d.error); toast('บันทึกลายเซ็นสำเร็จ','success'); setTimeout(()=>location.reload(), 600); })
+                .catch(e => toast(e.message, 'danger'));
+            };
+          })();
+        </script>
         <script>
           document.getElementById('infoForm').addEventListener('submit', function(e){
             e.preventDefault();
@@ -136,6 +204,22 @@ router.get('/profile', requirePage((ctx) => {
               .catch(e => toast(e.message, 'danger'));
           };
         </script>
+      </div>
+      <div class="card">
+        <h3 class="mt-0">🔐 ประวัติการเข้า-ออกระบบ</h3>
+        ${loginHistory.length ? `<div class="table-wrap"><table>
+          <thead><tr><th>การกระทำ</th><th>IP</th><th>อุปกรณ์/เบราว์เซอร์</th><th>วันที่/เวลา</th></tr></thead>
+          <tbody>${loginHistory.map((a) => {
+            let ua = '';
+            try { ua = JSON.parse(a.detail || '{}').userAgent || ''; } catch (e) { /* ignore malformed detail */ }
+            return `<tr>
+              <td>${a.action === 'login_success' ? '<span class="badge badge-success">เข้าสู่ระบบ</span>' : '<span class="badge badge-muted">ออกจากระบบ</span>'}</td>
+              <td class="text-muted">${esc(a.ip || '-')}</td>
+              <td class="text-muted">${esc(parseUserAgent(ua))}</td>
+              <td class="text-muted">${fmtDate(a.created_at)}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table></div>` : '<p class="text-muted">ไม่มีข้อมูล</p>'}
       </div>
       <div class="card">
         <h3 class="mt-0">กิจกรรมล่าสุดของฉัน (Audit)</h3>

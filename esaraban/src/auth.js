@@ -25,7 +25,7 @@ function unsign(signed) {
   return diff === 0 ? value : null;
 }
 
-export function login(employeeCode, password, ip) {
+export function login(employeeCode, password, ip, userAgent) {
   const user = getUserByCode(employeeCode);
   if (!user || user.status !== 'active') {
     audit({ action: 'login_failed', detail: { employeeCode, reason: 'no_user' }, ip });
@@ -57,13 +57,13 @@ export function login(employeeCode, password, ip) {
   const sessionId = uuid();
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
   db.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)').run(sessionId, user.id, expiresAt, nowIso());
-  audit({ userId: user.id, action: 'login_success', ip });
+  audit({ userId: user.id, action: 'login_success', ip, detail: { userAgent } });
   return { ok: true, cookie: sign(sessionId), user };
 }
 
-export function logout(sessionId, userId, ip) {
+export function logout(sessionId, userId, ip, userAgent) {
   if (sessionId) db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
-  audit({ userId, action: 'logout', ip });
+  audit({ userId, action: 'logout', ip, detail: { userAgent } });
 }
 
 export function getSessionUser(cookieHeader) {

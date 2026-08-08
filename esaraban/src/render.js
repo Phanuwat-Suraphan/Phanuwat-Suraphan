@@ -154,6 +154,27 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
 </div>`;
 }
 
+// ถอด browser/OS แบบคร่าวๆ จาก User-Agent string ด้วย regex ล้วน (ไม่ใช้ library แยก) — พอสำหรับ
+// แสดงในหน้าประวัติการเข้าใช้งาน ไม่ได้ต้องแม่นยำระดับ device fingerprinting
+export function parseUserAgent(ua) {
+  if (!ua) return 'ไม่ทราบอุปกรณ์';
+  let browser = 'เบราว์เซอร์ไม่ทราบชนิด';
+  if (/OPR\//.test(ua)) browser = 'Opera';
+  else if (/Edg\//.test(ua)) browser = 'Edge';
+  else if (/Chrome\//.test(ua)) browser = 'Chrome';
+  else if (/Firefox\//.test(ua)) browser = 'Firefox';
+  else if (/Safari\//.test(ua)) browser = 'Safari';
+
+  let os = '';
+  if (/iPhone|iPad/.test(ua)) os = 'iOS';
+  else if (/Android/.test(ua)) os = 'Android';
+  else if (/Windows/.test(ua)) os = 'Windows';
+  else if (/Mac OS X/.test(ua)) os = 'macOS';
+  else if (/Linux/.test(ua)) os = 'Linux';
+
+  return os ? `${browser} บน ${os}` : browser;
+}
+
 export function emptyState(emoji, text) {
   return `<div class="empty-state"><div class="emoji">${emoji}</div><p>${esc(text)}</p></div>`;
 }
@@ -183,7 +204,27 @@ const ILLUSTRATIONS = {
     <circle cx="160" cy="55" r="3" fill="var(--secret)"/>
     <circle cx="42" cy="45" r="3" fill="var(--success)"/>
   </svg>`,
+  // หน้าล็อกอิน — เอกสาร/ใบรับรองลอยอยู่พร้อมจุดสีสันประดับ ให้ความรู้สึกต้อนรับ ไม่เป็นทางการจนเกินไป
+  loginWelcome: `<svg viewBox="0 0 220 220" width="200" height="200" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <circle cx="110" cy="110" r="95" fill="rgba(255,255,255,0.12)"/>
+    <circle cx="150" cy="60" r="14" fill="#ffd166"/>
+    <circle cx="55" cy="150" r="10" fill="#06d6a0"/>
+    <rect x="55" y="70" width="90" height="110" rx="10" fill="#ffffff" opacity="0.95" transform="rotate(-6 100 125)"/>
+    <rect x="70" y="60" width="90" height="110" rx="10" fill="#ffffff" transform="rotate(4 115 115)"/>
+    <g transform="rotate(4 115 115)">
+      <circle cx="95" cy="85" r="10" fill="#e8effd"/>
+      <path d="M89 85 L94 90 L102 78" stroke="#2059c9" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      <line x1="115" y1="82" x2="150" y2="82" stroke="#dde3ea" stroke-width="4" stroke-linecap="round"/>
+      <line x1="80" y1="105" x2="150" y2="105" stroke="#dde3ea" stroke-width="4" stroke-linecap="round"/>
+      <line x1="80" y1="120" x2="150" y2="120" stroke="#dde3ea" stroke-width="4" stroke-linecap="round"/>
+      <line x1="80" y1="135" x2="130" y2="135" stroke="#dde3ea" stroke-width="4" stroke-linecap="round"/>
+    </g>
+    <circle cx="165" cy="150" r="6" fill="#ef476f"/>
+  </svg>`,
 };
 export function illustratedEmptyState(name, text) {
   return `<div class="empty-state">${ILLUSTRATIONS[name] || ''}<p>${esc(text)}</p></div>`;
+}
+export function illustration(name) {
+  return ILLUSTRATIONS[name] || '';
 }
