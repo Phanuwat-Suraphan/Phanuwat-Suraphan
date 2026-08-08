@@ -107,14 +107,6 @@ router.get('/documents/new', requirePage((ctx) => {
             <input type="text" name="correspondentName" required placeholder="เช่น สพฐ., ผู้ปกครอง..." />
           </div>
           <div class="field">
-            <label>เลขหนังสือ${direction === 'incoming' ? 'จากต้นทาง (ถ้ามี)' : 'อ้างอิง (ถ้ามี)'}</label>
-            <input type="text" name="externalDocNumber" placeholder="เช่น ศธ 04123/55 หรือเว้นว่างถ้าไม่มี" />
-          </div>
-          <div class="field">
-            <label>ลงวันที่ (วันที่ในหนังสือต้นฉบับ)</label>
-            <input type="date" name="externalDocDate" />
-          </div>
-          <div class="field">
             <label>ประเภทเอกสาร *</label>
             <select name="docTypeId" required>${listTypeOptions()}</select>
           </div>
@@ -129,28 +121,41 @@ router.get('/documents/new', requirePage((ctx) => {
               <option value="very_urgent">ด่วนมาก</option><option value="most_urgent">ด่วนที่สุด</option>
             </select>
           </div>
-          <div class="field">
-            <label>ชั้นความลับ</label>
-            <select name="secretLevel">
-              <option value="normal">ปกติ</option><option value="internal">ภายใน</option>
-              <option value="secret">ลับ</option><option value="top_secret">ลับมาก</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>กำหนดเสร็จ (ถ้ามี)</label>
-            <input type="date" name="dueDate" />
-          </div>
-          <div class="field">
-            <label>อายุการเก็บ</label>
-            <select name="retentionClass">
-              ${Object.entries(RETENTION_LABEL).map(([k, v]) => `<option value="${k}" ${k === 'normal_10y' ? 'selected' : ''}>${esc(v)}</option>`).join('')}
-            </select>
-          </div>
         </div>
         <div class="field">
           <label>สาระสำคัญ / หมายเหตุ</label>
           <textarea name="subject" placeholder="สรุปใจความสำคัญของหนังสือ"></textarea>
         </div>
+        <details class="field-more">
+          <summary>⚙️ ตัวเลือกเพิ่มเติม (ไม่บังคับ — ไม่กรอกก็ใช้ค่าเริ่มต้นได้เลย)</summary>
+          <div class="form-grid cols-2" style="margin-top:.8rem">
+            <div class="field">
+              <label>เลขหนังสือ${direction === 'incoming' ? 'จากต้นทาง (ถ้ามี)' : 'อ้างอิง (ถ้ามี)'}</label>
+              <input type="text" name="externalDocNumber" placeholder="เช่น ศธ 04123/55 หรือเว้นว่างถ้าไม่มี" />
+            </div>
+            <div class="field">
+              <label>ลงวันที่ (วันที่ในหนังสือต้นฉบับ)</label>
+              <input type="date" name="externalDocDate" />
+            </div>
+            <div class="field">
+              <label>ชั้นความลับ</label>
+              <select name="secretLevel">
+                <option value="normal">ปกติ</option><option value="internal">ภายใน</option>
+                <option value="secret">ลับ</option><option value="top_secret">ลับมาก</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>กำหนดเสร็จ (ถ้ามี)</label>
+              <input type="date" name="dueDate" />
+            </div>
+            <div class="field">
+              <label>อายุการเก็บ</label>
+              <select name="retentionClass">
+                ${Object.entries(RETENTION_LABEL).map(([k, v]) => `<option value="${k}" ${k === 'normal_10y' ? 'selected' : ''}>${esc(v)}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+        </details>
         <div class="field">
           <label>แนบไฟล์ PDF</label>
           <input type="file" id="fileInput" accept="application/pdf" onchange="attachFilePreview(this,'filePreview')" />

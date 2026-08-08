@@ -294,6 +294,19 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); o
 @media (min-width: 640px) { .form-grid.cols-2 { grid-template-columns: 1fr 1fr; } }
 .help-text { font-size: .76rem; color: var(--text-muted); margin-top: .25rem; }
 
+/* ---------- Progressive disclosure: "ตัวเลือกเพิ่มเติม" (keeps forms short for first-time users) ---------- */
+.field-more { margin-bottom: 1rem; }
+.field-more summary {
+  cursor: pointer; font-size: .85rem; font-weight: 600; color: var(--primary);
+  padding: .5rem .7rem; background: var(--surface-2); border-radius: 8px;
+  list-style: none; display: flex; align-items: center; gap: .4rem;
+  -webkit-tap-highlight-color: transparent;
+}
+.field-more summary::-webkit-details-marker { display: none; }
+.field-more summary::before { content: '▸'; display: inline-block; transition: transform .15s ease; font-size: .75rem; }
+.field-more[open] summary::before { transform: rotate(90deg); }
+.field-more summary:hover { background: var(--info-bg); }
+
 /* ---------- Badges ---------- */
 .badge {
   display: inline-flex; align-items: center; gap: .3rem;
