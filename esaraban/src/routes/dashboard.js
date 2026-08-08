@@ -3,6 +3,13 @@ import { layout, esc, fmtDate, statusBadge, priorityBadge, illustratedEmptyState
 import { requirePage } from '../middleware.js';
 import { db } from '../db.js';
 
+// รวมงานที่มอบหมายให้ตรงๆ + งานที่มีคนมอบหมายให้เรารักษาการแทน (ยัง active วันนี้) เข้าเป็นเงื่อนไขเดียว —
+// ใช้ซ้ำได้ทั้งตัวนับ KPI, การ์ด "งานของฉัน" ในแดชบอร์ด, และหน้า /tasks
+const MY_OR_DELEGATED_STEP_SQL = `(ws.assignee_id = ? OR ws.assignee_id IN (
+  SELECT delegator_id FROM user_delegations
+  WHERE delegate_id = ? AND cancelled_at IS NULL AND start_date <= date('now') AND end_date >= date('now')
+))`;
+
 // สีวงกลมไอคอนแต่ละใบสื่อความหมาย: primary=เข้า, secret=ออก(สีต่างให้แยกจากเข้าง่ายๆ), warning=รอดำเนินการ,
 // danger=เกินกำหนด, success=เสร็จสิ้น — ไม่ชนกับสีของ badge สถานะเอกสาร (แยกคนละระบบสีกัน)
 function kpi(value, label, emoji, tone) {
@@ -29,15 +36,15 @@ router.get('/', requirePage((ctx) => {
 
   const inToday = db.prepare(`SELECT COUNT(*) c FROM documents WHERE direction='incoming' AND created_at >= ? AND deleted_at IS NULL`).get(todayIso).c;
   const outToday = db.prepare(`SELECT COUNT(*) c FROM documents WHERE direction='outgoing' AND created_at >= ? AND deleted_at IS NULL`).get(todayIso).c;
-  const myTasks = db.prepare(`SELECT COUNT(*) c FROM workflow_steps WHERE assignee_id = ? AND status = 'waiting'`).get(user.id).c;
+  const myTasks = db.prepare(`SELECT COUNT(*) c FROM workflow_steps ws WHERE ${MY_OR_DELEGATED_STEP_SQL} AND status = 'waiting'`).get(user.id, user.id).c;
   const overdue = db.prepare(`SELECT COUNT(*) c FROM documents WHERE due_date IS NOT NULL AND due_date < date('now') AND status NOT IN ('completed','archived','voided','rejected') AND deleted_at IS NULL`).get().c;
   const completedToday = db.prepare(`SELECT COUNT(*) c FROM documents WHERE status='completed' AND updated_at >= ? AND deleted_at IS NULL`).get(todayIso).c;
 
   const myPending = db.prepare(`
-    SELECT d.*, dt.name as type_name, ws.id as step_id FROM workflow_steps ws
+    SELECT d.*, dt.name as type_name, ws.id as step_id, (ws.assignee_id != ?) as is_delegated FROM workflow_steps ws
     JOIN documents d ON d.id = ws.document_id JOIN document_types dt ON dt.id = d.doc_type_id
-    WHERE ws.assignee_id = ? AND ws.status = 'waiting' ORDER BY d.priority DESC, ws.created_at ASC LIMIT 8
-  `).all(user.id);
+    WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' ORDER BY d.priority DESC, ws.created_at ASC LIMIT 8
+  `).all(user.id, user.id, user.id);
 
   const recent = db.prepare(`
     SELECT d.*, dt.name as type_name FROM documents d JOIN document_types dt ON dt.id = d.doc_type_id
@@ -106,7 +113,7 @@ router.get('/', requirePage((ctx) => {
         ${myPending.length ? `<div class="table-wrap"><table>
           <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ความเร็ว</th><th>สถานะ</th></tr></thead>
           <tbody>${myPending.map((d) => `<tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer">
-            <td>${esc(d.doc_number_display)}</td><td>${esc(d.title)}</td>
+            <td>${esc(d.doc_number_display)}${d.is_delegated ? ' <span title="รักษาการแทน">🪪</span>' : ''}</td><td>${esc(d.title)}</td>
             <td>${priorityBadge(d.priority)}</td><td>${statusBadge(d.status)}</td></tr>`).join('')}</tbody>
         </table></div>` : illustratedEmptyState('allClear', 'วันนี้ไม่มีงานค้างแล้ว พักผ่อนสบายๆ ได้เลยครับ ☕')}
       </div>
@@ -126,10 +133,11 @@ router.get('/', requirePage((ctx) => {
 
 router.get('/tasks', requirePage((ctx) => {
   const rows = db.prepare(`
-    SELECT d.*, dt.name as type_name, ws.id as step_id, ws.created_at as assigned_at FROM workflow_steps ws
+    SELECT d.*, dt.name as type_name, ws.id as step_id, ws.created_at as assigned_at, (ws.assignee_id != ?) as is_delegated
+    FROM workflow_steps ws
     JOIN documents d ON d.id = ws.document_id JOIN document_types dt ON dt.id = d.doc_type_id
-    WHERE ws.assignee_id = ? AND ws.status = 'waiting' ORDER BY d.priority DESC, ws.created_at ASC
-  `).all(ctx.user.id);
+    WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' ORDER BY d.priority DESC, ws.created_at ASC
+  `).all(ctx.user.id, ctx.user.id, ctx.user.id);
 
   const content = `
     <h2>📌 งานของฉัน</h2>
@@ -137,7 +145,7 @@ router.get('/tasks', requirePage((ctx) => {
       ${rows.length ? `<div class="table-wrap"><table>
         <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ความเร็ว</th><th>ชั้นความลับ</th><th>มอบหมายเมื่อ</th></tr></thead>
         <tbody>${rows.map((d) => `<tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer">
-          <td>${esc(d.doc_number_display)}</td><td>${esc(d.title)}</td>
+          <td>${esc(d.doc_number_display)}${d.is_delegated ? ' <span title="รักษาการแทน">🪪</span>' : ''}</td><td>${esc(d.title)}</td>
           <td>${priorityBadge(d.priority)}</td><td>${d.secret_level !== 'normal' ? '🔒 ' + esc(d.secret_level) : '-'}</td>
           <td class="text-muted">${fmtDate(d.assigned_at)}</td></tr>`).join('')}</tbody>
       </table></div>` : illustratedEmptyState('allClear', 'ไม่มีงานค้างสำหรับคุณเลยครับ พักผ่อนสบายๆ ได้เลยครับ ☕')}

@@ -10,6 +10,7 @@ import {
 import { extractTextFromPdf, guessFieldsFromText } from '../services/ocr.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream } from '../services/googleDrive.js';
 import { stampPdf, stampDirectorDecision, stampAcknowledgeMark } from '../services/pdfStamp.js';
+import { getActiveDelegateFor } from '../services/delegation.js';
 import { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -409,7 +410,12 @@ router.get('/documents/:id', requirePage((ctx) => {
     SELECT c.*, u.first_name, u.last_name FROM comments c JOIN users u ON u.id = c.user_id
     WHERE c.document_id = ? ORDER BY c.created_at`).all(doc.id);
 
-  const isCurrentAssignee = step && step.assignee_id === ctx.user.id;
+  const isDirectAssignee = step && step.assignee_id === ctx.user.id;
+  // "รักษาการแทน" — ถ้าไม่ใช่ผู้ถูกมอบหมายโดยตรง เช็คว่าเป็นผู้รักษาการแทนคนที่ถือขั้นตอนนี้อยู่หรือไม่
+  const delegationForStep = !isDirectAssignee && step ? getActiveDelegateFor(step.assignee_id) : null;
+  const isDelegateForStep = !!(delegationForStep && delegationForStep.delegate_id === ctx.user.id);
+  const isCurrentAssignee = isDirectAssignee || isDelegateForStep;
+  const stepAssignee = step ? db.prepare('SELECT prefix, first_name, last_name FROM users WHERE id = ?').get(step.assignee_id) : null;
   const isCreatorOrAdmin = doc.created_by === ctx.user.id || ctx.user.roleCodes.includes('admin');
   const canAssign = ['registered', 'returned'].includes(doc.status) && isCreatorOrAdmin;
   const canVoid = ['draft', 'registered'].includes(doc.status) && isCreatorOrAdmin;
@@ -441,6 +447,10 @@ router.get('/documents/:id', requirePage((ctx) => {
   const actionBox = isCurrentAssignee ? `
     <div class="card" style="border-color:var(--primary)">
       <h3>ดำเนินการ (ขั้นที่ ${step.step_order} — มอบหมายให้คุณ)</h3>
+      ${isDelegateForStep ? `<div class="alert alert-warning" style="margin-bottom:.8rem">
+        🪪 คุณกำลังดำเนินการแทน <strong>${esc(stepAssignee?.prefix || '')}${esc(stepAssignee?.first_name)} ${esc(stepAssignee?.last_name)}</strong>
+        ในฐานะผู้รักษาการแทน (${esc(delegationForStep.start_date)} — ${esc(delegationForStep.end_date)}${delegationForStep.reason ? ' · ' + esc(delegationForStep.reason) : ''})
+      </div>` : ''}
       <div class="stack">
         <div>
           <label>ส่งต่อ/อนุมัติไปยัง (ถ้าต้องการส่งต่อ)</label>
@@ -788,7 +798,7 @@ router.post('/documents/:id/workflow/:stepId/approve', requireApi(async (ctx) =>
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   if (!nextAssigneeId) throw httpError(400, 'กรุณาเลือกผู้รับที่จะส่งต่อ');
   approveAndForward({ stepId: ctx.params.stepId, nextAssigneeId, comment, actorUser: ctx.user });
-  await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
+  await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
   json(ctx, 200, { ok: true });
 }));
 
@@ -797,9 +807,9 @@ router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   acknowledgeAndComplete({ stepId: ctx.params.stepId, comment, actorUser: ctx.user });
-  await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
+  await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
   await stampDirectorDecisionIfApplicable({
-    documentId: ctx.params.id, actorUser: ctx.user, decision: 'acknowledge', note: decisionNote,
+    documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, decision: 'acknowledge', note: decisionNote,
     decisionX: parsePercent(decisionX), decisionY: parsePercent(decisionY),
   });
   json(ctx, 200, { ok: true });
@@ -808,9 +818,9 @@ router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx
 router.post('/documents/:id/workflow/:stepId/reject', requireApi(async (ctx) => {
   const { reason, markX, markY, decisionX, decisionY, decisionNote } = ctx.body;
   rejectStep({ stepId: ctx.params.stepId, reason, actorUser: ctx.user });
-  await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
+  await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
   await stampDirectorDecisionIfApplicable({
-    documentId: ctx.params.id, actorUser: ctx.user, decision: 'reject', note: decisionNote || reason,
+    documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, decision: 'reject', note: decisionNote || reason,
     decisionX: parsePercent(decisionX), decisionY: parsePercent(decisionY),
   });
   json(ctx, 200, { ok: true });
@@ -889,7 +899,16 @@ const SCHOOL_NAME = 'โรงเรียนเจ้าพ่อหลวง�
 // ได้เครื่องหมายของตัวเองคนละอัน ไม่จำกัดแค่ผู้อำนวยการ (มีกี่คนตอบก็มีลายเซ็นเท่านั้นบนไฟล์) ตำแหน่ง/
 // เวลาลากมาจาก markX/markY ที่ผู้ใช้ลากเลือกเองในหน้าจอก่อนกดปุ่ม — ไม่ทำให้คำขอ workflow ล้มเหลวถ้า
 // ประทับไม่สำเร็จ (เช่น ยังไม่ติดตั้ง chromium/qpdf) เพราะการดำเนินการ workflow หลักต้องสำเร็จไปก่อนแล้ว
-async function stampAcknowledgeMarkIfApplicable({ documentId, actorUser, markX, markY }) {
+// ถ้า actorUser กำลังดำเนินการขั้นตอนนี้ในฐานะ "รักษาการแทน" (ไม่ใช่ผู้ถูกมอบหมายตัวจริง) คืนชื่อผู้ที่ถูก
+// รักษาการแทนไว้ให้ใส่ในตราประทับ — เพื่อให้เห็นในไฟล์ PDF จริงว่าใครลงนามแทนใคร ไม่ใช่แค่ในหน้าเว็บ
+function actingForLabel(stepId, actorUser) {
+  const step = db.prepare('SELECT assignee_id FROM workflow_steps WHERE id = ?').get(stepId);
+  if (!step || step.assignee_id === actorUser.id) return null;
+  const delegator = db.prepare('SELECT prefix, first_name, last_name FROM users WHERE id = ?').get(step.assignee_id);
+  return delegator ? `${delegator.prefix || ''}${delegator.first_name} ${delegator.last_name}` : null;
+}
+
+async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser, markX, markY }) {
   if (!actorUser.signature_image) return;
   const att = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at LIMIT 1').get(documentId);
   if (!att) return;
@@ -904,6 +923,7 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, actorUser, markX, 
       dateThaiLong: new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }),
       xPercent: markX,
       yPercent: markY,
+      actingForLabel: actingForLabel(stepId, actorUser),
     });
     await saveStampedCopy(att, stampedBuffer, getDocument(documentId)?.year_be);
     audit({ userId: actorUser.id, action: 'attachment_mark_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId } });
@@ -915,10 +935,11 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, actorUser, markX, 
 // กล่องความเห็น/ลงนามของผู้ตัดสินใจคนสุดท้าย — ลงเฉพาะตอนที่ผลลัพธ์เป็นการปิดเรื่อง (รับทราบ/ไม่อนุมัติ)
 // เท่านั้น ต่างจาก mark ด้านบนที่ลงทุกครั้งที่มีคนตัดสินใจในสาย ไม่ว่าจะปิดเรื่องหรือส่งต่อ — note คือ
 // ข้อความในช่อง "เห็นควรให้" ที่ผู้ใช้พิมพ์เอง ไม่ใช่ข้อความเกษียณภายในระบบ (คนละช่องกัน)
-async function stampDirectorDecisionIfApplicable({ documentId, actorUser, decision, note, decisionX, decisionY }) {
+async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser, decision, note, decisionX, decisionY }) {
   const att = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at LIMIT 1').get(documentId);
   if (!att) return;
   const doc = getDocument(documentId);
+  const forLabel = actingForLabel(stepId, actorUser);
   try {
     const originalBuffer = await readAttachmentBytes(att, { preferStamped: true });
     const stampedBuffer = await stampDirectorDecision({
@@ -930,7 +951,7 @@ async function stampDirectorDecisionIfApplicable({ documentId, actorUser, decisi
       prefix: actorUser.prefix,
       firstName: actorUser.first_name,
       lastName: actorUser.last_name,
-      position: actorUser.position,
+      position: forLabel ? `${actorUser.position || ''} (รักษาการแทน${forLabel})` : actorUser.position,
       dateThaiLong: new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }),
       xPercent: decisionX,
       yPercent: decisionY,

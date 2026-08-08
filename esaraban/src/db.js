@@ -108,6 +108,9 @@ export function migrate() {
     PRIMARY KEY (user_id, role_id)
   );
 
+  -- "รักษาการแทน" — ระหว่าง start_date..end_date คำขอ/ขั้นตอน workflow ที่มอบหมายให้ delegator_id
+  -- delegate_id ดำเนินการแทนได้ด้วย (ดู src/services/delegation.js, ใช้ใน workflow.js/dashboard.js)
+  -- leave_request_id ผูกไว้เผื่อสร้างอัตโนมัติตอนอนุมัติคำขอลา (ระบุ null ได้ถ้าตั้งเองแบบ ad-hoc)
   CREATE TABLE IF NOT EXISTS user_delegations (
     id TEXT PRIMARY KEY,
     delegator_id TEXT NOT NULL REFERENCES users(id),
@@ -115,8 +118,13 @@ export function migrate() {
     reason TEXT,
     start_date TEXT NOT NULL,
     end_date TEXT NOT NULL,
+    leave_request_id TEXT REFERENCES leave_requests(id),
+    created_by TEXT REFERENCES users(id),
+    cancelled_at TEXT,
     created_at TEXT NOT NULL
   );
+  CREATE INDEX IF NOT EXISTS idx_delegations_delegator ON user_delegations(delegator_id, start_date, end_date);
+  CREATE INDEX IF NOT EXISTS idx_delegations_delegate ON user_delegations(delegate_id, start_date, end_date);
 
   CREATE TABLE IF NOT EXISTS document_types (
     id TEXT PRIMARY KEY,
@@ -200,6 +208,7 @@ export function migrate() {
     approver_id TEXT NOT NULL REFERENCES users(id),
     decision_note TEXT,
     decided_at TEXT,
+    delegate_id TEXT REFERENCES users(id), -- ผู้รักษาการแทนระหว่างลา (ถ้าระบุ) — ดู src/services/delegation.js
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -332,6 +341,16 @@ export function migrate() {
     db.exec('ALTER TABLE attachments ADD COLUMN stamped_filepath TEXT');
     db.exec('ALTER TABLE attachments ADD COLUMN stamped_drive_file_id TEXT');
     db.exec('ALTER TABLE attachments ADD COLUMN stamped_at TEXT');
+  }
+  const delegationCols = db.prepare("PRAGMA table_info(user_delegations)").all().map((c) => c.name);
+  if (!delegationCols.includes('leave_request_id')) {
+    db.exec('ALTER TABLE user_delegations ADD COLUMN leave_request_id TEXT');
+    db.exec('ALTER TABLE user_delegations ADD COLUMN created_by TEXT');
+    db.exec('ALTER TABLE user_delegations ADD COLUMN cancelled_at TEXT');
+  }
+  const leaveCols = db.prepare("PRAGMA table_info(leave_requests)").all().map((c) => c.name);
+  if (!leaveCols.includes('delegate_id')) {
+    db.exec('ALTER TABLE leave_requests ADD COLUMN delegate_id TEXT');
   }
 }
 

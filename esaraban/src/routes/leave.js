@@ -102,6 +102,11 @@ router.get('/leave/new', requirePage((ctx) => {
           <label>ช่องทางติดต่อระหว่างลา (ถ้ามี)</label>
           <input type="text" id="contactInfo" placeholder="เบอร์โทร/LINE" />
         </div>
+        <div class="field">
+          <label>มอบหมายผู้รักษาการแทน (ถ้ามี)</label>
+          <select id="delegateId"><option value="">— ไม่มอบหมาย —</option>${listApproverOptions(ctx.user.id)}</select>
+          <div class="help-text">ถ้าเลือกไว้ เมื่อคำขอนี้ได้รับการอนุมัติ/อนุญาตแล้ว ผู้ที่เลือกจะดำเนินการ (อนุมัติ/ส่งต่อ/รับทราบ) แทนคุณได้ทันทีตลอดช่วงวันที่ลานี้</div>
+        </div>
         <button class="btn btn-primary" type="submit">ยื่นคำขอ</button>
         <a class="btn btn-outline" href="/leave">ยกเลิก</a>
       </form>
@@ -117,6 +122,7 @@ router.get('/leave/new', requirePage((ctx) => {
           destination: document.getElementById('destination').value,
           reason: document.getElementById('reason').value,
           contactInfo: document.getElementById('contactInfo').value,
+          delegateId: document.getElementById('delegateId').value,
         };
         fetch('/leave', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
           .then(r => r.json().then(d => ({ok:r.ok,d})))
@@ -145,6 +151,7 @@ router.get('/leave/:id', requirePage((ctx) => {
           ${req.destination ? `<tr><td class="text-muted">สถานที่</td><td>${esc(req.destination)}</td></tr>` : ''}
           <tr><td class="text-muted">เหตุผล</td><td>${esc(req.reason)}</td></tr>
           ${req.contact_info ? `<tr><td class="text-muted">ติดต่อระหว่างลา</td><td>${esc(req.contact_info)}</td></tr>` : ''}
+          ${req.delegate_id ? `<tr><td class="text-muted">ผู้รักษาการแทน</td><td>${esc(req.delegate_prefix || '')}${esc(req.delegate_first)} ${esc(req.delegate_last)}${req.status === 'approved' ? ' <span class="badge badge-success">มอบหมายแล้ว</span>' : ' <span class="text-muted">(จะมอบหมายจริงเมื่ออนุมัติ)</span>'}</td></tr>` : ''}
           ${req.decision_note ? `<tr><td class="text-muted">หมายเหตุการพิจารณา</td><td>${esc(req.decision_note)}</td></tr>` : ''}
           <tr><td class="text-muted">ยื่นเมื่อ</td><td>${fmtDate(req.created_at)}</td></tr>
         </tbody>
@@ -182,6 +189,7 @@ router.post('/leave', requireApi(async (ctx) => {
   const result = createLeaveRequest({
     requesterId: ctx.user.id, leaveType: b.leaveType, startDate: b.startDate, endDate: b.endDate,
     reason: b.reason, destination: b.destination, contactInfo: b.contactInfo, approverId: b.approverId,
+    delegateId: b.delegateId || null,
   });
   json(ctx, 201, { id: result.id });
 }));

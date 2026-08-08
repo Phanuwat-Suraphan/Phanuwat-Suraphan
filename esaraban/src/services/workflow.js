@@ -2,6 +2,7 @@ import { db, uuid, nowIso, beYear, audit, computeRetentionUntil } from '../db.js
 import { nextRunningNumber } from '../numbering.js';
 import { notifyUser } from './notify.js';
 import { deleteFile as deleteDriveFile, isGoogleDriveEnabled } from './googleDrive.js';
+import { getActiveDelegateFor } from './delegation.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,21 +45,33 @@ export function getDocument(id) {
   return db.prepare('SELECT * FROM documents WHERE id = ? AND deleted_at IS NULL').get(id);
 }
 
+// "รักษาการแทน" — ผู้ที่ได้รับมอบหมายให้รักษาการแทนคนที่กำลังถือขั้นตอนอยู่ (ยังไม่ตัดสินใจ) ของเอกสารนี้
+// ต้องเห็น/ดำเนินการแทนได้เหมือนเป็นผู้ถูกมอบหมายเอง ไม่งั้นจะดำเนินการแทนไม่ได้เพราะหาเอกสารในระบบไม่เจอ
+function hasActiveDelegateStep(documentId, userId) {
+  return !!db.prepare(`
+    SELECT 1 FROM workflow_steps ws JOIN user_delegations ud ON ud.delegator_id = ws.assignee_id
+    WHERE ws.document_id = ? AND ws.status = 'waiting' AND ud.delegate_id = ? AND ud.cancelled_at IS NULL
+      AND ud.start_date <= date('now') AND ud.end_date >= date('now')
+  `).get(documentId, userId);
+}
+
 export function canUserSeeDocument(user, doc) {
   if (!doc) return false;
   if (user.roleCodes.includes('admin') || user.roleCodes.includes('director')) return true;
   if (doc.secret_level === 'secret' || doc.secret_level === 'top_secret') {
-    // secret documents: only creator, current assignee, or explicit grant may even know it exists
+    // secret documents: only creator, current assignee, active delegate, or explicit grant may even know it exists
     if (doc.created_by === user.id) return true;
     const isAssignee = db.prepare(`SELECT 1 FROM workflow_steps WHERE document_id = ? AND assignee_id = ?`).get(doc.id, user.id);
     if (isAssignee) return true;
+    if (hasActiveDelegateStep(doc.id, user.id)) return true;
     const grant = db.prepare(`SELECT 1 FROM document_access_grants WHERE document_id = ? AND (user_id = ? OR department_id = ?)`).get(doc.id, user.id, user.department_id);
     return !!grant;
   }
   if (doc.department_id === user.department_id) return true;
   if (doc.created_by === user.id) return true;
   const wasAssignee = db.prepare(`SELECT 1 FROM workflow_steps WHERE document_id = ? AND assignee_id = ?`).get(doc.id, user.id);
-  return !!wasAssignee;
+  if (wasAssignee) return true;
+  return hasActiveDelegateStep(doc.id, user.id);
 }
 
 export function getWorkflowSteps(documentId) {
@@ -103,9 +116,11 @@ export function assignStep({ documentId, assigneeId, instruction, actorUser }) {
 
 function assertOwnsStep(step, actorUser) {
   if (!step || step.status !== 'waiting') throw httpError(409, 'ขั้นตอนนี้ถูกดำเนินการไปแล้วหรือไม่พบ');
-  if (step.assignee_id !== actorUser.id && !actorUser.roleCodes.includes('admin')) {
-    throw httpError(403, 'คุณไม่มีสิทธิ์ดำเนินการขั้นตอนนี้ (ผู้ไม่มีสิทธิ์ไม่สามารถข้ามขั้น Workflow ได้)');
-  }
+  if (step.assignee_id === actorUser.id) return;
+  if (actorUser.roleCodes.includes('admin')) return;
+  const delegation = getActiveDelegateFor(step.assignee_id);
+  if (delegation && delegation.delegate_id === actorUser.id) return;
+  throw httpError(403, 'คุณไม่มีสิทธิ์ดำเนินการขั้นตอนนี้ (ผู้ไม่มีสิทธิ์ไม่สามารถข้ามขั้น Workflow ได้)');
 }
 
 export function approveAndForward({ stepId, nextAssigneeId, comment, actorUser }) {

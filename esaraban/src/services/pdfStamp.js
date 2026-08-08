@@ -101,21 +101,23 @@ export async function stampPdf({ originalBuffer, schoolName, docNumberDisplay, d
 // ต่อท้ายบนที่ว่างของเอกสาร (ต่างจาก stampDirectorDecision ที่เป็นกล่องความเห็นทางการของผู้ตัดสินใจคนสุดท้าย)
 // ใช้กับทุกคนในสาย workflow ที่ "เห็น" เอกสารนี้แล้ว (อนุมัติ/ส่งต่อ/รับทราบ/ไม่อนุมัติ) — มีกี่คนก็ประทับ
 // ได้กี่ครั้ง เพราะแต่ละครั้งซ้อนทับไฟล์ล่าสุดที่มีเครื่องหมายของคนก่อนหน้าอยู่แล้ว (ดู overlayHtmlOnFirstPage)
-export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, prefix, firstName, lastName, dateThaiLong, xPercent, yPercent }) {
+export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, prefix, firstName, lastName, dateThaiLong, xPercent, yPercent, actingForLabel }) {
   const leftPt = Math.max(0, Math.min(90, xPercent ?? 8)) / 100 * PAGE_WIDTH_PT;
   const topPt = Math.max(0, Math.min(94, yPercent ?? 55)) / 100 * PAGE_HEIGHT_PT;
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
     @page { size: ${PAGE_WIDTH_PT}pt ${PAGE_HEIGHT_PT}pt; margin: 0; }
     body { margin: 0; font-family: "Noto Sans Thai", sans-serif; -webkit-print-color-adjust: exact; }
-    .mark { position: absolute; left: ${leftPt}pt; top: ${topPt}pt; width: 120pt; color: #2222aa; text-align: center; }
+    .mark { position: absolute; left: ${leftPt}pt; top: ${topPt}pt; width: 130pt; color: #2222aa; text-align: center; }
     .mark .word { font-size: 20pt; font-weight: 700; margin-bottom: 2pt; }
     .mark img { max-height: 30pt; max-width: 110pt; }
     .mark .name { font-size: 7pt; margin-top: 1pt; }
+    .mark .acting { font-size: 6.5pt; font-style: italic; }
   </style></head><body>
     <div class="mark">
       <div class="word">ทราบ</div>
       ${signatureDataUrl ? `<img src="${esc(signatureDataUrl)}" />` : ''}
       <div class="name">(${esc(prefix || '')}${esc(firstName)} ${esc(lastName)})</div>
+      ${actingForLabel ? `<div class="acting">รักษาการแทน${esc(actingForLabel)}</div>` : ''}
       <div class="name">${esc(dateThaiLong)}</div>
     </div>
   </body></html>`;
