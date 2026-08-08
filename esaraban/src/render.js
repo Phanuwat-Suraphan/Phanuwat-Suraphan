@@ -156,3 +156,33 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
 export function emptyState(emoji, text) {
   return `<div class="empty-state"><div class="emoji">${emoji}</div><p>${esc(text)}</p></div>`;
 }
+
+// ภาพประกอบวาดเองด้วย SVG ล้วน (ไม่มี tool gen ภาพให้ใช้ในสภาพแวดล้อมนี้ และ sandbox บล็อกการโหลด
+// asset จากภายนอกทั้งหมดด้วย — SVG แบบฝังในหน้าเว็บเลยเหมาะที่สุด: ไม่มี network request, ไฟล์เล็ก,
+// ปรับสีตามธีมสว่าง/มืดได้ทันทีผ่าน currentColor/CSS variable) ใช้แทน emoji ในจุดที่เจอบ่อยที่สุด
+const ILLUSTRATIONS = {
+  // "งานหมดแล้ว" — ปึกกระดาษเรียบร้อยพร้อมเครื่องหมายถูกใหญ่ๆ
+  allClear: `<svg viewBox="0 0 200 150" width="150" height="112" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <ellipse cx="100" cy="132" rx="70" ry="10" fill="var(--surface-2)"/>
+    <rect x="48" y="70" width="90" height="58" rx="8" fill="var(--info-bg)" stroke="var(--primary)" stroke-width="2"/>
+    <rect x="60" y="52" width="90" height="58" rx="8" fill="var(--surface)" stroke="var(--primary)" stroke-width="2"/>
+    <line x1="74" y1="68" x2="126" y2="68" stroke="var(--border)" stroke-width="3" stroke-linecap="round"/>
+    <line x1="74" y1="80" x2="126" y2="80" stroke="var(--border)" stroke-width="3" stroke-linecap="round"/>
+    <line x1="74" y1="92" x2="110" y2="92" stroke="var(--border)" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="148" cy="46" r="26" fill="var(--success)"/>
+    <path d="M137 46 L145 54 L161 36" stroke="white" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </svg>`,
+  // "ยังไม่มีเอกสาร" — กล่อง/แฟ้มเปล่าเป็นมิตร รอเอกสารแรก
+  emptyInbox: `<svg viewBox="0 0 200 150" width="150" height="112" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <ellipse cx="100" cy="132" rx="65" ry="9" fill="var(--surface-2)"/>
+    <path d="M45 60 L70 92 H130 L155 60" fill="var(--info-bg)" stroke="var(--primary)" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M45 60 L60 40 H140 L155 60 H45Z" fill="var(--surface)" stroke="var(--primary)" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M45 60 H155 V100 A8 8 0 0 1 147 108 H53 A8 8 0 0 1 45 100 Z" fill="var(--surface)" stroke="var(--primary)" stroke-width="2" stroke-linejoin="round"/>
+    <circle cx="150" cy="38" r="4" fill="var(--warning)"/>
+    <circle cx="160" cy="55" r="3" fill="var(--secret)"/>
+    <circle cx="42" cy="45" r="3" fill="var(--success)"/>
+  </svg>`,
+};
+export function illustratedEmptyState(name, text) {
+  return `<div class="empty-state">${ILLUSTRATIONS[name] || ''}<p>${esc(text)}</p></div>`;
+}

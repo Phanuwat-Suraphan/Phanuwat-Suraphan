@@ -1,10 +1,15 @@
 import { router, html } from '../router.js';
-import { layout, esc, fmtDate, statusBadge, priorityBadge, emptyState } from '../render.js';
+import { layout, esc, fmtDate, statusBadge, priorityBadge, illustratedEmptyState } from '../render.js';
 import { requirePage } from '../middleware.js';
 import { db } from '../db.js';
 
-function kpi(value, label, emoji) {
-  return `<div class="kpi-card"><div class="kpi-value">${emoji ? emoji + ' ' : ''}${value}</div><div class="kpi-label">${esc(label)}</div></div>`;
+// สีวงกลมไอคอนแต่ละใบสื่อความหมาย: primary=เข้า, secret=ออก(สีต่างให้แยกจากเข้าง่ายๆ), warning=รอดำเนินการ,
+// danger=เกินกำหนด, success=เสร็จสิ้น — ไม่ชนกับสีของ badge สถานะเอกสาร (แยกคนละระบบสีกัน)
+function kpi(value, label, emoji, tone) {
+  return `<div class="kpi-card">
+    <div class="kpi-icon kpi-icon-${tone || 'primary'}">${emoji}</div>
+    <div><div class="kpi-value">${value}</div><div class="kpi-label">${esc(label)}</div></div>
+  </div>`;
 }
 
 // ทักทายตามช่วงเวลา (UX Bible Part 21 §1) — ใช้เวลาของเซิร์ฟเวอร์ตรงๆ ไม่ผูก timezone ผู้ใช้
@@ -59,8 +64,8 @@ router.get('/', requirePage((ctx) => {
     <div class="card">
       <h3 class="mt-0">📊 ภาพรวมสำหรับผู้บริหาร</h3>
       <div class="kpi-grid" style="margin-bottom:1rem">
-        ${kpi(avgDays != null ? avgDays.toFixed(1) : '-', 'เวลาเฉลี่ยจนปิดงาน (วัน)', '⏱️')}
-        ${kpi(byDept.reduce((s, r) => s + r.pending_count, 0), 'งานค้างทั้งหมดทุกฝ่าย', '📋')}
+        ${kpi(avgDays != null ? avgDays.toFixed(1) : '-', 'เวลาเฉลี่ยจนปิดงาน (วัน)', '⏱️', 'primary')}
+        ${kpi(byDept.reduce((s, r) => s + r.pending_count, 0), 'งานค้างทั้งหมดทุกฝ่าย', '📋', 'warning')}
       </div>
       ${byDept.length ? byDept.map((r) => `
         <div style="margin-bottom:.5rem">
@@ -86,11 +91,11 @@ router.get('/', requirePage((ctx) => {
     </div>
 
     <div class="kpi-grid">
-      ${kpi(inToday, 'หนังสือเข้าวันนี้', '📥')}
-      ${kpi(outToday, 'หนังสือออกวันนี้', '📤')}
-      ${kpi(myTasks, 'งานรอฉันดำเนินการ', '📌')}
-      ${kpi(overdue, 'เกินกำหนด', '⏰')}
-      ${kpi(completedToday, 'เสร็จสิ้นวันนี้', '✅')}
+      ${kpi(inToday, 'หนังสือเข้าวันนี้', '📥', 'primary')}
+      ${kpi(outToday, 'หนังสือออกวันนี้', '📤', 'secret')}
+      ${kpi(myTasks, 'งานรอฉันดำเนินการ', '📌', 'warning')}
+      ${kpi(overdue, 'เกินกำหนด', '⏰', 'danger')}
+      ${kpi(completedToday, 'เสร็จสิ้นวันนี้', '✅', 'success')}
     </div>
 
     ${execKpiHtml}
@@ -103,7 +108,7 @@ router.get('/', requirePage((ctx) => {
           <tbody>${myPending.map((d) => `<tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer">
             <td>${esc(d.doc_number_display)}</td><td>${esc(d.title)}</td><td>${esc(d.type_name)}</td>
             <td>${priorityBadge(d.priority)}</td><td>${statusBadge(d.status)}</td></tr>`).join('')}</tbody>
-        </table></div>` : emptyState('🎉', 'วันนี้ไม่มีงานค้างแล้ว พักผ่อนสบายๆ ได้เลยครับ ☕')}
+        </table></div>` : illustratedEmptyState('allClear', 'วันนี้ไม่มีงานค้างแล้ว พักผ่อนสบายๆ ได้เลยครับ ☕')}
       </div>
       <div class="card">
         <h3 class="mt-0">🕒 เอกสารล่าสุดในระบบ</h3>
@@ -111,7 +116,7 @@ router.get('/', requirePage((ctx) => {
           <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
             <a href="/documents/${d.id}" style="font-weight:600">${esc(d.doc_number_display)}</a> ${statusBadge(d.status)}
             <div class="text-muted" style="font-size:.82rem">${esc(d.title)}</div>
-          </div>`).join('') : emptyState('📝', 'ยังไม่มีเอกสารในระบบ เริ่มต้นสร้างรายการแรกได้เลยครับ')}
+          </div>`).join('') : illustratedEmptyState('emptyInbox', 'ยังไม่มีเอกสารในระบบ เริ่มต้นสร้างรายการแรกได้เลยครับ')}
       </div>
     </div>
     ${ctx.query.celebrate === '1' && myTasks === 0 ? '<div id="celebrateTrigger" hidden></div>' : ''}`;
@@ -135,7 +140,7 @@ router.get('/tasks', requirePage((ctx) => {
           <td>${esc(d.doc_number_display)}</td><td>${esc(d.title)}</td><td>${esc(d.type_name)}</td>
           <td>${priorityBadge(d.priority)}</td><td>${d.secret_level !== 'normal' ? '🔒 ' + esc(d.secret_level) : '-'}</td>
           <td class="text-muted">${fmtDate(d.assigned_at)}</td></tr>`).join('')}</tbody>
-      </table></div>` : emptyState('🎉', 'ไม่มีงานค้างสำหรับคุณเลยครับ พักผ่อนสบายๆ ได้เลยครับ ☕')}
+      </table></div>` : illustratedEmptyState('allClear', 'ไม่มีงานค้างสำหรับคุณเลยครับ พักผ่อนสบายๆ ได้เลยครับ ☕')}
     </div>`;
   html(ctx, 200, layout({ user: ctx.user, title: 'งานของฉัน', path: '/tasks', content }));
 }));
