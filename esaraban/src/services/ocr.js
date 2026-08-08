@@ -4,7 +4,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { httpError } from './workflow.js';
 
-const RUN_TIMEOUT_MS = 30_000;
+// Render free tier (และโฮสต์ฟรีอื่นๆ) มี CPU จำกัดมาก — ไฟล์แค่ 1-2MB ก็ทำให้ pdftoppm ใช้เวลาเกิน
+// 30 วินาทีได้จริงถ้าเครื่องกำลัง cold start/แชร์ CPU กับ process อื่น ไม่ใช่เพราะไฟล์ใหญ่/ซับซ้อนเสมอไป
+// ขยับเป็น 45 วินาทีให้พอมีเวลาหายใจ
+const RUN_TIMEOUT_MS = 45_000;
 
 // เรียกโปรแกรมระบบ (pdftoppm/tesseract) — เป็น system package ผ่าน apt ไม่ใช่ npm dependency
 // จึงยังอยู่ในกติกา zero-dependency ของโปรเจกต์นี้ ต้องติดตั้งบนเซิร์ฟเวอร์ก่อนใช้งาน (ดู DEPLOY.md)
@@ -40,7 +43,9 @@ export async function extractTextFromPdf(pdfBuffer) {
   const imgPrefix = path.join(tmpDir, 'page');
   try {
     fs.writeFileSync(pdfPath, pdfBuffer);
-    await run('pdftoppm', ['-png', '-r', '200', '-f', '1', '-l', '2', pdfPath, imgPrefix]);
+    // ลดจาก 200 เป็น 150 DPI — เร็วขึ้นชัดเจนบนโฮสต์ฟรีที่ CPU จำกัด ยังคมพอสำหรับ Tesseract อ่านตัวพิมพ์
+    // ทั่วไปได้ (นี่เป็น best-effort ที่บังคับให้ผู้ใช้ตรวจซ้ำอยู่แล้ว ไม่ใช่ผลลัพธ์สุดท้าย)
+    await run('pdftoppm', ['-png', '-r', '150', '-f', '1', '-l', '2', pdfPath, imgPrefix]);
     const images = fs.readdirSync(tmpDir).filter((f) => f.startsWith('page') && f.endsWith('.png')).sort();
     if (!images.length) throw httpError(422, 'ไม่สามารถแปลง PDF เป็นภาพเพื่ออ่านได้ (ไฟล์อาจเสียหายหรือเข้ารหัสไว้)');
 
