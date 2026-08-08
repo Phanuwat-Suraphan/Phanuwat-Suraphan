@@ -128,10 +128,32 @@ export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, p
 // (มุมขวาล่าง กรอบสี่เหลี่ยม: ชื่อตำแหน่ง + checkbox ทราบ/อนุญาต-ไม่อนุญาต/อนุมัติ-ไม่อนุมัติ +
 // "เห็นควรให้..." + ลายเซ็น + ชื่อ-ตำแหน่ง) — decision: 'acknowledge' | 'approve' | 'reject' ตรงกับปุ่ม
 // รับทราบ/อนุมัติและส่งต่อ/ไม่อนุมัติ ในหน้าเอกสาร — note คือข้อความที่ผู้ใช้พิมพ์เองในช่อง "เห็นควรให้"
-export async function stampDirectorDecision({ originalBuffer, schoolName, decision, note, signatureDataUrl, prefix, firstName, lastName, position, dateThaiLong, xPercent, yPercent }) {
+// titleMode อ้างอิงตรายางจริง 2 แบบของโรงเรียน (ดูภาพถ่ายใน docs/stamp-reference/) — ตรายางจริงพิมพ์
+// หัว/ท้ายกล่องต่างกันตามว่าใครเป็นผู้เซ็น: 'director' = ผู้อำนวยการตัวจริง (หัวกล่อง "ผู้อำนวยการ<ชื่อ
+// โรงเรียน>" บรรทัดเดียว), 'acting_director' = ผู้รักษาการแทนผู้อำนวยการ (หัวกล่อง "รักษาการในตำแหน่ง
+// ผู้อำนวยการสถานศึกษา" 2 บรรทัด — คำนี้ห้ามใช้ผิดกับ "รักษาการในตำแหน่ง" เฉยๆ เพราะเป็นถ้อยคำทางการที่
+// ตรายางจริงใช้), 'generic' = ผู้ตัดสินใจปิดเรื่องที่ไม่ใช่ผู้อำนวยการ/ผู้รักษาการแทนผู้อำนวยการ (เช่น
+// หัวหน้าฝ่ายปิดเรื่องเอง) ใช้ตำแหน่งจริงของคนนั้นตรงๆ แทนคำที่ตายตัว
+export async function stampDirectorDecision({ originalBuffer, schoolName, decision, note, signatureDataUrl, prefix, firstName, lastName, position, titleMode, actingForLabel, dateThaiLong, xPercent, yPercent }) {
   const mark = (on) => (on ? '●' : '○');
   const leftPt = Math.max(0, Math.min(80, xPercent ?? 55)) / 100 * PAGE_WIDTH_PT;
   const topPt = Math.max(0, Math.min(88, yPercent ?? 66)) / 100 * PAGE_HEIGHT_PT;
+
+  let titleHtml, positionHtml;
+  if (titleMode === 'director') {
+    titleHtml = `ผู้อำนวยการ${esc(schoolName)}`;
+    positionHtml = `<div class="name">ตำแหน่งผู้อำนวยการ${esc(schoolName)}</div>`;
+  } else if (titleMode === 'acting_director') {
+    titleHtml = `รักษาการในตำแหน่งผู้อำนวยการสถานศึกษา<br/>${esc(schoolName)}`;
+    positionHtml = `<div class="name">รักษาการในตำแหน่งผู้อำนวยการสถานศึกษา</div><div class="name">${esc(schoolName)}</div>`;
+  } else {
+    titleHtml = esc(schoolName);
+    positionHtml = `<div class="name">${esc(position || '')}</div>`;
+  }
+  // ถ้อยคำบนตรายางจริงไม่ได้ระบุว่ารักษาการแทน "ใคร" — ระบบเสริมบรรทัดเล็กๆ นี้เพิ่มเพื่อความโปร่งใส
+  // (ตรวจสอบย้อนหลังได้ว่าใครเซ็นแทนใคร) โดยไม่ไปแก้ถ้อยคำทางการของตรายางที่ใช้จริง
+  if (actingForLabel) positionHtml += `<div class="name" style="font-size:6.5pt;font-style:italic">(รักษาการแทน${esc(actingForLabel)})</div>`;
+
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
     @page { size: ${PAGE_WIDTH_PT}pt ${PAGE_HEIGHT_PT}pt; margin: 0; }
     body { margin: 0; font-family: "Noto Sans Thai", sans-serif; -webkit-print-color-adjust: exact; }
@@ -143,14 +165,14 @@ export async function stampDirectorDecision({ originalBuffer, schoolName, decisi
     .box .name { text-align: center; }
   </style></head><body>
     <div class="box">
-      <div class="title">${esc(schoolName)}</div>
+      <div class="title">${titleHtml}</div>
       <div>${mark(decision === 'acknowledge')} ทราบ</div>
       <div>${mark(false)} อนุญาต &nbsp; ${mark(false)} ไม่อนุญาต</div>
       <div>${mark(decision === 'approve')} อนุมัติ &nbsp; ${mark(decision === 'reject')} ไม่อนุมัติ</div>
       <div class="note">เห็นควรให้ ${esc(note || '-')}</div>
       ${signatureDataUrl ? `<div class="sig"><img src="${esc(signatureDataUrl)}" /></div>` : ''}
       <div class="name">(${esc(prefix || '')}${esc(firstName)} ${esc(lastName)})</div>
-      <div class="name">${esc(position || '')}</div>
+      ${positionHtml}
       <div class="name">${esc(dateThaiLong)}</div>
     </div>
   </body></html>`;

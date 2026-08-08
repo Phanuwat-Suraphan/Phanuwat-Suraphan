@@ -416,6 +416,11 @@ router.get('/documents/:id', requirePage((ctx) => {
   const isDelegateForStep = !!(delegationForStep && delegationForStep.delegate_id === ctx.user.id);
   const isCurrentAssignee = isDirectAssignee || isDelegateForStep;
   const stepAssignee = step ? db.prepare('SELECT prefix, first_name, last_name FROM users WHERE id = ?').get(step.assignee_id) : null;
+  // ข้อความหัวกล่องความเห็นในตัวอย่างบนเว็บ ต้องตรงกับที่จะฝังจริงตอนกดปุ่ม (ดู stampDirectorDecisionIfApplicable)
+  const decisionBoxMode = step ? directorTitleMode(step.id, ctx.user) : 'generic';
+  const decisionBoxTitleHtml = decisionBoxMode === 'director' ? esc(`ผู้อำนวยการ${SCHOOL_NAME}`)
+    : decisionBoxMode === 'acting_director' ? esc('รักษาการในตำแหน่งผู้อำนวยการสถานศึกษา') + '<br/>' + esc(SCHOOL_NAME)
+    : esc(SCHOOL_NAME);
   const isCreatorOrAdmin = doc.created_by === ctx.user.id || ctx.user.roleCodes.includes('admin');
   const canAssign = ['registered', 'returned'].includes(doc.status) && isCreatorOrAdmin;
   const canVoid = ['draft', 'registered'].includes(doc.status) && isCreatorOrAdmin;
@@ -643,7 +648,7 @@ router.get('/documents/:id', requirePage((ctx) => {
               '<div class="mark-name">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</div>' +
             '</div>';
             var DECISION_HTML = '<div class="doc-decision-box" id="decisionBox" style="left:55%;top:66%">' +
-              '<div class="box-title">โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ 1</div>' +
+              '<div class="box-title">${decisionBoxTitleHtml}</div>' +
               '<div>ทราบ / อนุญาต-ไม่อนุญาต / อนุมัติ-ไม่อนุมัติ</div>' +
               '<div class="box-note">เห็นควรให้ ... (พิมพ์ในช่องด้านซ้าย)</div>' +
               '<div style="margin-top:.3rem">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</div>' +
@@ -908,6 +913,19 @@ function actingForLabel(stepId, actorUser) {
   return delegator ? `${delegator.prefix || ''}${delegator.first_name} ${delegator.last_name}` : null;
 }
 
+// เลือกถ้อยคำหัว/ท้ายกล่องความเห็นให้ตรงกับตรายางจริง 2 แบบของโรงเรียน (ดู docs/stamp-reference/) —
+// 'director' ถ้าผู้เซ็นเองเป็นผู้อำนวยการตัวจริง, 'acting_director' ถ้าเซ็นแทนในฐานะรักษาการแทนคนที่เป็น
+// ผู้อำนวยการ (delegator มี role 'director'), 'generic' ถ้าไม่เข้าเงื่อนไขไหนเลย (เช่น หัวหน้าฝ่ายปิดเรื่องเอง)
+function directorTitleMode(stepId, actorUser) {
+  if (actorUser.roleCodes.includes('director')) return 'director';
+  const step = db.prepare('SELECT assignee_id FROM workflow_steps WHERE id = ?').get(stepId);
+  if (!step || step.assignee_id === actorUser.id) return 'generic';
+  const delegatorIsDirector = db.prepare(`
+    SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? AND r.name = 'director'
+  `).get(step.assignee_id);
+  return delegatorIsDirector ? 'acting_director' : 'generic';
+}
+
 async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser, markX, markY }) {
   if (!actorUser.signature_image) return;
   const att = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at LIMIT 1').get(documentId);
@@ -940,6 +958,7 @@ async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser
   if (!att) return;
   const doc = getDocument(documentId);
   const forLabel = actingForLabel(stepId, actorUser);
+  const titleMode = directorTitleMode(stepId, actorUser);
   try {
     const originalBuffer = await readAttachmentBytes(att, { preferStamped: true });
     const stampedBuffer = await stampDirectorDecision({
@@ -951,7 +970,9 @@ async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser
       prefix: actorUser.prefix,
       firstName: actorUser.first_name,
       lastName: actorUser.last_name,
-      position: forLabel ? `${actorUser.position || ''} (รักษาการแทน${forLabel})` : actorUser.position,
+      position: actorUser.position,
+      titleMode,
+      actingForLabel: titleMode === 'acting_director' ? forLabel : null,
       dateThaiLong: new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }),
       xPercent: decisionX,
       yPercent: decisionY,
