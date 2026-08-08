@@ -121,6 +121,10 @@
     const fileInput = document.getElementById(fileInputId);
     const resultBox = document.getElementById(resultId);
     if (!fileInput.files[0]) { window.toast('กรุณาเลือกไฟล์ PDF ก่อน', 'warning'); return; }
+    if (fileInput.files[0].size > 20 * 1024 * 1024) {
+      window.toast('ไฟล์ใหญ่เกิน 20MB สำหรับอ่านอัตโนมัติ — OCR อ่านแค่ 2 หน้าแรกเท่านั้น ลองครอปเฉพาะหน้าแรกมาลองใหม่ได้', 'warning');
+      return;
+    }
     const origLabel = btn.textContent;
     btn.disabled = true;
     btn.textContent = '⏳ กำลังอ่านเอกสาร (อาจใช้เวลาสักครู่)...';
@@ -134,11 +138,20 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'อ่านเอกสารไม่สำเร็จ');
 
+      // เติมค่าแล้วเปิด <details> "ตัวเลือกเพิ่มเติม" ให้อัตโนมัติถ้าช่องที่เติมซ่อนอยู่ในนั้น —
+      // ไม่งั้นผู้ใช้จะไม่เห็นว่า OCR เติมอะไรให้บ้าง (เลขหนังสือ/ลงวันที่ ถูกย้ายไปซ่อนไว้เพื่อลดความรก)
       let filled = [];
-      if (data.title && formEl.title && !formEl.title.value) { formEl.title.value = data.title; filled.push('ชื่อเรื่อง'); }
-      if (data.correspondentName && formEl.correspondentName && !formEl.correspondentName.value) { formEl.correspondentName.value = data.correspondentName; filled.push('หน่วยงานต้นทาง/ปลายทาง'); }
-      if (data.externalDocNumber && formEl.externalDocNumber && !formEl.externalDocNumber.value) { formEl.externalDocNumber.value = data.externalDocNumber; filled.push('เลขหนังสือ'); }
-      if (data.externalDocDate && formEl.externalDocDate && !formEl.externalDocDate.value) { formEl.externalDocDate.value = data.externalDocDate; filled.push('ลงวันที่'); }
+      function fillField(field, value, label) {
+        if (!value || !field || field.value) return;
+        field.value = value;
+        filled.push(label);
+        const details = field.closest('details');
+        if (details) details.open = true;
+      }
+      fillField(formEl.title, data.title, 'ชื่อเรื่อง');
+      fillField(formEl.correspondentName, data.correspondentName, 'หน่วยงานต้นทาง/ปลายทาง');
+      fillField(formEl.externalDocNumber, data.externalDocNumber, 'เลขหนังสือ');
+      fillField(formEl.externalDocDate, data.externalDocDate, 'ลงวันที่');
 
       resultBox.innerHTML =
         '<div class="alert alert-warning" style="margin-top:.5rem">' +

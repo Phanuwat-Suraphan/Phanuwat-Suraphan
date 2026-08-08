@@ -19,6 +19,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
 const ALLOWED_MIME = new Set(['application/pdf']);
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
+// OCR อ่านแค่ 2 หน้าแรกของ PDF เสมอ (ดู extractTextFromPdf) และไม่เก็บไฟล์ไว้เลย (ใช้ temp file
+// แล้วลบทิ้งทันที) จึงไม่มีเหตุผลผูกกับเพดาน MAX_FILE_BYTES ของไฟล์แนบถาวร — ที่ผ่านมาใช้ค่าเดียวกัน
+// ทำให้ไฟล์สแกนความละเอียดสูงทั่วไป (ซึ่งมักใหญ่กว่า 10MB แม้แค่ 1-2 หน้า) ใช้ปุ่มนี้ไม่ได้เกือบทุกครั้ง
+const MAX_OCR_BYTES = 20 * 1024 * 1024;
 
 function listDeptOptions(selected) {
   return db.prepare('SELECT * FROM departments ORDER BY name').all()
@@ -162,7 +166,7 @@ router.get('/documents/new', requirePage((ctx) => {
           <div id="filePreview" class="help-text"></div>
           <div class="help-text">รองรับเฉพาะไฟล์ PDF ขนาดไม่เกิน 10MB (ระบบจะตรวจ magic number และคำนวณ SHA-256 hash)</div>
           <button type="button" class="btn btn-outline btn-sm" style="margin-top:.5rem" onclick="runOcrExtract(this)">🔍 อ่านข้อมูลจากไฟล์อัตโนมัติ (OCR)</button>
-          <div class="help-text">ใช้ Tesseract OCR อ่านตัวอักษรจากไฟล์ที่แนบไว้ด้านบน แล้วลองกรอกฟิลด์ให้อัตโนมัติ — <strong>เป็นการเดาเบื้องต้นเท่านั้น กรุณาตรวจสอบความถูกต้องทุกครั้งก่อนบันทึก</strong></div>
+          <div class="help-text">ใช้ Tesseract OCR อ่านตัวอักษรจากไฟล์ที่แนบไว้ด้านบน (เฉพาะ 2 หน้าแรก รองรับไฟล์สแกนขนาดใหญ่ถึง 20MB) แล้วลองกรอกฟิลด์ให้อัตโนมัติ — <strong>เป็นการเดาเบื้องต้นเท่านั้น กรุณาตรวจสอบความถูกต้องทุกครั้งก่อนบันทึก</strong></div>
           <div id="ocrResult"></div>
         </div>
         <button class="btn btn-primary" type="submit">บันทึกและออกเลข${direction === 'incoming' ? 'รับ' : 'ส่ง'}อัตโนมัติ</button>
@@ -221,7 +225,7 @@ router.post('/documents/ocr-extract', requireApi(async (ctx) => {
   if (!fileDataBase64) throw httpError(400, 'ไม่พบไฟล์ที่จะอ่าน');
   if (fileType !== 'application/pdf') throw httpError(400, 'อนุญาตเฉพาะไฟล์ PDF เท่านั้น');
   const buf = Buffer.from(fileDataBase64, 'base64');
-  if (buf.length > MAX_FILE_BYTES) throw httpError(413, 'ไฟล์มีขนาดใหญ่เกิน 10MB');
+  if (buf.length > MAX_OCR_BYTES) throw httpError(413, `ไฟล์มีขนาดใหญ่เกิน ${MAX_OCR_BYTES / 1024 / 1024}MB (OCR อ่านแค่ 2 หน้าแรกเท่านั้น ถ้าเป็นไฟล์สแกนหลายหน้า ลองครอปเฉพาะหน้าแรกมาลองใหม่ได้)`);
   if (buf.subarray(0, 5).toString('latin1') !== '%PDF-') throw httpError(400, 'ไฟล์ไม่ใช่ PDF ที่ถูกต้อง (ตรวจสอบ file signature ไม่ผ่าน)');
 
   const text = await extractTextFromPdf(buf);
