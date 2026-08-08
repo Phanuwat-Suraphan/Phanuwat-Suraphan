@@ -71,14 +71,14 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
             fetch('/admin/users', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
               .then(r => r.json().then(d => ({ok:r.ok,d})))
               .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
-              .catch(e => alert(e.message));
+              .catch(e => toast(e.message, 'danger'));
           });
           function deleteUser(id, name) {
             if (!confirm('ยืนยันลบผู้ใช้ "' + name + '"? (บัญชีจะถูกระงับการใช้งานถาวร แต่ประวัติเอกสาร/audit log ที่เกี่ยวข้องยังคงอยู่)')) return;
             fetch('/admin/users/' + id + '/delete', {method:'POST'})
               .then(r => r.json().then(d => ({ok:r.ok,d})))
               .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
-              .catch(e => alert(e.message));
+              .catch(e => toast(e.message, 'danger'));
           }
         </script>
       </div>

@@ -16,6 +16,29 @@
     applyTheme(next);
   };
 
+  // ---------- toast notifications (replaces jarring alert() popups) ----------
+  window.toast = function (message, type) {
+    type = type || 'info'; // 'success' | 'danger' | 'warning' | 'info'
+    let container = document.getElementById('toastContainer');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'toastContainer';
+      container.className = 'toast-container';
+      document.body.appendChild(container);
+    }
+    const el = document.createElement('div');
+    el.className = 'toast toast-' + type;
+    el.setAttribute('role', type === 'danger' ? 'alert' : 'status');
+    el.textContent = message;
+    container.appendChild(el);
+    requestAnimationFrame(function () { el.classList.add('show'); });
+    const life = type === 'danger' ? 5000 : 3000;
+    setTimeout(function () {
+      el.classList.remove('show');
+      setTimeout(function () { el.remove(); }, 250);
+    }, life);
+  };
+
   // ---------- mobile sidebar ----------
   window.toggleSidebar = function (show) {
     const sb = document.getElementById('sidebar');
@@ -51,7 +74,7 @@
 
       if (fileInput && fileInput.files[0]) {
         if (fileInput.files[0].size > 10 * 1024 * 1024) {
-          alert('ไฟล์ต้องมีขนาดไม่เกิน 10MB');
+          window.toast('ไฟล์ต้องมีขนาดไม่เกิน 10MB', 'warning');
           if (btn) window.restoreBtn(btn);
           return;
         }
@@ -69,7 +92,7 @@
       if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
       window.location.href = data.redirect || window.location.href;
     } catch (err) {
-      alert(err.message || 'เกิดข้อผิดพลาด');
+      window.toast(err.message || 'เกิดข้อผิดพลาด', 'danger');
       if (btn) window.restoreBtn(btn);
     }
   };
@@ -97,7 +120,7 @@
   window.ocrExtractInto = async function (btn, fileInputId, resultId, formEl) {
     const fileInput = document.getElementById(fileInputId);
     const resultBox = document.getElementById(resultId);
-    if (!fileInput.files[0]) { alert('กรุณาเลือกไฟล์ PDF ก่อน'); return; }
+    if (!fileInput.files[0]) { window.toast('กรุณาเลือกไฟล์ PDF ก่อน', 'warning'); return; }
     const origLabel = btn.textContent;
     btn.disabled = true;
     btn.textContent = '⏳ กำลังอ่านเอกสาร (อาจใช้เวลาสักครู่)...';
@@ -149,7 +172,7 @@
   };
   window.confirmPin = function () {
     const val = document.getElementById('pinInput').value.trim();
-    if (!/^\d{6}$/.test(val)) { alert('กรุณากรอก PIN 6 หลัก'); return; }
+    if (!/^\d{6}$/.test(val)) { window.toast('กรุณากรอก PIN 6 หลัก', 'warning'); return; }
     document.getElementById('pinModal').classList.remove('show');
     if (pinResolver) { pinResolver(val); pinResolver = null; }
   };
@@ -173,7 +196,7 @@
       if (redirectTo) window.location.href = redirectTo;
       else window.location.reload();
     } catch (err) {
-      alert(err.message || 'เกิดข้อผิดพลาด');
+      window.toast(err.message || 'เกิดข้อผิดพลาด', 'danger');
       window.restoreBtn(btn);
     }
   };
@@ -193,7 +216,7 @@
       if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
       window.location.reload();
     } catch (err) {
-      alert(err.message || 'เกิดข้อผิดพลาด');
+      window.toast(err.message || 'เกิดข้อผิดพลาด', 'danger');
       window.restoreBtn(btn);
     }
   };

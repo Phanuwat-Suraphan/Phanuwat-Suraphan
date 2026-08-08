@@ -381,6 +381,32 @@ tbody tr:last-child td { border-bottom: none; }
 .modal-backdrop.show { display: flex; }
 .modal { background: var(--surface); border-radius: 12px; padding: 1.3rem; max-width: 380px; width: 100%; box-shadow: var(--shadow); }
 
+/* ---------- Toast notifications (replaces alert() popups) ---------- */
+.toast-container {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--bottom-nav-h) + 1rem);
+  z-index: 80; display: flex; flex-direction: column; gap: .5rem; align-items: center;
+  width: 100%; max-width: 420px; padding: 0 1rem; pointer-events: none;
+}
+@media (min-width: 900px) { .toast-container { bottom: 1.5rem; } }
+.toast {
+  pointer-events: auto; width: 100%;
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  border-left: 4px solid var(--text-muted);
+  border-radius: 10px; padding: .7rem 1rem; box-shadow: var(--shadow);
+  font-size: .87rem; line-height: 1.4;
+  opacity: 0; transform: translateY(10px);
+  transition: opacity .2s ease, transform .2s ease;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast-success { border-left-color: var(--success); }
+.toast-danger { border-left-color: var(--danger); }
+.toast-warning { border-left-color: var(--warning); }
+.toast-info { border-left-color: var(--primary); }
+@media (prefers-reduced-motion: reduce) {
+  .toast { transition: opacity .1s linear; transform: none; }
+}
+
 /* ---------- Avatar picker (UX Bible Part 21 §8) ---------- */
 .avatar-pick {
   width: 40px; height: 40px; border-radius: 50%; border: 2px solid transparent;

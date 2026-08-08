@@ -89,8 +89,8 @@ router.get('/profile', requirePage((ctx) => {
             };
             fetch('/profile/info', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
               .then(r => r.json().then(d => ({ok:r.ok,d})))
-              .then(({ok,d}) => { if(!ok) throw new Error(d.error); alert('บันทึกข้อมูลสำเร็จ'); location.reload(); })
-              .catch(e => alert(e.message));
+              .then(({ok,d}) => { if(!ok) throw new Error(d.error); toast('บันทึกข้อมูลสำเร็จ','success'); setTimeout(()=>location.reload(), 600); })
+              .catch(e => toast(e.message, 'danger'));
           });
           document.getElementById('passwordForm').addEventListener('submit', function(e){
             e.preventDefault();
@@ -98,42 +98,42 @@ router.get('/profile', requirePage((ctx) => {
             var newPassword = document.getElementById('newPassword').value;
             fetch('/profile/password', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({currentPassword, newPassword})})
               .then(r => r.json().then(d => ({ok:r.ok,d})))
-              .then(({ok,d}) => { if(!ok) throw new Error(d.error); alert('เปลี่ยนรหัสผ่านสำเร็จ'); e.target.reset(); })
-              .catch(e => alert(e.message));
+              .then(({ok,d}) => { if(!ok) throw new Error(d.error); toast('เปลี่ยนรหัสผ่านสำเร็จ','success'); e.target.reset(); })
+              .catch(e => toast(e.message, 'danger'));
           });
           document.getElementById('pinForm').addEventListener('submit', function(e){
             e.preventDefault();
             var currentPassword = document.getElementById('curPassword').value;
             var newPin = document.getElementById('newPin').value;
-            if(!/^\\d{6}$/.test(newPin)){ alert('PIN ต้องเป็นตัวเลข 6 หลัก'); return; }
+            if(!/^\\d{6}$/.test(newPin)){ toast('PIN ต้องเป็นตัวเลข 6 หลัก', 'warning'); return; }
             fetch('/profile/pin', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({currentPassword, newPin})})
               .then(r => r.json().then(d => ({ok:r.ok,d})))
-              .then(({ok,d}) => { if(!ok) throw new Error(d.error); alert('เปลี่ยน PIN สำเร็จ'); e.target.reset(); })
-              .catch(e => alert(e.message));
+              .then(({ok,d}) => { if(!ok) throw new Error(d.error); toast('เปลี่ยน PIN สำเร็จ','success'); e.target.reset(); })
+              .catch(e => toast(e.message, 'danger'));
           });
           document.getElementById('signatureForm').addEventListener('submit', async function(e){
             e.preventDefault();
             var file = document.getElementById('signatureFile').files[0];
-            if (!file) { alert('กรุณาเลือกไฟล์รูปลายเซ็น'); return; }
-            if (file.size > 1024 * 1024) { alert('ไฟล์ต้องมีขนาดไม่เกิน 1MB'); return; }
+            if (!file) { toast('กรุณาเลือกไฟล์รูปลายเซ็น', 'warning'); return; }
+            if (file.size > 1024 * 1024) { toast('ไฟล์ต้องมีขนาดไม่เกิน 1MB', 'warning'); return; }
             var dataUrl = await window.fileToDataUrl(file);
             fetch('/profile/signature', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dataUrl})})
               .then(r => r.json().then(d => ({ok:r.ok,d})))
-              .then(({ok,d}) => { if(!ok) throw new Error(d.error); alert('บันทึกลายเซ็นสำเร็จ'); location.reload(); })
-              .catch(e => alert(e.message));
+              .then(({ok,d}) => { if(!ok) throw new Error(d.error); toast('บันทึกลายเซ็นสำเร็จ','success'); setTimeout(()=>location.reload(), 600); })
+              .catch(e => toast(e.message, 'danger'));
           });
           window.deleteSignature = function(){
             if (!confirm('ยืนยันลบลายเซ็นที่บันทึกไว้?')) return;
             fetch('/profile/signature', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dataUrl: null})})
               .then(r => r.json().then(d => ({ok:r.ok,d})))
               .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
-              .catch(e => alert(e.message));
+              .catch(e => toast(e.message, 'danger'));
           };
           window.pickAvatar = function(emoji){
             fetch('/profile/avatar', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({emoji: emoji})})
               .then(r => r.json().then(d => ({ok:r.ok,d})))
               .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
-              .catch(e => alert(e.message));
+              .catch(e => toast(e.message, 'danger'));
           };
         </script>
       </div>

@@ -338,7 +338,7 @@ router.get('/documents/:id', requirePage((ctx) => {
       function doApprove(btn){
         var next = document.getElementById('nextAssignee').value;
         var comment = document.getElementById('stepComment').value;
-        if (!next) { alert('กรุณาเลือกผู้รับที่จะส่งต่อ ก่อนกดอนุมัติ (ถ้าเป็นผู้รับคนสุดท้ายให้กด "รับทราบ/ปิดเรื่อง" แทน)'); return; }
+        if (!next) { toast('กรุณาเลือกผู้รับที่จะส่งต่อ ก่อนกดอนุมัติ (ถ้าเป็นผู้รับคนสุดท้ายให้กด "รับทราบ/ปิดเรื่อง" แทน)', 'warning'); return; }
         actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/approve', { nextAssigneeId: next, comment: comment });
       }
       function doAcknowledge(btn){
@@ -380,7 +380,7 @@ router.get('/documents/:id', requirePage((ctx) => {
         fetch('/documents/${doc.id}/assign', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({assigneeId, instruction}) })
           .then(r => r.json().then(d => ({ok: r.ok, d})))
           .then(({ok, d}) => { if(!ok) throw new Error(d.error); location.reload(); })
-          .catch(e => { alert(e.message); btn.disabled = false; });
+          .catch(e => { toast(e.message, 'danger'); btn.disabled = false; });
       }
     </script>` : '';
 
@@ -407,7 +407,7 @@ router.get('/documents/:id', requirePage((ctx) => {
         fetch('/documents/${doc.id}/force-delete', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({reason: reason}) })
           .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
           .then(function(res){ if(!res.ok) throw new Error(res.d.error); window.location.href = '/documents'; })
-          .catch(function(e){ alert(e.message); btn.disabled = false; });
+          .catch(function(e){ toast(e.message, 'danger'); btn.disabled = false; });
       }
     </script>` : ''}
 

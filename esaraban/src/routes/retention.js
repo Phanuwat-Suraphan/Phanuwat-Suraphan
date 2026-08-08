@@ -77,12 +77,12 @@ router.get('/retention', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage(
       if (bf) bf.addEventListener('submit', function(e){
         e.preventDefault();
         var ids = Array.from(document.querySelectorAll('.destroy-check:checked')).map(function(c){ return c.value; });
-        if (!ids.length) { alert('กรุณาเลือกเอกสารอย่างน้อย 1 รายการ'); return; }
+        if (!ids.length) { toast('กรุณาเลือกเอกสารอย่างน้อย 1 รายการ', 'warning'); return; }
         var payload = { documentIds: ids, committeeNames: bf.committeeNames.value, reason: bf.reason.value };
         fetch('/retention/batches', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
           .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
           .then(function(res){ if(!res.ok) throw new Error(res.d.error); location.href = res.d.redirect; })
-          .catch(function(e){ alert(e.message); });
+          .catch(function(e){ toast(e.message, 'danger'); });
       });
     </script>`;
 
@@ -129,7 +129,7 @@ router.get('/retention/batches/:id', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(
         fetch('/retention/batches/${batch.id}/' + action, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ note: note }) })
           .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
           .then(function(res){ if(!res.ok) throw new Error(res.d.error); location.reload(); })
-          .catch(function(e){ alert(e.message); });
+          .catch(function(e){ toast(e.message, 'danger'); });
       }
     </script>`;
 

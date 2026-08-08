@@ -121,7 +121,7 @@ router.get('/leave/new', requirePage((ctx) => {
         fetch('/leave', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
           .then(r => r.json().then(d => ({ok:r.ok,d})))
           .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.href = '/leave/' + d.id; })
-          .catch(e => alert(e.message));
+          .catch(e => toast(e.message, 'danger'));
       });
     </script>`;
   html(ctx, 200, layout({ user: ctx.user, title: 'ยื่นคำขอลา', path: '/leave/new', content }));
@@ -160,18 +160,18 @@ router.get('/leave/:id', requirePage((ctx) => {
       function decide(action) {
         var note = prompt(action === 'reject' ? 'ระบุเหตุผลที่ไม่${esc(decisionVerb(req.leave_type))}' : 'หมายเหตุ (ถ้ามี)');
         if (note === null) return;
-        if (action === 'reject' && !note.trim()) { alert('กรุณาระบุเหตุผล'); return; }
+        if (action === 'reject' && !note.trim()) { toast('กรุณาระบุเหตุผล', 'warning'); return; }
         fetch('/leave/${req.id}/' + action, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({note})})
           .then(r => r.json().then(d => ({ok:r.ok,d})))
           .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
-          .catch(e => alert(e.message));
+          .catch(e => toast(e.message, 'danger'));
       }
       function cancelRequest() {
         if (!confirm('ยืนยันยกเลิกคำขอนี้?')) return;
         fetch('/leave/${req.id}/cancel', {method:'POST'})
           .then(r => r.json().then(d => ({ok:r.ok,d})))
           .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
-          .catch(e => alert(e.message));
+          .catch(e => toast(e.message, 'danger'));
       }
     </script>`;
   html(ctx, 200, layout({ user: ctx.user, title: 'รายละเอียดคำขอ', path: '/leave', content }));
