@@ -1,11 +1,12 @@
 services:
   - type: web
     name: esaraban
-    runtime: node
+    runtime: docker # ต้องใช้ Docker ไม่ใช่ Node เพราะ OCR + ประทับตราลง PDF จริงต้องมี
+    # tesseract/poppler-utils/chromium/qpdf บนเซิร์ฟเวอร์ (apt install ได้เฉพาะบน Docker runtime
+    # เท่านั้น — Node runtime ธรรมดาของ Render ไม่อนุญาต) ดู esaraban/Dockerfile และ
+    # deploy/RENDER.md หัวข้อ "Docker runtime"
     plan: free
     rootDir: esaraban
-    buildCommand: "true" # no dependencies to install
-    startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
