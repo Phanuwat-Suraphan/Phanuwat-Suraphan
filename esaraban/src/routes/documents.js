@@ -522,7 +522,7 @@ router.get('/documents/:id', requirePage((ctx) => {
 
         <div class="card">
           <div class="card-header"><h3 class="mt-0">ไฟล์แนบ (${attachments.length})</h3></div>
-          ${attachments.length ? attachments.map((a) => `
+          ${attachments.length ? attachments.map((a, i) => `
             <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
               <div class="flex items-center justify-between">
                 <div>📄 ${esc(a.filename)} <span class="text-muted" style="font-size:.78rem">(${Math.round(a.filesize / 1024)} KB)</span></div>
@@ -534,13 +534,69 @@ router.get('/documents/:id', requirePage((ctx) => {
               <div id="preview-${a.id}" style="display:none;margin-top:.6rem"></div>
             </div>`).join('') : emptyState('📎', 'ยังไม่มีไฟล์แนบ')}
           <script>
+            // ตราประทับ "ลงรับ" ซ้อนบนตัวอย่าง PDF ของไฟล์แรกเท่านั้น (แนวทางเดียวกับที่โปรแกรมสารบรรณ
+            // ทั่วไปทำ — ปั๊มตราบนเอกสารต้นฉบับ) เฉพาะหนังสือรับเท่านั้น ลากวางตำแหน่งได้ (บันทึกอัตโนมัติ
+            // ตอนปล่อยเมาส์) — หมายเหตุ: นี่คือการซ้อนแสดงตอนดูในแอปเท่านั้น ไม่ได้ฝังลงในไฟล์ PDF จริง
+            var STAMP_DIRECTION = ${JSON.stringify(doc.direction)};
+            var STAMP_CAN_EDIT = ${isCreatorOrAdmin ? 'true' : 'false'};
+            var STAMP_X = ${doc.stamp_x != null ? doc.stamp_x : 70};
+            var STAMP_Y = ${doc.stamp_y != null ? doc.stamp_y : 3};
+            var STAMP_HTML = '<div class="doc-stamp"' + (STAMP_CAN_EDIT ? ' id="docStamp" style="cursor:move;left:' : ' style="left:') + STAMP_X + '%;top:' + STAMP_Y + '%">' +
+              '<div class="stamp-title">โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ 1</div>' +
+              '<div>เลขที่รับ ......${esc(doc.doc_number_display)}......</div>' +
+              '<div>วันที่ ......${new Date(doc.created_at).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' })}......</div>' +
+              '<div>เวลา ......${new Date(doc.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}......น.</div>' +
+            '</div>';
+            var stampSaveTimer = null;
+            function saveStampPosition(x, y) {
+              fetch('/documents/${doc.id}/stamp-position', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({x: x, y: y}) })
+                .then(r => r.json().then(d => ({ok: r.ok, d})))
+                .then(({ok, d}) => { if (ok) window.toast('บันทึกตำแหน่งตราประทับแล้ว', 'success'); else window.toast(d.error, 'danger'); })
+                .catch(e => window.toast(e.message, 'danger'));
+            }
+            function makeStampDraggable(wrap, stamp) {
+              stamp.addEventListener('pointerdown', function (e) {
+                e.preventDefault();
+                // overlay โปร่งใสคลุมทั้งกล่อง preview ระหว่างลาก — กัน iframe ของ PDF แย่ง pointer event
+                // ระหว่างลากผ่าน (ปัญหาคลาสสิกของการลากธาตุที่มี iframe ซ้อนอยู่ด้านล่าง)
+                var capture = document.createElement('div');
+                capture.style.cssText = 'position:absolute;inset:0;z-index:5;cursor:move;';
+                wrap.appendChild(capture);
+                function onMove(ev) {
+                  var rect = wrap.getBoundingClientRect();
+                  var x = ((ev.clientX - rect.left) / rect.width) * 100;
+                  var y = ((ev.clientY - rect.top) / rect.height) * 100;
+                  x = Math.max(0, Math.min(96, x));
+                  y = Math.max(0, Math.min(96, y));
+                  stamp.style.left = x + '%';
+                  stamp.style.top = y + '%';
+                  stamp.dataset.x = x;
+                  stamp.dataset.y = y;
+                }
+                function onUp() {
+                  capture.remove();
+                  document.removeEventListener('pointermove', onMove);
+                  document.removeEventListener('pointerup', onUp);
+                  if (stamp.dataset.x !== undefined) saveStampPosition(parseFloat(stamp.dataset.x), parseFloat(stamp.dataset.y));
+                }
+                document.addEventListener('pointermove', onMove);
+                document.addEventListener('pointerup', onUp);
+              });
+            }
             window.togglePreview = function(id){
               var el = document.getElementById('preview-' + id);
               if (el.style.display === 'none') {
                 el.style.display = '';
                 if (!el.dataset.loaded) {
-                  el.innerHTML = '<iframe class="pdf-frame" src="/files/' + id + '" title="ตัวอย่างไฟล์แนบ"></iframe>';
+                  var isFirstFile = ${JSON.stringify(attachments.length ? attachments[0].id : null)} === id;
+                  var showStamp = isFirstFile && STAMP_DIRECTION === 'incoming';
+                  el.innerHTML = '<div class="pdf-preview-wrap"' + (showStamp ? ' id="stampWrap"' : '') + '>' +
+                    '<iframe class="pdf-frame" src="/files/' + id + '" title="ตัวอย่างไฟล์แนบ"></iframe>' +
+                    (showStamp ? STAMP_HTML : '') +
+                  '</div>' +
+                  (showStamp && STAMP_CAN_EDIT ? '<div class="help-text">ลากกล่องตราประทับเพื่อย้ายตำแหน่ง — บันทึกอัตโนมัติทันทีที่ปล่อยเมาส์</div>' : '');
                   el.dataset.loaded = '1';
+                  if (showStamp && STAMP_CAN_EDIT) makeStampDraggable(document.getElementById('stampWrap'), document.getElementById('docStamp'));
                 }
               } else {
                 el.style.display = 'none';
@@ -639,6 +695,24 @@ router.post('/documents/:id/void', requireApi(async (ctx) => {
 
 router.post('/documents/:id/force-delete', requireApi(async (ctx) => {
   await forceDeleteDocument({ documentId: ctx.params.id, reason: ctx.body.reason, actorUser: ctx.user });
+  json(ctx, 200, { ok: true });
+}));
+
+// ตำแหน่งตราประทับ "ลงรับ" ที่ธุรการลากวางเองบนตัวอย่าง PDF (Epic Coding Channel-style stamp) —
+// เก็บเป็น % จากมุมบนซ้าย ไม่ผูกกับ pixel เพราะขนาดจอ/ระดับ zoom ของแต่ละคนต่างกัน
+router.post('/documents/:id/stamp-position', requireApi(async (ctx) => {
+  const doc = getDocument(ctx.params.id);
+  if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
+  if (doc.created_by !== ctx.user.id && !ctx.user.roleCodes.includes('admin')) {
+    throw httpError(403, 'ปรับตำแหน่งตราประทับได้เฉพาะผู้บันทึกเอกสารหรือแอดมินเท่านั้น');
+  }
+  const x = Number(ctx.body.x);
+  const y = Number(ctx.body.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 100 || y < 0 || y > 100) {
+    throw httpError(400, 'ตำแหน่งตราประทับไม่ถูกต้อง');
+  }
+  db.prepare('UPDATE documents SET stamp_x = ?, stamp_y = ?, updated_at = ? WHERE id = ?').run(x, y, nowIso(), doc.id);
+  audit({ userId: ctx.user.id, action: 'stamp_position_updated', tableName: 'documents', recordId: doc.id, detail: { x, y } });
   json(ctx, 200, { ok: true });
 }));
 

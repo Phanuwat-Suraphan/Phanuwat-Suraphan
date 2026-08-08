@@ -418,6 +418,29 @@ tbody tr:last-child td { border-bottom: none; }
 @media (min-width: 900px) { .grid-2 { grid-template-columns: 2fr 1fr; } }
 .stack { display: flex; flex-direction: column; gap: .6rem; }
 .pdf-frame { width: 100%; height: 70vh; border: 1px solid var(--border); border-radius: 8px; background: #525659; }
+
+/* ---------- ตราประทับ "ลงรับ" ซ้อนบนตัวอย่าง PDF (ลากวางตำแหน่งได้) ---------- */
+.pdf-preview-wrap { position: relative; }
+.doc-stamp {
+  position: absolute;
+  min-width: 160px;
+  border: 2px solid #c62b3a;
+  background: rgba(255, 255, 255, 0.94);
+  color: #c62b3a;
+  padding: .5rem .7rem;
+  font-size: .76rem;
+  line-height: 1.6;
+  border-radius: 4px;
+  z-index: 4;
+  font-family: "Noto Sans Thai", sans-serif;
+  user-select: none;
+  touch-action: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .2);
+}
+.doc-stamp .stamp-title {
+  font-weight: 700; text-align: center; margin-bottom: .3rem;
+  border-bottom: 1px solid #c62b3a; padding-bottom: .25rem;
+}
 .chip-row { display: flex; gap: .4rem; flex-wrap: wrap; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(10,16,24,.5); display: none; align-items: center; justify-content: center; z-index: 60; padding: 1rem; }
 .modal-backdrop.show { display: flex; }

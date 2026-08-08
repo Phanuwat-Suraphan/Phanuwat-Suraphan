@@ -157,6 +157,10 @@ export function migrate() {
     retention_until TEXT, -- วันครบกำหนดเก็บ (NULL = permanent เก็บตลอดไป)
     destroyed_at TEXT,
     destroyed_by TEXT REFERENCES users(id),
+    -- ตำแหน่งตราประทับ "ลงรับ" ที่ธุรการลากวางเองบนตัวอย่าง PDF (% จากมุมบนซ้ายของหน้ากระดาษ
+    -- 0-100 ทั้งคู่) — NULL แปลว่ายังไม่เคยตั้งตำแหน่ง ใช้ตำแหน่งมุมขวาบนเป็นค่าเริ่มต้นแทน
+    stamp_x REAL,
+    stamp_y REAL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT
@@ -290,6 +294,11 @@ export function migrate() {
   const userCols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
   if (!userCols.includes('avatar_emoji')) {
     db.exec('ALTER TABLE users ADD COLUMN avatar_emoji TEXT');
+  }
+  const documentCols = db.prepare("PRAGMA table_info(documents)").all().map((c) => c.name);
+  if (!documentCols.includes('stamp_x')) {
+    db.exec('ALTER TABLE documents ADD COLUMN stamp_x REAL');
+    db.exec('ALTER TABLE documents ADD COLUMN stamp_y REAL');
   }
 }
 
