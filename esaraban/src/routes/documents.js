@@ -812,8 +812,8 @@ router.post('/documents/:id/workflow/:stepId/approve', requireApi(async (ctx) =>
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   if (!nextAssigneeId) throw httpError(400, 'กรุณาเลือกผู้รับที่จะส่งต่อ');
   approveAndForward({ stepId: ctx.params.stepId, nextAssigneeId, comment, actorUser: ctx.user });
-  await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
-  json(ctx, 200, { ok: true });
+  const warning = await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
+  json(ctx, 200, { ok: true, warning });
 }));
 
 router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx) => {
@@ -821,23 +821,23 @@ router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   acknowledgeAndComplete({ stepId: ctx.params.stepId, comment, actorUser: ctx.user });
-  await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
-  await stampDirectorDecisionIfApplicable({
+  const warning1 = await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
+  const warning2 = await stampDirectorDecisionIfApplicable({
     documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, decision: 'acknowledge', note: decisionNote,
     decisionX: parsePercent(decisionX), decisionY: parsePercent(decisionY),
   });
-  json(ctx, 200, { ok: true });
+  json(ctx, 200, { ok: true, warning: warning1 || warning2 });
 }));
 
 router.post('/documents/:id/workflow/:stepId/reject', requireApi(async (ctx) => {
   const { reason, markX, markY, decisionX, decisionY, decisionNote } = ctx.body;
   rejectStep({ stepId: ctx.params.stepId, reason, actorUser: ctx.user });
-  await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
-  await stampDirectorDecisionIfApplicable({
+  const warning1 = await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
+  const warning2 = await stampDirectorDecisionIfApplicable({
     documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, decision: 'reject', note: decisionNote || reason,
     decisionX: parsePercent(decisionX), decisionY: parsePercent(decisionY),
   });
-  json(ctx, 200, { ok: true });
+  json(ctx, 200, { ok: true, warning: warning1 || warning2 });
 }));
 
 router.post('/documents/:id/workflow/:stepId/return', requireApi(async (ctx) => {
@@ -935,6 +935,9 @@ function directorTitleMode(stepId, actorUser) {
   return delegatorIsDirector ? 'acting_director' : 'generic';
 }
 
+// คืนค่า warning message ถ้าประทับตราไม่สำเร็จ (undefined ถ้าสำเร็จ หรือข้ามเพราะไม่มีลายเซ็น/ไฟล์แนบ —
+// นั่นไม่ใช่ความผิดพลาด) เพื่อให้ผู้เรียกส่งกลับไปแจ้งผู้ใช้ต่อ ไม่ใช่กลืนความผิดพลาดแบบเงียบๆ เหมือนเดิม
+// ซึ่งทำให้ผู้ใช้ไม่รู้ว่าทำไมข้อความ/ลายเซ็นไม่ติดใน PDF ที่พิมพ์ออกมา
 async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser, markX, markY }) {
   if (!actorUser.signature_image) return;
   const att = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at LIMIT 1').get(documentId);
@@ -956,6 +959,7 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser,
     audit({ userId: actorUser.id, action: 'attachment_mark_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId } });
   } catch (err) {
     audit({ userId: actorUser.id, action: 'attachment_mark_stamp_failed', tableName: 'attachments', recordId: att.id, detail: { documentId, error: err.message } });
+    return `บันทึกผลสำเร็จ แต่ลงลายเซ็น "ทราบ" ลงในไฟล์ PDF จริงไม่สำเร็จ: ${err.message}`;
   }
 }
 
@@ -990,6 +994,7 @@ async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser
     audit({ userId: actorUser.id, action: 'attachment_director_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId, decision, note } });
   } catch (err) {
     audit({ userId: actorUser.id, action: 'attachment_director_stamp_failed', tableName: 'attachments', recordId: att.id, detail: { documentId, decision, error: err.message } });
+    return `บันทึกผลสำเร็จ แต่ลงตราประทับ/ข้อความ "เห็นควรให้" ลงในไฟล์ PDF จริงไม่สำเร็จ: ${err.message}`;
   }
 }
 

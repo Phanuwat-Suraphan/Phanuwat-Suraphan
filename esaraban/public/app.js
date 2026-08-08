@@ -207,13 +207,20 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
-      if (redirectTo) window.location.href = redirectTo;
-      else window.location.reload();
+      if (!redirectTo && !data.warning) { window.location.reload(); return; }
+      window.location.href = appendWarn(redirectTo || (window.location.pathname + window.location.search), data.warning);
     } catch (err) {
       window.toast(err.message || 'เกิดข้อผิดพลาด', 'danger');
       window.restoreBtn(btn);
     }
   };
+
+  // ต่อ ?warn=... (หรือ &warn=... ถ้ามี query อยู่แล้ว) ต่อท้าย URL ปลายทาง — ใช้แสดงคำเตือนแบบ
+  // ไม่บล็อกการทำงานหลัก (เช่น อนุมัติสำเร็จแต่ประทับตราลง PDF จริงไม่สำเร็จ) หลัง reload/redirect
+  function appendWarn(url, warning) {
+    if (!warning) return url;
+    return url + (url.includes('?') ? '&' : '?') + 'warn=' + encodeURIComponent(warning);
+  }
 
   // simple POST action (no pin) used for reject/return with reason prompt
   window.actionWithReason = async function (btn, endpoint, promptText, extra) {
@@ -228,7 +235,8 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
-      window.location.reload();
+      if (data.warning) window.location.href = appendWarn(window.location.pathname + window.location.search, data.warning);
+      else window.location.reload();
     } catch (err) {
       window.toast(err.message || 'เกิดข้อผิดพลาด', 'danger');
       window.restoreBtn(btn);

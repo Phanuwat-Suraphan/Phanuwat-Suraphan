@@ -84,6 +84,7 @@ router.get('/', requirePage((ctx) => {
 
   const greeting = timeGreeting();
   const content = `
+    ${ctx.query.warn ? `<div class="alert alert-warning">⚠️ ${esc(ctx.query.warn)}</div>` : ''}
     <div class="card-header">
       <div>
         <h2 class="mt-0">${greeting.emoji} ${greeting.text} ${esc(user.prefix || '')}${esc(user.first_name)}</h2>
