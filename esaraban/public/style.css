@@ -458,6 +458,44 @@ tbody tr:last-child td { border-bottom: none; }
 .doc-stamp .stamp-title {
   font-weight: 700; text-align: center; margin-bottom: .3rem;
 }
+/* เครื่องหมาย "ทราบ" + ลายเซ็นแบบง่าย ลากวางเองได้ — ของคนในสาย workflow ที่ตัดสินใจ (ต่างจาก .doc-stamp
+   ตราลงรับของธุรการ และ .doc-decision-box กล่องความเห็นของผู้ตัดสินใจคนสุดท้าย) */
+.doc-mark {
+  position: absolute;
+  width: 110px;
+  text-align: center;
+  color: #2222aa;
+  z-index: 4;
+  font-family: "Noto Sans Thai", sans-serif;
+  user-select: none;
+  touch-action: none;
+  cursor: move;
+  background: rgba(255, 255, 255, .5);
+  border-radius: 6px;
+  padding: .2rem;
+}
+.doc-mark .mark-word { font-size: 1.3rem; font-weight: 700; }
+.doc-mark img { max-height: 34px; max-width: 100px; display: block; margin: 0 auto; }
+.doc-mark .mark-name { font-size: .68rem; }
+.doc-decision-box {
+  position: absolute;
+  width: 190px;
+  border: 2px solid #2222aa;
+  background: rgba(255, 255, 255, 0.94);
+  color: #2222aa;
+  padding: .5rem .7rem;
+  font-size: .74rem;
+  line-height: 1.55;
+  border-radius: 4px;
+  z-index: 4;
+  font-family: "Noto Sans Thai", sans-serif;
+  user-select: none;
+  touch-action: none;
+  cursor: move;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .2);
+}
+.doc-decision-box .box-title { font-weight: 700; text-align: center; margin-bottom: .3rem; }
+.doc-decision-box .box-note { font-style: italic; }
 .chip-row { display: flex; gap: .4rem; flex-wrap: wrap; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(10,16,24,.5); display: none; align-items: center; justify-content: center; z-index: 60; padding: 1rem; }
 .modal-backdrop.show { display: flex; }

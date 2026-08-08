@@ -216,7 +216,7 @@
   };
 
   // simple POST action (no pin) used for reject/return with reason prompt
-  window.actionWithReason = async function (btn, endpoint, promptText) {
+  window.actionWithReason = async function (btn, endpoint, promptText, extra) {
     const reason = prompt(promptText || 'ระบุเหตุผล');
     if (reason === null) return;
     window.setBtnLoading(btn, 'กำลังบันทึก...');
@@ -224,7 +224,7 @@
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason }),
+        body: JSON.stringify(Object.assign({ reason }, extra || {})),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');

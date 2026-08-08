@@ -9,7 +9,7 @@ import {
 } from '../services/workflow.js';
 import { extractTextFromPdf, guessFieldsFromText } from '../services/ocr.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream } from '../services/googleDrive.js';
-import { stampPdf, stampDirectorDecision } from '../services/pdfStamp.js';
+import { stampPdf, stampDirectorDecision, stampAcknowledgeMark } from '../services/pdfStamp.js';
 import { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -462,24 +462,46 @@ router.get('/documents/:id', requirePage((ctx) => {
             แล้วให้หน่วยที่เกี่ยวข้องไปจัดทำรายละเอียดต่อ · "ทราบ" ใช้รับทราบเฉยๆ ไม่ได้สั่งการเพิ่ม
           </div>
         </div>
+        ${attachments.length ? `
+        <div class="field">
+          <label>ข้อความบนตราประทับ "เห็นควรให้..." (ใช้เมื่อกดรับทราบ/ไม่อนุมัติ — เว้นว่างได้)</label>
+          <textarea id="decisionNote" placeholder="พิมพ์ข้อความที่จะแสดงบนตราประทับในไฟล์ PDF จริง"></textarea>
+          <div class="help-text">
+            กด "👁️ ดูตัวอย่าง" ที่ไฟล์แนบไฟล์แรกด้านซ้ายเพื่อลากตำแหน่งลายเซ็น "ทราบ" ของคุณ และกล่องความเห็นนี้
+            ก่อนกดปุ่มด้านล่าง — ถ้าไม่ลาก ระบบจะวางในตำแหน่งเริ่มต้นให้อัตโนมัติ
+          </div>
+        </div>` : ''}
         <div class="chip-row">
           <button class="btn btn-success" data-pin-title="ยืนยัน PIN เพื่ออนุมัติและส่งต่อ" onclick="doApprove(this)">✅ อนุมัติและส่งต่อ</button>
           <button class="btn btn-primary" data-pin-title="ยืนยัน PIN เพื่อรับทราบและปิดเรื่อง" onclick="doAcknowledge(this)">✔️ รับทราบ/ปิดเรื่อง</button>
           <button class="btn btn-outline" onclick="actionWithReason(this, '/documents/${doc.id}/workflow/${step.id}/return', 'ระบุเหตุผลที่ส่งกลับแก้ไข')">↩️ ส่งกลับแก้ไข</button>
-          <button class="btn btn-danger" onclick="actionWithReason(this, '/documents/${doc.id}/workflow/${step.id}/reject', 'ระบุเหตุผลที่ไม่อนุมัติ')">✖️ ไม่อนุมัติ</button>
+          <button class="btn btn-danger" onclick="doReject(this)">✖️ ไม่อนุมัติ</button>
         </div>
       </div>
     </div>
     <script>
+      // ตำแหน่งที่ลากไว้ (window.markPos/window.decisionPos จาก script ของกล่องไฟล์แนบด้านบน) — undefined
+      // ถ้าไม่เคยกดดูตัวอย่าง/ไม่เคยลาก ให้ปล่อยเป็น undefined เพื่อให้ฝั่งเซิร์ฟเวอร์ใช้ตำแหน่งเริ่มต้นเอง
+      function stampPositionFields(){
+        var f = {};
+        if (window.markPos) { f.markX = window.markPos.x; f.markY = window.markPos.y; }
+        if (window.decisionPos) { f.decisionX = window.decisionPos.x; f.decisionY = window.decisionPos.y; }
+        var noteEl = document.getElementById('decisionNote');
+        if (noteEl && noteEl.value.trim()) f.decisionNote = noteEl.value.trim();
+        return f;
+      }
       function doApprove(btn){
         var next = document.getElementById('nextAssignee').value;
         var comment = document.getElementById('stepComment').value;
         if (!next) { toast('กรุณาเลือกผู้รับที่จะส่งต่อ ก่อนกดอนุมัติ (ถ้าเป็นผู้รับคนสุดท้ายให้กด "รับทราบ/ปิดเรื่อง" แทน)', 'warning'); return; }
-        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/approve', { nextAssigneeId: next, comment: comment });
+        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/approve', Object.assign({ nextAssigneeId: next, comment: comment }, stampPositionFields()));
       }
       function doAcknowledge(btn){
         var comment = document.getElementById('stepComment').value;
-        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/acknowledge', { comment: comment }, '/?celebrate=1');
+        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/acknowledge', Object.assign({ comment: comment }, stampPositionFields()), '/?celebrate=1');
+      }
+      function doReject(btn){
+        actionWithReason(btn, '/documents/${doc.id}/workflow/${step.id}/reject', 'ระบุเหตุผลที่ไม่อนุมัติ', stampPositionFields());
       }
       // แทรกคำเกษียณมาตรฐานลงในกล่องข้อความ — ไม่ทับของเดิม เพิ่มขึ้นบรรทัดใหม่ พิมพ์ต่อได้ตามปกติ
       // ถ้ามี tailText (เช่น "มอบฝ่าย...ดำเนินการ") จะวางเคอร์เซอร์ไว้ระหว่างกลางให้พิมพ์ชื่อฝ่ายแทรกได้เลย
@@ -601,6 +623,23 @@ router.get('/documents/:id', requirePage((ctx) => {
               '<div>วันที่......${new Date(doc.created_at).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' })}......</div>' +
               '<div>เวลา......${new Date(doc.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}......</div>' +
             '</div>';
+            // เครื่องหมาย "ทราบ" + ลายเซ็นของผู้ใช้คนปัจจุบัน (ถ้ามีลายเซ็นบันทึกไว้ในโปรไฟล์) — ลากวาง
+            // ตำแหน่งเองได้ก่อนกดปุ่มอนุมัติ/รับทราบ/ไม่อนุมัติ ตำแหน่งจะถูกส่งไปพร้อมคำขอนั้นเลย ไม่บันทึก
+            // แยกต่างหาก (ต่างจากตราลงรับที่บันทึกทันทีที่ปล่อยเมาส์ เพราะอันนี้ยังไม่ได้ "ตัดสินใจ" จริง)
+            var CAN_MARK = ${(isCurrentAssignee && ctx.user.signature_image) ? 'true' : 'false'};
+            var MARK_HTML = '<div class="doc-mark" id="ackMark" style="left:8%;top:55%">' +
+              '<div class="mark-word">ทราบ</div>' +
+              ${ctx.user.signature_image ? `'<img src="${esc(ctx.user.signature_image)}" />' +` : "''+"}
+              '<div class="mark-name">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</div>' +
+            '</div>';
+            var DECISION_HTML = '<div class="doc-decision-box" id="decisionBox" style="left:55%;top:66%">' +
+              '<div class="box-title">โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ 1</div>' +
+              '<div>ทราบ / อนุญาต-ไม่อนุญาต / อนุมัติ-ไม่อนุมัติ</div>' +
+              '<div class="box-note">เห็นควรให้ ... (พิมพ์ในช่องด้านซ้าย)</div>' +
+              '<div style="margin-top:.3rem">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</div>' +
+            '</div>';
+            window.markPos = null;
+            window.decisionPos = null;
             var stampSaveTimer = null;
             function saveStampPosition(x, y) {
               fetch('/documents/${doc.id}/stamp-position', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({x: x, y: y}) })
@@ -608,8 +647,8 @@ router.get('/documents/:id', requirePage((ctx) => {
                 .then(({ok, d}) => { if (ok) window.toast('บันทึกตำแหน่งตราประทับแล้ว', 'success'); else window.toast(d.error, 'danger'); })
                 .catch(e => window.toast(e.message, 'danger'));
             }
-            function makeStampDraggable(wrap, stamp) {
-              stamp.addEventListener('pointerdown', function (e) {
+            function makeDraggable(wrap, el, onDragEnd) {
+              el.addEventListener('pointerdown', function (e) {
                 e.preventDefault();
                 // overlay โปร่งใสคลุมทั้งกล่อง preview ระหว่างลาก — กัน iframe ของ PDF แย่ง pointer event
                 // ระหว่างลากผ่าน (ปัญหาคลาสสิกของการลากธาตุที่มี iframe ซ้อนอยู่ด้านล่าง)
@@ -622,21 +661,22 @@ router.get('/documents/:id', requirePage((ctx) => {
                   var y = ((ev.clientY - rect.top) / rect.height) * 100;
                   x = Math.max(0, Math.min(96, x));
                   y = Math.max(0, Math.min(96, y));
-                  stamp.style.left = x + '%';
-                  stamp.style.top = y + '%';
-                  stamp.dataset.x = x;
-                  stamp.dataset.y = y;
+                  el.style.left = x + '%';
+                  el.style.top = y + '%';
+                  el.dataset.x = x;
+                  el.dataset.y = y;
                 }
                 function onUp() {
                   capture.remove();
                   document.removeEventListener('pointermove', onMove);
                   document.removeEventListener('pointerup', onUp);
-                  if (stamp.dataset.x !== undefined) saveStampPosition(parseFloat(stamp.dataset.x), parseFloat(stamp.dataset.y));
+                  if (el.dataset.x !== undefined && onDragEnd) onDragEnd(parseFloat(el.dataset.x), parseFloat(el.dataset.y));
                 }
                 document.addEventListener('pointermove', onMove);
                 document.addEventListener('pointerup', onUp);
               });
             }
+            function makeStampDraggable(wrap, stamp) { makeDraggable(wrap, stamp, saveStampPosition); }
             window.applyStamp = function(attId, btn){
               if (!confirm('ยืนยันประทับตรา "ลงรับ" ลงในไฟล์ PDF จริง ณ ตำแหน่งที่ลากไว้ล่าสุด?\\nระบบจะสร้างไฟล์ใหม่ที่มีตราประทับ โดยเก็บไฟล์ต้นฉบับที่ไม่มีตราไว้เหมือนเดิม')) return;
               window.setBtnLoading(btn);
@@ -648,6 +688,7 @@ router.get('/documents/:id', requirePage((ctx) => {
                 })
                 .catch(e => { window.restoreBtn(btn); window.toast(e.message, 'danger'); });
             };
+            var CAN_DECIDE = ${isCurrentAssignee ? 'true' : 'false'};
             window.togglePreview = function(id){
               var el = document.getElementById('preview-' + id);
               if (el.style.display === 'none') {
@@ -655,13 +696,21 @@ router.get('/documents/:id', requirePage((ctx) => {
                 if (!el.dataset.loaded) {
                   var isFirstFile = ${JSON.stringify(attachments.length ? attachments[0].id : null)} === id;
                   var showStamp = isFirstFile && STAMP_DIRECTION === 'incoming';
-                  el.innerHTML = '<div class="pdf-preview-wrap"' + (showStamp ? ' id="stampWrap"' : '') + '>' +
+                  var showMark = isFirstFile && CAN_MARK;
+                  var showDecision = isFirstFile && CAN_DECIDE;
+                  el.innerHTML = '<div class="pdf-preview-wrap" id="stampWrap">' +
                     '<iframe class="pdf-frame" src="/files/' + id + '" title="ตัวอย่างไฟล์แนบ"></iframe>' +
                     (showStamp ? STAMP_HTML : '') +
+                    (showMark ? MARK_HTML : '') +
+                    (showDecision ? DECISION_HTML : '') +
                   '</div>' +
-                  (showStamp && STAMP_CAN_EDIT ? '<div class="help-text">ลากกล่องตราประทับเพื่อย้ายตำแหน่ง — บันทึกอัตโนมัติทันทีที่ปล่อยเมาส์</div>' : '');
+                  (showStamp && STAMP_CAN_EDIT ? '<div class="help-text">ลากกล่องตราประทับ "ลงรับ" เพื่อย้ายตำแหน่ง — บันทึกอัตโนมัติทันทีที่ปล่อยเมาส์</div>' : '') +
+                  (showMark || showDecision ? '<div class="help-text">ลากกล่อง "ทราบ" และกล่องความเห็นเพื่อย้ายตำแหน่งก่อนกดปุ่มด้านขวา — ตำแหน่งจะถูกใช้ตอนกดปุ่มดำเนินการ</div>' : '');
                   el.dataset.loaded = '1';
-                  if (showStamp && STAMP_CAN_EDIT) makeStampDraggable(document.getElementById('stampWrap'), document.getElementById('docStamp'));
+                  var wrap = document.getElementById('stampWrap');
+                  if (showStamp && STAMP_CAN_EDIT) makeStampDraggable(wrap, document.getElementById('docStamp'));
+                  if (showMark) makeDraggable(wrap, document.getElementById('ackMark'), function(x, y) { window.markPos = { x: x, y: y }; });
+                  if (showDecision) makeDraggable(wrap, document.getElementById('decisionBox'), function(x, y) { window.decisionPos = { x: x, y: y }; });
                 }
               } else {
                 el.style.display = 'none';
@@ -726,28 +775,44 @@ router.post('/documents/:id/assign', requireApi(async (ctx) => {
   json(ctx, 200, { ok: true });
 }));
 
+// ตำแหน่งลายเซ็น/กล่องความเห็นที่ผู้ใช้ลากเลือกเองในหน้าจอก่อนกดปุ่ม — undefined ถ้าไม่ได้ส่งมา (แปลว่า
+// ผู้ใช้ไม่ได้ลาก ให้ pdfStamp.js ใช้ตำแหน่งเริ่มต้นของมันเอง) ไม่ใช่ error เพราะเป็นฟีเจอร์เสริม ไม่บังคับ
+function parsePercent(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : undefined;
+}
+
 router.post('/documents/:id/workflow/:stepId/approve', requireApi(async (ctx) => {
-  const { pin, nextAssigneeId, comment } = ctx.body;
+  const { pin, nextAssigneeId, comment, markX, markY } = ctx.body;
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   if (!nextAssigneeId) throw httpError(400, 'กรุณาเลือกผู้รับที่จะส่งต่อ');
   approveAndForward({ stepId: ctx.params.stepId, nextAssigneeId, comment, actorUser: ctx.user });
-  await stampDirectorDecisionIfApplicable({ documentId: ctx.params.id, actorUser: ctx.user, decision: 'approve', note: comment });
+  await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
   json(ctx, 200, { ok: true });
 }));
 
 router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx) => {
-  const { pin, comment } = ctx.body;
+  const { pin, comment, markX, markY, decisionX, decisionY, decisionNote } = ctx.body;
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   acknowledgeAndComplete({ stepId: ctx.params.stepId, comment, actorUser: ctx.user });
-  await stampDirectorDecisionIfApplicable({ documentId: ctx.params.id, actorUser: ctx.user, decision: 'acknowledge', note: comment });
+  await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
+  await stampDirectorDecisionIfApplicable({
+    documentId: ctx.params.id, actorUser: ctx.user, decision: 'acknowledge', note: decisionNote,
+    decisionX: parsePercent(decisionX), decisionY: parsePercent(decisionY),
+  });
   json(ctx, 200, { ok: true });
 }));
 
 router.post('/documents/:id/workflow/:stepId/reject', requireApi(async (ctx) => {
-  rejectStep({ stepId: ctx.params.stepId, reason: ctx.body.reason, actorUser: ctx.user });
-  await stampDirectorDecisionIfApplicable({ documentId: ctx.params.id, actorUser: ctx.user, decision: 'reject', note: ctx.body.reason });
+  const { reason, markX, markY, decisionX, decisionY, decisionNote } = ctx.body;
+  rejectStep({ stepId: ctx.params.stepId, reason, actorUser: ctx.user });
+  await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
+  await stampDirectorDecisionIfApplicable({
+    documentId: ctx.params.id, actorUser: ctx.user, decision: 'reject', note: decisionNote || reason,
+    decisionX: parsePercent(decisionX), decisionY: parsePercent(decisionY),
+  });
   json(ctx, 200, { ok: true });
 }));
 
@@ -820,11 +885,37 @@ async function saveStampedCopy(att, stampedBuffer, yearBe) {
 
 const SCHOOL_NAME = 'โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ 1';
 
-// ลงกล่องความเห็น/ลายเซ็นของผู้อำนวยการลงในไฟล์ PDF จริง (ต่อจากตราประทับ "ลงรับ" ถ้ามีอยู่แล้ว) —
-// เรียกอัตโนมัติหลังผู้อำนวยการกดอนุมัติ/รับทราบ/ไม่อนุมัติในหน้าเอกสาร ไม่ทำให้ทั้งคำขอ error ถ้าล้มเหลว
-// (เช่น เซิร์ฟเวอร์ยังไม่ได้ติดตั้ง chromium/qpdf) เพราะการดำเนินการ workflow หลักต้องสำเร็จไปก่อนแล้ว
-async function stampDirectorDecisionIfApplicable({ documentId, actorUser, decision, note }) {
-  if (!actorUser.roleCodes.includes('director') && !actorUser.roleCodes.includes('admin')) return;
+// เครื่องหมาย "ทราบ" + ลายเซ็นแบบง่าย — ทุกคนในสาย workflow ที่ตัดสินใจ (อนุมัติ/ส่งต่อ/รับทราบ/ไม่อนุมัติ)
+// ได้เครื่องหมายของตัวเองคนละอัน ไม่จำกัดแค่ผู้อำนวยการ (มีกี่คนตอบก็มีลายเซ็นเท่านั้นบนไฟล์) ตำแหน่ง/
+// เวลาลากมาจาก markX/markY ที่ผู้ใช้ลากเลือกเองในหน้าจอก่อนกดปุ่ม — ไม่ทำให้คำขอ workflow ล้มเหลวถ้า
+// ประทับไม่สำเร็จ (เช่น ยังไม่ติดตั้ง chromium/qpdf) เพราะการดำเนินการ workflow หลักต้องสำเร็จไปก่อนแล้ว
+async function stampAcknowledgeMarkIfApplicable({ documentId, actorUser, markX, markY }) {
+  if (!actorUser.signature_image) return;
+  const att = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at LIMIT 1').get(documentId);
+  if (!att) return;
+  try {
+    const originalBuffer = await readAttachmentBytes(att, { preferStamped: true });
+    const stampedBuffer = await stampAcknowledgeMark({
+      originalBuffer,
+      signatureDataUrl: actorUser.signature_image,
+      prefix: actorUser.prefix,
+      firstName: actorUser.first_name,
+      lastName: actorUser.last_name,
+      dateThaiLong: new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }),
+      xPercent: markX,
+      yPercent: markY,
+    });
+    await saveStampedCopy(att, stampedBuffer, getDocument(documentId)?.year_be);
+    audit({ userId: actorUser.id, action: 'attachment_mark_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId } });
+  } catch (err) {
+    audit({ userId: actorUser.id, action: 'attachment_mark_stamp_failed', tableName: 'attachments', recordId: att.id, detail: { documentId, error: err.message } });
+  }
+}
+
+// กล่องความเห็น/ลงนามของผู้ตัดสินใจคนสุดท้าย — ลงเฉพาะตอนที่ผลลัพธ์เป็นการปิดเรื่อง (รับทราบ/ไม่อนุมัติ)
+// เท่านั้น ต่างจาก mark ด้านบนที่ลงทุกครั้งที่มีคนตัดสินใจในสาย ไม่ว่าจะปิดเรื่องหรือส่งต่อ — note คือ
+// ข้อความในช่อง "เห็นควรให้" ที่ผู้ใช้พิมพ์เอง ไม่ใช่ข้อความเกษียณภายในระบบ (คนละช่องกัน)
+async function stampDirectorDecisionIfApplicable({ documentId, actorUser, decision, note, decisionX, decisionY }) {
   const att = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at LIMIT 1').get(documentId);
   if (!att) return;
   const doc = getDocument(documentId);
@@ -841,9 +932,11 @@ async function stampDirectorDecisionIfApplicable({ documentId, actorUser, decisi
       lastName: actorUser.last_name,
       position: actorUser.position,
       dateThaiLong: new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }),
+      xPercent: decisionX,
+      yPercent: decisionY,
     });
     await saveStampedCopy(att, stampedBuffer, doc?.year_be);
-    audit({ userId: actorUser.id, action: 'attachment_director_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId, decision } });
+    audit({ userId: actorUser.id, action: 'attachment_director_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId, decision, note } });
   } catch (err) {
     audit({ userId: actorUser.id, action: 'attachment_director_stamp_failed', tableName: 'attachments', recordId: att.id, detail: { documentId, decision, error: err.message } });
   }
