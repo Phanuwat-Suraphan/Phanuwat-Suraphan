@@ -256,19 +256,56 @@
   };
   if (document.getElementById('celebrateTrigger')) window.fireConfetti();
 
+  // ---------- keyboard shortcut help (discoverable via "?" or the topbar button — the
+  // shortcuts themselves existed before but had no way for a user to find out about them) ----------
+  const SHORTCUTS = [
+    ['Ctrl/Cmd + K', 'ค้นหาเอกสาร'],
+    ['Ctrl/Cmd + N', 'รับหนังสือใหม่'],
+    ['?', 'แสดงปุ่มลัดนี้'],
+    ['Esc', 'ปิดหน้าต่างนี้'],
+  ];
+  window.toggleShortcutHelp = function (show) {
+    let modal = document.getElementById('shortcutModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'shortcutModal';
+      modal.className = 'modal-backdrop';
+      modal.innerHTML = '<div class="modal">' +
+        '<h3>⌨️ ปุ่มลัดคีย์บอร์ด</h3>' +
+        '<table>' + SHORTCUTS.map(function (s) {
+          return '<tr><td><kbd>' + s[0] + '</kbd></td><td class="text-muted">' + s[1] + '</td></tr>';
+        }).join('') + '</table>' +
+        '<button class="btn btn-outline btn-block" style="margin-top:1rem" onclick="toggleShortcutHelp(false)">ปิด</button>' +
+        '</div>';
+      modal.addEventListener('click', function (e) { if (e.target === modal) window.toggleShortcutHelp(false); });
+      document.body.appendChild(modal);
+    }
+    modal.classList.toggle('show', show);
+  };
+
   // ---------- keyboard shortcuts (UI/UX Bible §28) ----------
   // Ctrl/Cmd+K -> focus search. Ctrl/Cmd+N -> new document (note: some browsers reserve
   // Ctrl+N for "new window" and never deliver the keydown event to the page at all — no
   // workaround exists for that case, it's a browser-level reservation, not a bug here).
   document.addEventListener('keydown', function (e) {
     const mod = e.ctrlKey || e.metaKey;
-    if (!mod) return;
-    if (e.key === 'k' || e.key === 'K') {
-      const input = document.getElementById('globalSearchInput');
-      if (input) { e.preventDefault(); input.focus(); input.select(); }
-    } else if (e.key === 'n' || e.key === 'N') {
+    if (mod) {
+      if (e.key === 'k' || e.key === 'K') {
+        const input = document.getElementById('globalSearchInput');
+        if (input) { e.preventDefault(); input.focus(); input.select(); }
+      } else if (e.key === 'n' || e.key === 'N') {
+        e.preventDefault();
+        window.location.href = '/documents/new?direction=incoming';
+      }
+      return;
+    }
+    if (e.key === '?') {
+      const tag = (e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
       e.preventDefault();
-      window.location.href = '/documents/new?direction=incoming';
+      window.toggleShortcutHelp(true);
+    } else if (e.key === 'Escape') {
+      window.toggleShortcutHelp(false);
     }
   });
 })();

@@ -441,10 +441,30 @@ router.get('/documents/:id', requirePage((ctx) => {
         <div class="card">
           <div class="card-header"><h3 class="mt-0">ไฟล์แนบ (${attachments.length})</h3></div>
           ${attachments.length ? attachments.map((a) => `
-            <div class="flex items-center justify-between" style="padding:.5rem 0;border-bottom:1px solid var(--border)">
-              <div>📄 ${esc(a.filename)} <span class="text-muted" style="font-size:.78rem">(${Math.round(a.filesize / 1024)} KB)</span></div>
-              <a class="btn btn-sm btn-outline" href="/files/${a.id}" target="_blank" rel="noopener">เปิดดู</a>
+            <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
+              <div class="flex items-center justify-between">
+                <div>📄 ${esc(a.filename)} <span class="text-muted" style="font-size:.78rem">(${Math.round(a.filesize / 1024)} KB)</span></div>
+                <div class="chip-row">
+                  <button type="button" class="btn btn-sm btn-outline" onclick="togglePreview('${a.id}')">👁️ ดูตัวอย่าง</button>
+                  <a class="btn btn-sm btn-outline" href="/files/${a.id}" target="_blank" rel="noopener">เปิดแท็บใหม่</a>
+                </div>
+              </div>
+              <div id="preview-${a.id}" style="display:none;margin-top:.6rem"></div>
             </div>`).join('') : emptyState('📎', 'ยังไม่มีไฟล์แนบ')}
+          <script>
+            window.togglePreview = function(id){
+              var el = document.getElementById('preview-' + id);
+              if (el.style.display === 'none') {
+                el.style.display = '';
+                if (!el.dataset.loaded) {
+                  el.innerHTML = '<iframe class="pdf-frame" src="/files/' + id + '" title="ตัวอย่างไฟล์แนบ"></iframe>';
+                  el.dataset.loaded = '1';
+                }
+              } else {
+                el.style.display = 'none';
+              }
+            };
+          </script>
           <form id="addAttachForm" style="margin-top:.9rem">
             <input type="file" id="addAttachInput" accept="application/pdf" onchange="attachFilePreview(this,'addAttachPreview')" />
             <div id="addAttachPreview" class="help-text"></div>

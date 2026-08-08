@@ -128,6 +128,7 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
       </div>
       <div class="topbar-spacer"></div>
       <div class="topbar-right">
+        <button class="icon-btn" onclick="toggleShortcutHelp(true)" title="ปุ่มลัดคีย์บอร์ด (?)">⌨️</button>
         <button class="icon-btn" onclick="toggleTheme()" title="สลับธีมสว่าง/มืด">🌓</button>
         <a class="icon-btn icon-btn-wrap" href="/notifications" title="การแจ้งเตือน">
           🔔
