@@ -9,6 +9,7 @@ import {
 } from '../services/workflow.js';
 import { extractTextFromPdf, guessFieldsFromText } from '../services/ocr.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream } from '../services/googleDrive.js';
+import { stampPdf, stampDirectorDecision } from '../services/pdfStamp.js';
 import { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -528,7 +529,8 @@ router.get('/documents/:id', requirePage((ctx) => {
         <div class="chip-row">${statusBadge(doc.status)}${priorityBadge(doc.priority)}${secretBadge(doc.secret_level)}</div>
       </div>
       <div class="chip-row">
-        <a class="btn btn-outline btn-sm" href="/documents/${doc.id}/print" target="_blank" rel="noopener">🖨️ ดูตัวอย่าง/พิมพ์เอกสาร</a>
+        <a class="btn btn-outline btn-sm" href="${attachments.length ? `/files/${attachments[0].id}` : `/documents/${doc.id}/print`}" target="_blank" rel="noopener">🖨️ พิมพ์เอกสาร${attachments.length ? ' (PDF ที่บันทึกไว้)' : ''}</a>
+        ${attachments.length ? `<a class="btn btn-outline btn-sm" href="/documents/${doc.id}/print" target="_blank" rel="noopener">📝 บันทึกข้อความ/สรุปลายเซ็น</a>` : ''}
         ${canVoid ? `<button class="btn btn-outline btn-sm" onclick="actionWithReason(this, '/documents/${doc.id}/void', 'ระบุเหตุผลที่ยกเลิกเอกสาร (เลขที่จะยังคงอยู่ในลำดับ ไม่ถูกนำไปใช้ซ้ำ)')">ยกเลิกเอกสาร</button>` : ''}
         ${canArchive ? `<button class="btn btn-outline btn-sm" onclick="fetch('/documents/${doc.id}/archive',{method:'POST'}).then(()=>location.reload())">📦 จัดเก็บเข้าแฟ้ม</button>` : ''}
         ${canForceDelete ? `<button class="btn btn-danger btn-sm" onclick="forceDeleteThisDoc(this)">🗑️ ลบเอกสาร (แอดมิน)</button>` : ''}
@@ -572,11 +574,15 @@ router.get('/documents/:id', requirePage((ctx) => {
           <div class="card-header"><h3 class="mt-0">ไฟล์แนบ (${attachments.length})</h3></div>
           ${attachments.length ? attachments.map((a, i) => `
             <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
-              <div class="flex items-center justify-between">
-                <div>📄 ${esc(a.filename)} <span class="text-muted" style="font-size:.78rem">(${Math.round(a.filesize / 1024)} KB)</span></div>
+              <div class="flex items-center justify-between flex-wrap gap-2">
+                <div>📄 ${esc(a.filename)} <span class="text-muted" style="font-size:.78rem">(${Math.round(a.filesize / 1024)} KB)</span>
+                  ${a.stamped_storage_provider ? '<span class="badge badge-success" style="margin-left:.4rem">✅ ประทับตราแล้ว</span>' : ''}
+                </div>
                 <div class="chip-row">
+                  ${i === 0 && doc.direction === 'incoming' && isCreatorOrAdmin ? `<button type="button" class="btn btn-sm btn-primary" onclick="applyStamp('${a.id}', this)">🖋️ ประทับตราลงไฟล์ PDF จริง</button>` : ''}
                   <button type="button" class="btn btn-sm btn-outline" onclick="togglePreview('${a.id}')">👁️ ดูตัวอย่าง</button>
                   <a class="btn btn-sm btn-outline" href="/files/${a.id}" target="_blank" rel="noopener">เปิดแท็บใหม่</a>
+                  ${a.stamped_storage_provider ? `<a class="btn btn-sm btn-outline" href="/files/${a.id}?original=1" target="_blank" rel="noopener">ดูต้นฉบับ (ไม่มีตรา)</a>` : ''}
                 </div>
               </div>
               <div id="preview-${a.id}" style="display:none;margin-top:.6rem"></div>
@@ -591,9 +597,9 @@ router.get('/documents/:id', requirePage((ctx) => {
             var STAMP_Y = ${doc.stamp_y != null ? doc.stamp_y : 3};
             var STAMP_HTML = '<div class="doc-stamp"' + (STAMP_CAN_EDIT ? ' id="docStamp" style="cursor:move;left:' : ' style="left:') + STAMP_X + '%;top:' + STAMP_Y + '%">' +
               '<div class="stamp-title">โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ 1</div>' +
-              '<div>เลขที่รับ ......${esc(doc.doc_number_display)}......</div>' +
-              '<div>วันที่ ......${new Date(doc.created_at).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' })}......</div>' +
-              '<div>เวลา ......${new Date(doc.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}......น.</div>' +
+              '<div>เลขรับ......${esc(doc.doc_number_display)}......</div>' +
+              '<div>วันที่......${new Date(doc.created_at).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' })}......</div>' +
+              '<div>เวลา......${new Date(doc.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}......</div>' +
             '</div>';
             var stampSaveTimer = null;
             function saveStampPosition(x, y) {
@@ -631,6 +637,17 @@ router.get('/documents/:id', requirePage((ctx) => {
                 document.addEventListener('pointerup', onUp);
               });
             }
+            window.applyStamp = function(attId, btn){
+              if (!confirm('ยืนยันประทับตรา "ลงรับ" ลงในไฟล์ PDF จริง ณ ตำแหน่งที่ลากไว้ล่าสุด?\\nระบบจะสร้างไฟล์ใหม่ที่มีตราประทับ โดยเก็บไฟล์ต้นฉบับที่ไม่มีตราไว้เหมือนเดิม')) return;
+              window.setBtnLoading(btn);
+              fetch('/documents/${doc.id}/attachments/' + attId + '/apply-stamp', { method: 'POST' })
+                .then(r => r.json().then(d => ({ok: r.ok, d})))
+                .then(({ok, d}) => {
+                  if (ok) { window.toast('ประทับตราลงไฟล์ PDF สำเร็จ', 'success'); location.reload(); }
+                  else { window.restoreBtn(btn); window.toast(d.error, 'danger'); }
+                })
+                .catch(e => { window.restoreBtn(btn); window.toast(e.message, 'danger'); });
+            };
             window.togglePreview = function(id){
               var el = document.getElementById('preview-' + id);
               if (el.style.display === 'none') {
@@ -715,6 +732,7 @@ router.post('/documents/:id/workflow/:stepId/approve', requireApi(async (ctx) =>
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   if (!nextAssigneeId) throw httpError(400, 'กรุณาเลือกผู้รับที่จะส่งต่อ');
   approveAndForward({ stepId: ctx.params.stepId, nextAssigneeId, comment, actorUser: ctx.user });
+  await stampDirectorDecisionIfApplicable({ documentId: ctx.params.id, actorUser: ctx.user, decision: 'approve', note: comment });
   json(ctx, 200, { ok: true });
 }));
 
@@ -723,11 +741,13 @@ router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   acknowledgeAndComplete({ stepId: ctx.params.stepId, comment, actorUser: ctx.user });
+  await stampDirectorDecisionIfApplicable({ documentId: ctx.params.id, actorUser: ctx.user, decision: 'acknowledge', note: comment });
   json(ctx, 200, { ok: true });
 }));
 
 router.post('/documents/:id/workflow/:stepId/reject', requireApi(async (ctx) => {
   rejectStep({ stepId: ctx.params.stepId, reason: ctx.body.reason, actorUser: ctx.user });
+  await stampDirectorDecisionIfApplicable({ documentId: ctx.params.id, actorUser: ctx.user, decision: 'reject', note: ctx.body.reason });
   json(ctx, 200, { ok: true });
 }));
 
@@ -764,6 +784,100 @@ router.post('/documents/:id/stamp-position', requireApi(async (ctx) => {
   json(ctx, 200, { ok: true });
 }));
 
+// อ่านเนื้อไฟล์ดิบของไฟล์แนบจาก storage provider (ใช้ร่วมกันทั้งตอนประทับตรารับและตอนลงนามผู้อำนวยการ)
+async function readAttachmentBytes(att, { preferStamped = false } = {}) {
+  const useStamped = preferStamped && att.stamped_storage_provider;
+  const provider = useStamped ? att.stamped_storage_provider : att.storage_provider;
+  const filepath = useStamped ? att.stamped_filepath : att.filepath;
+  const driveFileId = useStamped ? att.stamped_drive_file_id : att.drive_file_id;
+  if (provider === 'google_drive') {
+    const stream = await downloadFileStream(driveFileId);
+    if (!stream) throw httpError(404, 'ไม่พบไฟล์บน Google Drive');
+    const chunks = [];
+    for await (const chunk of Readable.fromWeb(stream)) chunks.push(chunk);
+    return Buffer.concat(chunks);
+  }
+  const filePath = path.join(UPLOAD_DIR, filepath);
+  if (!fs.existsSync(filePath)) throw httpError(404, 'ไม่พบไฟล์');
+  return fs.readFileSync(filePath);
+}
+
+// บันทึกสำเนาที่ประทับตรา/ลงนามแล้วกลับเข้า storage provider เดียวกับไฟล์ต้นฉบับ แล้วอัปเดตคอลัมน์
+// stamped_* ของ attachments (เขียนทับของเดิม เพราะไฟล์ใหม่มีทั้งกล่องเดิม + กล่องใหม่ซ้อนกันอยู่แล้ว)
+async function saveStampedCopy(att, stampedBuffer, yearBe) {
+  if (isGoogleDriveEnabled()) {
+    const folderId = await ensureCategoryFolder({ yearBe: yearBe || (new Date().getFullYear() + 543), typeName: 'ประทับตราแล้ว' });
+    const driveFileId = await uploadFile({ buffer: stampedBuffer, filename: `${att.id}__stamped__${att.filename}`, mimeType: 'application/pdf', folderId });
+    db.prepare(`UPDATE attachments SET stamped_storage_provider = 'google_drive', stamped_filepath = NULL, stamped_drive_file_id = ?, stamped_at = ? WHERE id = ?`)
+      .run(driveFileId, nowIso(), att.id);
+  } else {
+    const safeName = `${att.id}-stamped.pdf`;
+    fs.writeFileSync(path.join(UPLOAD_DIR, safeName), stampedBuffer);
+    db.prepare(`UPDATE attachments SET stamped_storage_provider = 'local', stamped_filepath = ?, stamped_drive_file_id = NULL, stamped_at = ? WHERE id = ?`)
+      .run(safeName, nowIso(), att.id);
+  }
+}
+
+const SCHOOL_NAME = 'โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ 1';
+
+// ลงกล่องความเห็น/ลายเซ็นของผู้อำนวยการลงในไฟล์ PDF จริง (ต่อจากตราประทับ "ลงรับ" ถ้ามีอยู่แล้ว) —
+// เรียกอัตโนมัติหลังผู้อำนวยการกดอนุมัติ/รับทราบ/ไม่อนุมัติในหน้าเอกสาร ไม่ทำให้ทั้งคำขอ error ถ้าล้มเหลว
+// (เช่น เซิร์ฟเวอร์ยังไม่ได้ติดตั้ง chromium/qpdf) เพราะการดำเนินการ workflow หลักต้องสำเร็จไปก่อนแล้ว
+async function stampDirectorDecisionIfApplicable({ documentId, actorUser, decision, note }) {
+  if (!actorUser.roleCodes.includes('director') && !actorUser.roleCodes.includes('admin')) return;
+  const att = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at LIMIT 1').get(documentId);
+  if (!att) return;
+  const doc = getDocument(documentId);
+  try {
+    const originalBuffer = await readAttachmentBytes(att, { preferStamped: true });
+    const stampedBuffer = await stampDirectorDecision({
+      originalBuffer,
+      schoolName: SCHOOL_NAME,
+      decision,
+      note,
+      signatureDataUrl: actorUser.signature_image || null,
+      prefix: actorUser.prefix,
+      firstName: actorUser.first_name,
+      lastName: actorUser.last_name,
+      position: actorUser.position,
+      dateThaiLong: new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }),
+    });
+    await saveStampedCopy(att, stampedBuffer, doc?.year_be);
+    audit({ userId: actorUser.id, action: 'attachment_director_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId, decision } });
+  } catch (err) {
+    audit({ userId: actorUser.id, action: 'attachment_director_stamp_failed', tableName: 'attachments', recordId: att.id, detail: { documentId, decision, error: err.message } });
+  }
+}
+
+// ประทับตราลงในเนื้อไฟล์ PDF จริง (เขียนสำเนาใหม่ ไม่แตะไฟล์ต้นฉบับ) — ใช้ตำแหน่งที่บันทึกไว้ล่าสุดจาก
+// /stamp-position ต้องติดตั้ง chromium + qpdf บนเซิร์ฟเวอร์ก่อน (ดู DEPLOY.md) ไม่งั้นจะ error 501 ชัดเจน
+router.post('/documents/:id/attachments/:attId/apply-stamp', requireApi(async (ctx) => {
+  const doc = getDocument(ctx.params.id);
+  if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
+  if (doc.created_by !== ctx.user.id && !ctx.user.roleCodes.includes('admin')) {
+    throw httpError(403, 'สร้าง PDF ที่ประทับตราแล้วได้เฉพาะผู้บันทึกเอกสารหรือแอดมินเท่านั้น');
+  }
+  const att = db.prepare('SELECT * FROM attachments WHERE id = ? AND document_id = ?').get(ctx.params.attId, doc.id);
+  if (!att) throw httpError(404, 'ไม่พบไฟล์แนบนี้');
+
+  const originalBuffer = await readAttachmentBytes(att, { preferStamped: false });
+
+  const now = new Date(doc.created_at);
+  const stampedBuffer = await stampPdf({
+    originalBuffer,
+    schoolName: 'โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ 1',
+    docNumberDisplay: doc.doc_number_display,
+    dateThaiLong: now.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }),
+    timeStr: now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }),
+    xPercent: doc.stamp_x,
+    yPercent: doc.stamp_y,
+  });
+
+  await saveStampedCopy(att, stampedBuffer, doc.year_be);
+  audit({ userId: ctx.user.id, action: 'attachment_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId: doc.id } });
+  json(ctx, 200, { ok: true });
+}));
+
 router.post('/documents/:id/archive', requireApi(async (ctx) => {
   archiveDocument({ documentId: ctx.params.id, actorUser: ctx.user });
   json(ctx, 200, { ok: true });
@@ -788,6 +902,7 @@ function contentDispositionHeader(filename) {
 }
 
 // ---------------- file serving (ACL-checked, not static — proxied even for Google Drive so ACL always applies) ----------------
+// ค่าเริ่มต้นเปิดสำเนาที่ประทับตราแล้ว (ถ้ามี) — ต้นฉบับที่ไม่แตะต้องเลยเปิดได้ด้วย ?original=1
 router.get('/files/:attachmentId', requirePage(async (ctx) => {
   const att = db.prepare('SELECT * FROM attachments WHERE id = ?').get(ctx.params.attachmentId);
   if (!att) return html(ctx, 404, '<h1>404</h1>');
@@ -796,15 +911,20 @@ router.get('/files/:attachmentId', requirePage(async (ctx) => {
     return html(ctx, 403, '<h1>403</h1><p>คุณไม่มีสิทธิ์เปิดไฟล์นี้</p>');
   }
 
-  if (att.storage_provider === 'google_drive') {
+  const useStamped = ctx.query.original !== '1' && att.stamped_storage_provider;
+  const storageProvider = useStamped ? att.stamped_storage_provider : att.storage_provider;
+  const filepath = useStamped ? att.stamped_filepath : att.filepath;
+  const driveFileId = useStamped ? att.stamped_drive_file_id : att.drive_file_id;
+
+  if (storageProvider === 'google_drive') {
     let stream;
     try {
-      stream = await downloadFileStream(att.drive_file_id);
+      stream = await downloadFileStream(driveFileId);
     } catch (err) {
       return html(ctx, err.statusCode || 502, `<h1>เกิดข้อผิดพลาด</h1><p>${esc(err.message)}</p>`);
     }
     if (!stream) return html(ctx, 404, '<h1>ไม่พบไฟล์บน Google Drive</h1>');
-    audit({ userId: ctx.user.id, action: 'attachment_opened', tableName: 'attachments', recordId: att.id, ip: ctx.ip });
+    audit({ userId: ctx.user.id, action: 'attachment_opened', tableName: 'attachments', recordId: att.id, ip: ctx.ip, detail: { variant: useStamped ? 'stamped' : 'original' } });
     ctx.res.writeHead(200, {
       'Content-Type': 'application/pdf',
       'Content-Disposition': contentDispositionHeader(att.filename),
@@ -815,9 +935,9 @@ router.get('/files/:attachmentId', requirePage(async (ctx) => {
     return;
   }
 
-  const filePath = path.join(UPLOAD_DIR, att.filepath);
+  const filePath = path.join(UPLOAD_DIR, filepath);
   if (!fs.existsSync(filePath)) return html(ctx, 404, '<h1>ไม่พบไฟล์</h1>');
-  audit({ userId: ctx.user.id, action: 'attachment_opened', tableName: 'attachments', recordId: att.id, ip: ctx.ip });
+  audit({ userId: ctx.user.id, action: 'attachment_opened', tableName: 'attachments', recordId: att.id, ip: ctx.ip, detail: { variant: useStamped ? 'stamped' : 'original' } });
   ctx.res.writeHead(200, {
     'Content-Type': 'application/pdf',
     'Content-Disposition': contentDispositionHeader(att.filename),

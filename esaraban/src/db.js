@@ -246,7 +246,13 @@ export function migrate() {
     mime_type TEXT NOT NULL,
     hash_sha256 TEXT NOT NULL,
     uploaded_by TEXT NOT NULL REFERENCES users(id),
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    -- สำเนาที่ประทับตรา "ลงรับ" ฝังลงในเนื้อไฟล์ PDF จริงแล้ว (ต่างจาก stamp_x/stamp_y ของ documents
+    -- ที่เป็นแค่ตำแหน่งซ้อนแสดงในเว็บ) — ไฟล์ต้นฉบับใน filepath/drive_file_id ข้างบนยังคงเดิมไม่แตะต้อง
+    stamped_storage_provider TEXT, -- local | google_drive | NULL (ยังไม่เคยประทับตรา)
+    stamped_filepath TEXT,
+    stamped_drive_file_id TEXT,
+    stamped_at TEXT
   );
 
   -- sequential workflow steps for a document
@@ -319,6 +325,13 @@ export function migrate() {
   if (!documentCols.includes('stamp_x')) {
     db.exec('ALTER TABLE documents ADD COLUMN stamp_x REAL');
     db.exec('ALTER TABLE documents ADD COLUMN stamp_y REAL');
+  }
+  const attachmentCols = db.prepare("PRAGMA table_info(attachments)").all().map((c) => c.name);
+  if (!attachmentCols.includes('stamped_storage_provider')) {
+    db.exec('ALTER TABLE attachments ADD COLUMN stamped_storage_provider TEXT');
+    db.exec('ALTER TABLE attachments ADD COLUMN stamped_filepath TEXT');
+    db.exec('ALTER TABLE attachments ADD COLUMN stamped_drive_file_id TEXT');
+    db.exec('ALTER TABLE attachments ADD COLUMN stamped_at TEXT');
   }
 }
 

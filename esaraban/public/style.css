@@ -442,9 +442,9 @@ tbody tr:last-child td { border-bottom: none; }
 .doc-stamp {
   position: absolute;
   min-width: 160px;
-  border: 2px solid #c62b3a;
+  border: 2px solid #2222aa;
   background: rgba(255, 255, 255, 0.94);
-  color: #c62b3a;
+  color: #2222aa;
   padding: .5rem .7rem;
   font-size: .76rem;
   line-height: 1.6;
@@ -457,7 +457,6 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .doc-stamp .stamp-title {
   font-weight: 700; text-align: center; margin-bottom: .3rem;
-  border-bottom: 1px solid #c62b3a; padding-bottom: .25rem;
 }
 .chip-row { display: flex; gap: .4rem; flex-wrap: wrap; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(10,16,24,.5); display: none; align-items: center; justify-content: center; z-index: 60; padding: 1rem; }

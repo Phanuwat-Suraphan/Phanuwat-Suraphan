@@ -46,6 +46,17 @@ node --version   # confirm v22.x — required for node:sqlite
 # optional: OCR auto-fill on the new-document form (Tesseract — free, no API key/cost)
 # skip this if you don't need the "อ่านข้อมูลจากไฟล์อัตโนมัติ" button; the app works fine without it
 apt install -y tesseract-ocr tesseract-ocr-tha poppler-utils
+
+# optional: burn the "received" stamp / director's signature box into the actual PDF file
+# skip this if you don't need the "ประทับตราลงไฟล์ PDF จริง" button — the app works fine without
+# it, it just falls back to the CSS-only on-screen stamp overlay and shows a clear 501 error
+# if someone tries to use the real-PDF-stamping button anyway. Chromium renders the Thai-text
+# stamp box as a one-page PDF (headless print-to-pdf); qpdf overlays that page onto page 1 of
+# the original PDF without touching any other page or re-encoding the rest of the file.
+apt install -y chromium qpdf
+# Debian sometimes names the binary "chromium", Ubuntu older releases "chromium-browser" — if
+# `which chromium` comes back empty after install, set CHROME_BIN=chromium-browser (or the
+# actual binary name) as an environment variable for the esaraban service.
 ```
 
 ## 3. Deploy the app
