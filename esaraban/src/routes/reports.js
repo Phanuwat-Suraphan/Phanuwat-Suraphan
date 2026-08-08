@@ -41,17 +41,17 @@ router.get('/reports', requirePage((ctx) => {
 
 router.get('/reports/export.csv', requirePage((ctx) => {
   const rows = db.prepare(`
-    SELECT d.doc_number_display, d.direction, d.title, dep.name as dept_name, dt.name as type_name,
+    SELECT d.doc_number_display, d.direction, d.title, dep.name as dept_name,
            d.priority, d.secret_level, d.status, d.correspondent_name, d.created_at
-    FROM documents d JOIN departments dep ON dep.id = d.department_id JOIN document_types dt ON dt.id = d.doc_type_id
+    FROM documents d JOIN departments dep ON dep.id = d.department_id
     WHERE d.deleted_at IS NULL ORDER BY d.created_at DESC`).all();
 
-  const header = ['เลขที่', 'ประเภทการรับส่ง', 'เรื่อง', 'ฝ่าย', 'ประเภทเอกสาร', 'ความเร็ว', 'ชั้นความลับ', 'สถานะ', 'หน่วยงาน', 'วันที่บันทึก'];
+  const header = ['เลขที่', 'ประเภทการรับส่ง', 'เรื่อง', 'ฝ่าย', 'ความเร็ว', 'ชั้นความลับ', 'สถานะ', 'หน่วยงาน', 'วันที่บันทึก'];
   const csvEscape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const lines = [header.map(csvEscape).join(',')];
   for (const r of rows) {
     lines.push([
-      r.doc_number_display, r.direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก', r.title, r.dept_name, r.type_name,
+      r.doc_number_display, r.direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก', r.title, r.dept_name,
       LABELS.PRIORITY_LABEL[r.priority] || r.priority, LABELS.SECRET_LABEL[r.secret_level] || r.secret_level,
       LABELS.STATUS_LABEL[r.status] || r.status, r.correspondent_name, r.created_at,
     ].map(csvEscape).join(','));

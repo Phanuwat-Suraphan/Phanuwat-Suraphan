@@ -28,9 +28,13 @@ function listDeptOptions(selected) {
   return db.prepare('SELECT * FROM departments ORDER BY name').all()
     .map((d) => `<option value="${d.id}" ${d.id === selected ? 'selected' : ''}>${esc(d.name)}</option>`).join('');
 }
-function listTypeOptions(selected) {
-  return db.prepare('SELECT * FROM document_types ORDER BY name').all()
-    .map((t) => `<option value="${t.id}" ${t.id === selected ? 'selected' : ''}>${esc(t.name)}</option>`).join('');
+// ประเภทเอกสารตัดออกจากฟอร์มแล้วตามคำขอ — เอกสารใหม่ทุกฉบับใช้ประเภทนี้เป็นค่าเริ่มต้นเดียวกันหมด
+// (คอลัมน์/ตาราง document_types ยังอยู่เผื่ออนาคต แค่ไม่ให้ผู้ใช้เลือกเองแล้ว)
+function defaultDocTypeId() {
+  const row = db.prepare("SELECT id FROM document_types WHERE name = 'หนังสือภายนอก'").get()
+    || db.prepare('SELECT id FROM document_types ORDER BY name LIMIT 1').get();
+  if (!row) throw httpError(500, 'ไม่พบประเภทเอกสารเริ่มต้นในระบบ (ตาราง document_types ว่างเปล่า)');
+  return row.id;
 }
 function listUserOptions(excludeId) {
   return db.prepare(`
@@ -62,7 +66,6 @@ router.get('/documents', requirePage((ctx) => {
     <tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer">
       <td><strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong></td>
       <td>${esc(d.title)}${d.secret_level !== 'normal' ? ' 🔒' : ''}</td>
-      <td>${esc(d.type_name)}</td>
       <td>${esc(d.dept_name)}</td>
       <td>${priorityBadge(d.priority)}</td>
       <td>${statusBadge(d.status)}</td>
@@ -85,7 +88,7 @@ router.get('/documents', requirePage((ctx) => {
         <button class="btn btn-outline" type="submit">กรอง</button>
       </form>
       ${rows.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ประเภท</th><th>ฝ่าย</th><th>ความเร็ว</th><th>สถานะ</th><th>วันที่</th></tr></thead>
+        <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ฝ่าย</th><th>ความเร็ว</th><th>สถานะ</th><th>วันที่</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table></div>`
       : emptyState('📭', `ไม่มี${direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก'}ในรายการนี้`)}
     </div>`;
@@ -109,10 +112,6 @@ router.get('/documents/new', requirePage((ctx) => {
           <div class="field">
             <label>${direction === 'incoming' ? 'หน่วยงาน/บุคคลต้นทาง' : 'หน่วยงาน/บุคคลปลายทาง'} *</label>
             <input type="text" name="correspondentName" required placeholder="เช่น สพฐ., ผู้ปกครอง..." />
-          </div>
-          <div class="field">
-            <label>ประเภทเอกสาร *</label>
-            <select name="docTypeId" required>${listTypeOptions()}</select>
           </div>
           <div class="field">
             <label>ฝ่ายที่รับผิดชอบ *</label>
@@ -287,12 +286,12 @@ router.post('/documents/ocr-extract', requireApi(async (ctx) => {
 // ---------------- create ----------------
 router.post('/documents', requireApi(async (ctx) => {
   const b = ctx.body;
-  if (!b.title || !b.correspondentName || !b.docTypeId || !b.departmentId) {
-    throw httpError(400, 'กรุณากรอกข้อมูลที่จำเป็นให้ครบถ้วน (ชื่อเรื่อง, หน่วยงาน, ประเภท, ฝ่าย)');
+  if (!b.title || !b.correspondentName || !b.departmentId) {
+    throw httpError(400, 'กรุณากรอกข้อมูลที่จำเป็นให้ครบถ้วน (ชื่อเรื่อง, หน่วยงาน, ฝ่าย)');
   }
   const doc = createDocument({
     direction: b.direction === 'outgoing' ? 'outgoing' : 'incoming',
-    title: b.title.trim(), subject: b.subject?.trim(), docTypeId: b.docTypeId, departmentId: b.departmentId,
+    title: b.title.trim(), subject: b.subject?.trim(), docTypeId: defaultDocTypeId(), departmentId: b.departmentId,
     priority: b.priority, secretLevel: b.secretLevel, correspondentName: b.correspondentName.trim(),
     externalDocNumber: b.externalDocNumber?.trim(), externalDocDate: b.externalDocDate || null, dueDate: b.dueDate || null,
     retentionClass: b.retentionClass, createdBy: ctx.user.id,
@@ -557,7 +556,6 @@ router.get('/documents/:id', requirePage((ctx) => {
               <tr><td class="text-muted">${doc.direction === 'incoming' ? 'หน่วยงานต้นทาง' : 'หน่วยงานปลายทาง'}</td><td>${esc(doc.correspondent_name)}</td></tr>
               ${doc.external_doc_number ? `<tr><td class="text-muted">เลขหนังสืออ้างอิง</td><td>${esc(doc.external_doc_number)}</td></tr>` : ''}
               ${doc.external_doc_date ? `<tr><td class="text-muted">ลงวันที่</td><td>${esc(doc.external_doc_date)}</td></tr>` : ''}
-              <tr><td class="text-muted">ประเภท</td><td>${esc(doc.type_name)}</td></tr>
               <tr><td class="text-muted">ฝ่าย</td><td>${esc(doc.dept_name)}</td></tr>
               ${doc.due_date ? `<tr><td class="text-muted">กำหนดเสร็จ</td><td>${esc(doc.due_date)}</td></tr>` : ''}
               <tr><td class="text-muted">อายุการเก็บ</td><td>${esc(RETENTION_LABEL[doc.retention_class] || doc.retention_class)}${doc.retention_until ? ` (ครบกำหนด ${esc(doc.retention_until)})` : ''}</td></tr>

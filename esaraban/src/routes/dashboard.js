@@ -104,9 +104,9 @@ router.get('/', requirePage((ctx) => {
       <div class="card">
         <div class="card-header"><h3 class="mt-0">📌 งานของฉัน — ต้องดำเนินการ</h3><a class="text-muted" href="/tasks" style="font-size:.82rem">ดูทั้งหมด →</a></div>
         ${myPending.length ? `<div class="table-wrap"><table>
-          <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ประเภท</th><th>ความเร็ว</th><th>สถานะ</th></tr></thead>
+          <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ความเร็ว</th><th>สถานะ</th></tr></thead>
           <tbody>${myPending.map((d) => `<tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer">
-            <td>${esc(d.doc_number_display)}</td><td>${esc(d.title)}</td><td>${esc(d.type_name)}</td>
+            <td>${esc(d.doc_number_display)}</td><td>${esc(d.title)}</td>
             <td>${priorityBadge(d.priority)}</td><td>${statusBadge(d.status)}</td></tr>`).join('')}</tbody>
         </table></div>` : illustratedEmptyState('allClear', 'วันนี้ไม่มีงานค้างแล้ว พักผ่อนสบายๆ ได้เลยครับ ☕')}
       </div>
@@ -135,9 +135,9 @@ router.get('/tasks', requirePage((ctx) => {
     <h2>📌 งานของฉัน</h2>
     <div class="card">
       ${rows.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ประเภท</th><th>ความเร็ว</th><th>ชั้นความลับ</th><th>มอบหมายเมื่อ</th></tr></thead>
+        <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ความเร็ว</th><th>ชั้นความลับ</th><th>มอบหมายเมื่อ</th></tr></thead>
         <tbody>${rows.map((d) => `<tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer">
-          <td>${esc(d.doc_number_display)}</td><td>${esc(d.title)}</td><td>${esc(d.type_name)}</td>
+          <td>${esc(d.doc_number_display)}</td><td>${esc(d.title)}</td>
           <td>${priorityBadge(d.priority)}</td><td>${d.secret_level !== 'normal' ? '🔒 ' + esc(d.secret_level) : '-'}</td>
           <td class="text-muted">${fmtDate(d.assigned_at)}</td></tr>`).join('')}</tbody>
       </table></div>` : illustratedEmptyState('allClear', 'ไม่มีงานค้างสำหรับคุณเลยครับ พักผ่อนสบายๆ ได้เลยครับ ☕')}

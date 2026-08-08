@@ -21,7 +21,6 @@ router.get('/retention', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage(
       <td><input type="checkbox" class="destroy-check" value="${d.id}" /></td>
       <td>${esc(d.doc_number_display)}</td>
       <td>${esc(d.title)}</td>
-      <td>${esc(d.type_name)}</td>
       <td>${esc(d.dept_name)}</td>
       <td class="text-muted">${esc(d.retention_until)}</td>
     </tr>`).join('');
@@ -47,7 +46,7 @@ router.get('/retention', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage(
       ${eligible.length ? `
         <form id="batchForm">
           <div class="table-wrap"><table>
-            <thead><tr><th></th><th>เลขที่</th><th>เรื่อง</th><th>ประเภท</th><th>ฝ่าย</th><th>ครบกำหนด</th></tr></thead>
+            <thead><tr><th></th><th>เลขที่</th><th>เรื่อง</th><th>ฝ่าย</th><th>ครบกำหนด</th></tr></thead>
             <tbody>${eligibleRows}</tbody>
           </table></div>
           ${canManage ? `
