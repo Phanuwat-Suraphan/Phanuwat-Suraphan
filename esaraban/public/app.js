@@ -105,6 +105,7 @@
       reader.readAsDataURL(file);
     });
   }
+  window.fileToBase64 = fileToBase64;
 
   // keeps the "data:image/png;base64,..." prefix — used where the value is stored/rendered as-is (signature image)
   window.fileToDataUrl = function (file) {

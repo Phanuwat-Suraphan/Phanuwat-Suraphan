@@ -161,7 +161,7 @@ router.get('/documents/new', requirePage((ctx) => {
           </div>
         </details>
         <div class="field">
-          <label>แนบไฟล์ PDF</label>
+          <label>ไฟล์แนบ 1 (ไฟล์หลัก)</label>
           <input type="file" id="fileInput" accept="application/pdf" onchange="attachFilePreview(this,'filePreview')" />
           <div id="filePreview" class="help-text"></div>
           <div class="help-text">รองรับเฉพาะไฟล์ PDF ขนาดไม่เกิน 10MB (ระบบจะตรวจ magic number และคำนวณ SHA-256 hash)</div>
@@ -169,14 +169,64 @@ router.get('/documents/new', requirePage((ctx) => {
           <div class="help-text">ใช้ Tesseract OCR อ่านตัวอักษรจากไฟล์ที่แนบไว้ด้านบน (เฉพาะ 2 หน้าแรก รองรับไฟล์สแกนขนาดใหญ่ถึง 20MB) แล้วลองกรอกฟิลด์ให้อัตโนมัติ — <strong>เป็นการเดาเบื้องต้นเท่านั้น กรุณาตรวจสอบความถูกต้องทุกครั้งก่อนบันทึก</strong></div>
           <div id="ocrResult"></div>
         </div>
+        <div class="form-grid cols-2">
+          <div class="field">
+            <label>ไฟล์แนบ 2 (ถ้ามี)</label>
+            <input type="file" id="fileInput2" accept="application/pdf" onchange="attachFilePreview(this,'filePreview2')" />
+            <div id="filePreview2" class="help-text"></div>
+          </div>
+          <div class="field">
+            <label>ไฟล์แนบ 3 (ถ้ามี)</label>
+            <input type="file" id="fileInput3" accept="application/pdf" onchange="attachFilePreview(this,'filePreview3')" />
+            <div id="filePreview3" class="help-text"></div>
+          </div>
+        </div>
         <button class="btn btn-primary" type="submit">บันทึกและออกเลข${direction === 'incoming' ? 'รับ' : 'ส่ง'}อัตโนมัติ</button>
         <a class="btn btn-outline" href="/documents?direction=${direction}">ยกเลิก</a>
       </form>
     </div>
     <script>
-      document.getElementById('docForm').addEventListener('submit', function(e){
+      document.getElementById('docForm').addEventListener('submit', async function(e){
         e.preventDefault();
-        submitWithFile(this, 'fileInput', '/documents', { submitLabel: 'บันทึก' });
+        var formEl = this;
+        var btn = formEl.querySelector('[type=submit]');
+        var extraFiles = [document.getElementById('fileInput2').files[0], document.getElementById('fileInput3').files[0]].filter(Boolean);
+        for (var f of extraFiles) {
+          if (f.size > 10 * 1024 * 1024) { window.toast('ไฟล์ "' + f.name + '" ใหญ่เกิน 10MB — เอาออกหรือแนบทีหลังแทน', 'warning'); return; }
+        }
+        window.setBtnLoading(btn, 'กำลังบันทึก...');
+        try {
+          var formData = new FormData(formEl);
+          var payload = {};
+          for (var pair of formData.entries()) payload[pair[0]] = pair[1];
+          var mainFile = document.getElementById('fileInput').files[0];
+          if (mainFile) {
+            if (mainFile.size > 10 * 1024 * 1024) { window.toast('ไฟล์หลักใหญ่เกิน 10MB', 'warning'); window.restoreBtn(btn); return; }
+            payload.fileName = mainFile.name;
+            payload.fileType = mainFile.type || 'application/octet-stream';
+            payload.fileDataBase64 = await window.fileToBase64(mainFile);
+          }
+          var res = await fetch('/documents', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+          var data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
+
+          // แนบไฟล์ 2 และ 3 ต่อทันที (ใช้ endpoint แนบไฟล์เพิ่มเดิมที่มีอยู่แล้ว — ไม่ต้องเพิ่ม backend ใหม่)
+          var docIdMatch = data.redirect.match(/documents\\/([a-f0-9-]+)/);
+          var docId = docIdMatch && docIdMatch[1];
+          var failedExtras = [];
+          for (var ef of extraFiles) {
+            try {
+              var b64 = await window.fileToBase64(ef);
+              var r2 = await fetch('/documents/' + docId + '/attachments', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ fileName: ef.name, fileType: ef.type || 'application/octet-stream', fileDataBase64: b64 }) });
+              if (!r2.ok) failedExtras.push(ef.name);
+            } catch (e) { failedExtras.push(ef.name); }
+          }
+          if (failedExtras.length) window.toast('บันทึกเอกสารสำเร็จ แต่แนบไม่สำเร็จ: ' + failedExtras.join(', '), 'warning');
+          window.location.href = data.redirect;
+        } catch (err) {
+          window.toast(err.message || 'เกิดข้อผิดพลาด', 'danger');
+          window.restoreBtn(btn);
+        }
       });
       window.runOcrExtract = function(btn){ ocrExtractInto(btn, 'fileInput', 'ocrResult', document.getElementById('docForm')); };
     </script>`;
