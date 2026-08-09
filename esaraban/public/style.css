@@ -503,6 +503,8 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .doc-decision-box .box-title { font-weight: 700; text-align: center; margin-bottom: 0.672cqw; /* 4pt */ }
 .doc-decision-box .box-note { font-style: italic; }
+.doc-decision-box .sig { text-align: center; margin-top: 0.672cqw; /* 4pt */ }
+.doc-decision-box .sig img { max-height: 5.714cqw; /* 34pt */ max-width: 18.49cqw; /* 110pt */ }
 .chip-row { display: flex; gap: .4rem; flex-wrap: wrap; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(10,16,24,.5); display: none; align-items: center; justify-content: center; z-index: 60; padding: 1rem; }
 .modal-backdrop.show { display: flex; }

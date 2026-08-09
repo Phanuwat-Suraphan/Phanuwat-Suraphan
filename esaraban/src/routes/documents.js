@@ -666,6 +666,7 @@ router.get('/documents/:id', requirePage((ctx) => {
               '<div class="box-title">${decisionBoxTitleHtml}</div>' +
               '<div id="decisionMarksPreview"></div>' +
               '<div class="box-note">เห็นควรให้ ... (พิมพ์ในช่องด้านซ้าย)</div>' +
+              ${ctx.user.signature_image ? `'<div class="sig"><img src="${esc(ctx.user.signature_image)}" /></div>' +` : "''+"}
               '<div style="margin-top:.3rem">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</div>' +
             '</div>';
             // แสดงเครื่องหมาย ●/○ ตามที่ผู้ใช้ติ๊กไว้จริงในกล่องด้านขวา ให้ตรงกับที่จะฝังลง PDF จริงเป๊ะ —
