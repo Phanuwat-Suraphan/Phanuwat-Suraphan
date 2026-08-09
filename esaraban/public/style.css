@@ -442,20 +442,19 @@ tbody tr:last-child td { border-bottom: none; }
 .pdf-frame { width: 100%; aspect-ratio: 595 / 842; max-height: 90vh; border: 1px solid var(--border); border-radius: 8px; background: #525659; object-fit: contain; display: block; }
 
 /* ---------- ตราประทับ "ลงรับ" ซ้อนบนตัวอย่าง PDF (ลากวางตำแหน่งได้) ---------- */
-/* container-type:inline-size เปิดให้หน่วย cqw (=1% ของความกว้าง wrap) ใช้ได้ — ทุกขนาด/ระยะในกล่องตราประทับ
-   ด้านล่างนี้คำนวณเป็น cqw จากค่า pt จริงที่ใช้ตอนฝังลง PDF จริงใน src/services/pdfStamp.js
-   (pt / 595 * 100) เพื่อให้ตอนลากดูตัวอย่างเห็นขนาดจริง ไม่ใหญ่/เล็กกว่าที่จะพิมพ์ออกมาจริง */
-.pdf-preview-wrap { position: relative; container-type: inline-size; }
+/* ขนาดจริงตอนฝังลง PDF (8pt ตัวอักษร) เล็กเกินไปสำหรับดู/ลากบนจอ — ใช้ขนาดที่อ่านง่ายกว่าแทน (ใหญ่กว่า
+   ของจริงพอสมควรโดยตั้งใจ) ตำแหน่ง (ซึ่งอิง % ของ wrap) ยังตรงกับของจริงเป๊ะเหมือนเดิม มีแค่ขนาดที่ต่างกัน */
+.pdf-preview-wrap { position: relative; }
 .doc-stamp {
   position: absolute;
-  width: 25.21cqw; /* 150pt */
+  min-width: 160px;
   border: 2px solid #2222aa;
   background: rgba(255, 255, 255, 0.94);
   color: #2222aa;
-  padding: 1.008cqw; /* 6pt */
-  font-size: 1.345cqw; /* 8pt */
-  line-height: 1.5;
-  border-radius: 0.672cqw; /* 4pt */
+  padding: .5rem .7rem;
+  font-size: .76rem;
+  line-height: 1.6;
+  border-radius: 4px;
   z-index: 4;
   font-family: "Noto Sans Thai", sans-serif;
   user-select: none;
@@ -463,13 +462,13 @@ tbody tr:last-child td { border-bottom: none; }
   box-shadow: 0 2px 8px rgba(0, 0, 0, .2);
 }
 .doc-stamp .stamp-title {
-  font-weight: 700; text-align: center; margin-bottom: 0.504cqw; /* 3pt */
+  font-weight: 700; text-align: center; margin-bottom: .3rem;
 }
 /* เครื่องหมาย "ทราบ" + ลายเซ็นแบบง่าย ลากวางเองได้ — ของคนในสาย workflow ที่ตัดสินใจ (ต่างจาก .doc-stamp
    ตราลงรับของธุรการ และ .doc-decision-box กล่องความเห็นของผู้ตัดสินใจคนสุดท้าย) */
 .doc-mark {
   position: absolute;
-  width: 21.85cqw; /* 130pt */
+  width: 110px;
   text-align: center;
   color: #2222aa;
   z-index: 4;
@@ -481,19 +480,19 @@ tbody tr:last-child td { border-bottom: none; }
   border-radius: 6px;
   padding: .2rem;
 }
-.doc-mark .mark-word { font-size: 3.361cqw; /* 20pt */ font-weight: 700; }
-.doc-mark img { max-height: 5.042cqw; /* 30pt */ max-width: 18.49cqw; /* 110pt */ display: block; margin: 0 auto; }
-.doc-mark .mark-name { font-size: 1.176cqw; /* 7pt */ }
+.doc-mark .mark-word { font-size: 1.3rem; font-weight: 700; }
+.doc-mark img { max-height: 34px; max-width: 100px; display: block; margin: 0 auto; }
+.doc-mark .mark-name { font-size: .68rem; }
 .doc-decision-box {
   position: absolute;
-  width: 31.93cqw; /* 190pt */
+  width: 220px;
   border: 2px solid #2222aa;
   background: rgba(255, 255, 255, 0.94);
   color: #2222aa;
-  padding: 1.176cqw; /* 7pt */
-  font-size: 1.345cqw; /* 8pt */
+  padding: .6rem .8rem;
+  font-size: .8rem;
   line-height: 1.55;
-  border-radius: 0.672cqw; /* 4pt */
+  border-radius: 4px;
   z-index: 4;
   font-family: "Noto Sans Thai", sans-serif;
   user-select: none;
@@ -501,10 +500,10 @@ tbody tr:last-child td { border-bottom: none; }
   cursor: move;
   box-shadow: 0 2px 8px rgba(0, 0, 0, .2);
 }
-.doc-decision-box .box-title { font-weight: 700; text-align: center; margin-bottom: 0.672cqw; /* 4pt */ }
+.doc-decision-box .box-title { font-weight: 700; text-align: center; margin-bottom: .3rem; }
 .doc-decision-box .box-note { font-style: italic; }
-.doc-decision-box .sig { text-align: center; margin-top: 0.672cqw; /* 4pt */ }
-.doc-decision-box .sig img { max-height: 5.714cqw; /* 34pt */ max-width: 18.49cqw; /* 110pt */ }
+.doc-decision-box .sig { text-align: center; margin-top: .3rem; }
+.doc-decision-box .sig img { max-height: 40px; max-width: 130px; }
 .chip-row { display: flex; gap: .4rem; flex-wrap: wrap; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(10,16,24,.5); display: none; align-items: center; justify-content: center; z-index: 60; padding: 1rem; }
 .modal-backdrop.show { display: flex; }

@@ -432,6 +432,10 @@ router.get('/documents/:id', requirePage((ctx) => {
   const decisionBoxTitleHtml = decisionBoxMode === 'director' ? esc(`ผู้อำนวยการ${SCHOOL_NAME}`)
     : decisionBoxMode === 'acting_director' ? esc('รักษาการในตำแหน่งผู้อำนวยการสถานศึกษา') + '<br/>' + esc(SCHOOL_NAME)
     : esc(SCHOOL_NAME);
+  // เฉพาะ ผอ. ตัวจริง/ผู้รักษาการแทน ผอ. เท่านั้นที่มีเมนูตัดสินใจแบบเต็ม (checkbox ตราประทับ, เห็นควรให้,
+  // อนุมัติ/ไม่อนุมัติ/ส่งกลับแก้ไข) — คนอื่นในสาย workflow มีแค่ "ทราบ" กับ "มอบหมายให้" พอ เพราะตราประทับ
+  // ความเห็นทางการเป็นของ ผอ. คนเดียว ไม่ใช่ของทุกคนที่ผ่านเรื่อง
+  const isDirectorDecision = decisionBoxMode === 'director' || decisionBoxMode === 'acting_director';
   const isCreatorOrAdmin = doc.created_by === ctx.user.id || ctx.user.roleCodes.includes('admin');
   const canAssign = ['registered', 'returned'].includes(doc.status) && isCreatorOrAdmin;
   const canVoid = ['draft', 'registered'].includes(doc.status) && isCreatorOrAdmin;
@@ -469,7 +473,7 @@ router.get('/documents/:id', requirePage((ctx) => {
       </div>` : ''}
       <div class="stack">
         <div>
-          <label>ส่งต่อ/อนุมัติไปยัง (ถ้าต้องการส่งต่อ)</label>
+          <label>${isDirectorDecision ? 'ส่งต่อ/อนุมัติไปยัง (ถ้าต้องการส่งต่อ)' : 'มอบหมายให้ (ถ้าต้องการส่งต่อ)'}</label>
           <select id="nextAssignee"><option value="">— เลือกผู้รับ (ถ้าไม่เลือก แปลว่าคุณคือผู้รับคนสุดท้าย) —</option>${listUserOptions(ctx.user.id)}</select>
         </div>
         <div class="field">
@@ -488,7 +492,7 @@ router.get('/documents/:id', requirePage((ctx) => {
             แล้วให้หน่วยที่เกี่ยวข้องไปจัดทำรายละเอียดต่อ · "ทราบ" ใช้รับทราบเฉยๆ ไม่ได้สั่งการเพิ่ม
           </div>
         </div>
-        ${attachments.length ? `
+        ${attachments.length && isDirectorDecision ? `
         <div class="field">
           <label>เครื่องหมายบนตราประทับ (เลือกได้หลายอัน — เฉพาะอันที่ติ๊กจะแสดงบนตราที่ประทับลงไฟล์ PDF จริง)</label>
           <div class="chip-row" style="gap:.9rem">
@@ -507,10 +511,13 @@ router.get('/documents/:id', requirePage((ctx) => {
           </div>
         </div>` : ''}
         <div class="chip-row">
+          ${isDirectorDecision ? `
           <button class="btn btn-success" data-pin-title="ยืนยัน PIN เพื่ออนุมัติและส่งต่อ" onclick="doApprove(this)">✅ อนุมัติและส่งต่อ</button>
           <button class="btn btn-primary" data-pin-title="ยืนยัน PIN เพื่อรับทราบและปิดเรื่อง" onclick="doAcknowledge(this)">✔️ รับทราบ/ปิดเรื่อง</button>
           <button class="btn btn-outline" onclick="actionWithReason(this, '/documents/${doc.id}/workflow/${step.id}/return', 'ระบุเหตุผลที่ส่งกลับแก้ไข')">↩️ ส่งกลับแก้ไข</button>
-          <button class="btn btn-danger" onclick="doReject(this)">✖️ ไม่อนุมัติ</button>
+          <button class="btn btn-danger" onclick="doReject(this)">✖️ ไม่อนุมัติ</button>` : `
+          <button class="btn btn-success" data-pin-title="ยืนยัน PIN เพื่อมอบหมายให้" onclick="doApprove(this)">➡️ มอบหมายให้</button>
+          <button class="btn btn-primary" data-pin-title="ยืนยัน PIN เพื่อทราบ" onclick="doAcknowledge(this)">✔️ ทราบ</button>`}
         </div>
       </div>
     </div>
@@ -745,7 +752,7 @@ router.get('/documents/:id', requirePage((ctx) => {
                 })
                 .catch(e => { window.restoreBtn(btn); window.toast(e.message, 'danger'); });
             };
-            var CAN_DECIDE = ${isCurrentAssignee ? 'true' : 'false'};
+            var CAN_DECIDE = ${(isCurrentAssignee && isDirectorDecision) ? 'true' : 'false'};
             window.togglePreview = function(id){
               var el = document.getElementById('preview-' + id);
               if (el.style.display === 'none') {
@@ -1008,12 +1015,15 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser,
 // กล่องความเห็น/ลงนามของผู้ตัดสินใจคนสุดท้าย — ลงเฉพาะตอนที่ผลลัพธ์เป็นการปิดเรื่อง (รับทราบ/ไม่อนุมัติ)
 // เท่านั้น ต่างจาก mark ด้านบนที่ลงทุกครั้งที่มีคนตัดสินใจในสาย ไม่ว่าจะปิดเรื่องหรือส่งต่อ — note คือ
 // ข้อความในช่อง "เห็นควรให้" ที่ผู้ใช้พิมพ์เอง ไม่ใช่ข้อความเกษียณภายในระบบ (คนละช่องกัน)
+// จำกัดเฉพาะ ผอ. ตัวจริง/ผู้รักษาการแทน ผอ. เท่านั้น (titleMode !== 'generic') — คนอื่นในสาย workflow แค่
+// "ทราบ" เฉยๆ ไม่มีตราประทับความเห็นทางการ (บังคับฝั่งเซิร์ฟเวอร์ ไม่พึ่งแค่ UI ที่ซ่อนปุ่ม/ช่องไว้แล้ว)
 async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser, decision, note, marks, decisionX, decisionY }) {
+  const titleMode = directorTitleMode(stepId, actorUser);
+  if (titleMode === 'generic') return;
   const att = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at LIMIT 1').get(documentId);
   if (!att) return;
   const doc = getDocument(documentId);
   const forLabel = actingForLabel(stepId, actorUser);
-  const titleMode = directorTitleMode(stepId, actorUser);
   try {
     const originalBuffer = await readAttachmentBytes(att, { preferStamped: true });
     const stampedBuffer = await stampDirectorDecision({
