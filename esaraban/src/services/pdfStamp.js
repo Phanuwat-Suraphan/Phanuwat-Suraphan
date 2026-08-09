@@ -136,8 +136,10 @@ export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, p
 // หัวหน้าฝ่ายปิดเรื่องเอง) ใช้ตำแหน่งจริงของคนนั้นตรงๆ แทนคำที่ตายตัว
 export async function stampDirectorDecision({ originalBuffer, schoolName, decision, note, signatureDataUrl, prefix, firstName, lastName, position, titleMode, actingForLabel, dateThaiLong, xPercent, yPercent }) {
   const mark = (on) => (on ? '●' : '○');
-  const leftPt = Math.max(0, Math.min(80, xPercent ?? 55)) / 100 * PAGE_WIDTH_PT;
-  const topPt = Math.max(0, Math.min(88, yPercent ?? 66)) / 100 * PAGE_HEIGHT_PT;
+  // ค่าเริ่มต้นชิดมุมขวาบนของหน้า (ใต้ตราประทับ "ลงรับ" ที่อยู่มุมขวาบนสุดพอดี) ตามที่ตราจริงของ
+  // โรงเรียนใช้ตำแหน่งนี้ — ผู้ใช้ยังลากปรับตำแหน่งเองได้ก่อนกดปุ่มตามปกติ
+  const leftPt = Math.max(0, Math.min(80, xPercent ?? 58)) / 100 * PAGE_WIDTH_PT;
+  const topPt = Math.max(0, Math.min(88, yPercent ?? 20)) / 100 * PAGE_HEIGHT_PT;
 
   let titleHtml, positionHtml;
   if (titleMode === 'director') {

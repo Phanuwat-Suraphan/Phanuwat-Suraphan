@@ -647,7 +647,7 @@ router.get('/documents/:id', requirePage((ctx) => {
               ${ctx.user.signature_image ? `'<img src="${esc(ctx.user.signature_image)}" />' +` : "''+"}
               '<div class="mark-name">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</div>' +
             '</div>';
-            var DECISION_HTML = '<div class="doc-decision-box" id="decisionBox" style="left:55%;top:66%">' +
+            var DECISION_HTML = '<div class="doc-decision-box" id="decisionBox" style="left:58%;top:20%">' +
               '<div class="box-title">${decisionBoxTitleHtml}</div>' +
               '<div>ทราบ / อนุญาต-ไม่อนุญาต / อนุมัติ-ไม่อนุมัติ</div>' +
               '<div class="box-note">เห็นควรให้ ... (พิมพ์ในช่องด้านซ้าย)</div>' +
