@@ -5,8 +5,13 @@ services:
     # tesseract/poppler-utils/chromium/qpdf บนเซิร์ฟเวอร์ (apt install ได้เฉพาะบน Docker runtime
     # เท่านั้น — Node runtime ธรรมดาของ Render ไม่อนุญาต) ดู esaraban/Dockerfile และ
     # deploy/RENDER.md หัวข้อ "Docker runtime"
+    #
+    # rootDir อย่างเดียวใช้ไม่ได้กับ docker runtime — Render มองหา Dockerfile ที่ root ของ repo เสมอ
+    # (เจอจริงจาก build log: "open Dockerfile: no such file or directory" เพราะไฟล์อยู่ที่
+    # esaraban/Dockerfile ไม่ใช่ root) ต้องระบุ path ให้ตรงๆ ด้วย dockerfilePath/dockerContext แทน
+    dockerfilePath: esaraban/Dockerfile
+    dockerContext: esaraban
     plan: free
-    rootDir: esaraban
     envVars:
       - key: NODE_ENV
         value: production
