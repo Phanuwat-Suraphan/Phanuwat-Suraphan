@@ -438,8 +438,10 @@ tbody tr:last-child td { border-bottom: none; }
 /* aspect-ratio ตรงกับ A4 (595x842pt) เป๊ะ แทนการตั้ง height ตายตัวแบบเดิม (70vh) — ตอนใช้
    height ตายตัวที่ไม่ตรงสัดส่วนหน้าจริง object-fit:contain จะเหลือขอบว่าง (letterbox) ซ้าย-ขวาของ
    ภาพหน้าเอกสาร ทำให้กล่องตราประทับ (ซึ่งอิง % ของ wrap ทั้งกล่อง ไม่ใช่ของภาพจริงที่แสดง) เพี้ยนขนาด/
-   ตำแหน่งไปจากของจริง — ให้ wrap มีสัดส่วนเท่าเอกสารเป๊ะ ภาพจะเต็มกล่องพอดีไม่มีขอบว่างเหลือ */
-.pdf-frame { width: 100%; aspect-ratio: 595 / 842; max-height: 90vh; border: 1px solid var(--border); border-radius: 8px; background: #525659; object-fit: contain; display: block; }
+   ตำแหน่งไปจากของจริง — ให้ wrap มีสัดส่วนเท่าเอกสารเป๊ะ ภาพจะเต็มกล่องพอดีไม่มีขอบว่างเหลือ ตั้งใจไม่ใส่
+   max-height เพราะจะทำให้ width:100% กับ aspect-ratio ขัดกันเองแล้วกลับไป letterbox เหมือนเดิมบนจอกว้าง
+   (เช่น 1080p) ปล่อยให้กล่องสูงตามสัดส่วนหน้า A4 จริงไปเลย เลื่อนดูได้ตามปกติ */
+.pdf-frame { width: 100%; aspect-ratio: 595 / 842; border: 1px solid var(--border); border-radius: 8px; background: #525659; object-fit: contain; display: block; }
 
 /* ---------- ตราประทับ "ลงรับ" ซ้อนบนตัวอย่าง PDF (ลากวางตำแหน่งได้) ---------- */
 /* ขนาดจริงตอนฝังลง PDF (8pt ตัวอักษร) เล็กเกินไปสำหรับดู/ลากบนจอ — ใช้ขนาดที่อ่านง่ายกว่าแทน (ใหญ่กว่า

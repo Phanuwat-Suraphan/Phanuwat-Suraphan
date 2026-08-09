@@ -539,17 +539,27 @@ router.get('/documents/:id', requirePage((ctx) => {
         if (checkedMarks.length) f.decisionMarks = checkedMarks;
         return f;
       }
+      // เตือนถ้าเป็น ผอ. (มี checkbox ให้ติ๊ก) แต่ยังไม่ได้ติ๊กอะไรเลย — เผื่อลืมติ๊กเพราะเป็นคนละจุดกับปุ่ม
+      // ดำเนินการ ไม่บล็อก แค่ถามยืนยันอีกที ถ้าไม่ใช่ ผอ. (ไม่มี checkbox ในหน้าเลย) ผ่านไปได้ปกติ
+      function confirmIfNoMarksChecked(){
+        var allMarks = document.querySelectorAll('.decisionMark');
+        if (!allMarks.length || document.querySelectorAll('.decisionMark:checked').length) return true;
+        return confirm('คุณยังไม่ได้ติ๊กเครื่องหมายใดๆ บนตราประทับ (ทราบ/อนุญาต/ไม่อนุญาต/อนุมัติ/ไม่อนุมัติ) เลย ต้องการดำเนินการต่อโดยไม่ติ๊กเครื่องหมายเลยหรือไม่?');
+      }
       function doApprove(btn){
         var next = document.getElementById('nextAssignee').value;
         var comment = document.getElementById('stepComment').value;
         if (!next) { toast('กรุณาเลือกผู้รับที่จะส่งต่อ ก่อนกดอนุมัติ (ถ้าเป็นผู้รับคนสุดท้ายให้กด "รับทราบ/ปิดเรื่อง" แทน)', 'warning'); return; }
+        if (!confirmIfNoMarksChecked()) return;
         actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/approve', Object.assign({ nextAssigneeId: next, comment: comment }, stampPositionFields()));
       }
       function doAcknowledge(btn){
+        if (!confirmIfNoMarksChecked()) return;
         var comment = document.getElementById('stepComment').value;
         actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/acknowledge', Object.assign({ comment: comment }, stampPositionFields()), '/?celebrate=1');
       }
       function doReject(btn){
+        if (!confirmIfNoMarksChecked()) return;
         actionWithReason(btn, '/documents/${doc.id}/workflow/${step.id}/reject', 'ระบุเหตุผลที่ไม่อนุมัติ', stampPositionFields());
       }
       // แทรกคำเกษียณมาตรฐานลงในกล่องข้อความ — ไม่ทับของเดิม เพิ่มขึ้นบรรทัดใหม่ พิมพ์ต่อได้ตามปกติ
@@ -753,7 +763,7 @@ router.get('/documents/:id', requirePage((ctx) => {
               imgEl.dataset.errored = '1';
               var note = document.createElement('div');
               note.className = 'pdf-preview-fallback';
-              note.style.cssText = 'width:100%;aspect-ratio:595/842;max-height:90vh;display:flex;align-items:center;justify-content:center;text-align:center;padding:1rem;color:var(--text-muted,#666);background:var(--bg-muted,#f4f4f4);border-radius:6px';
+              note.style.cssText = 'width:100%;aspect-ratio:595/842;display:flex;align-items:center;justify-content:center;text-align:center;padding:1rem;color:var(--text-muted,#666);background:var(--bg-muted,#f4f4f4);border-radius:6px';
               note.textContent = 'ไม่สามารถแสดงตัวอย่างไฟล์ได้ (เซิร์ฟเวอร์อาจยังไม่ได้ติดตั้ง poppler-utils — ดู DEPLOY.md) — ยังคงลากกล่องด้านล่างเพื่อกำหนดตำแหน่งได้ตามปกติ โดยอ้างอิงจากขอบเขตพื้นที่นี้';
               imgEl.replaceWith(note);
             };
@@ -1032,6 +1042,21 @@ function markStackYPercent(documentId, stepId) {
   return Math.min(94, MARK_BASE_Y + c * MARK_STEP_Y);
 }
 
+// กันกล่องความเห็น ผอ. ซ้อนทับตัวเองเป๊ะๆ เวลา ผอ. คนเดิม (assignee ช่องเดิม) ต้องตัดสินใจซ้ำบนเอกสาร
+// เดียวกันมากกว่า 1 ครั้งโดยไม่ได้ลากตำแหน่งเอง (เช่น ส่งกลับแก้ไข-เสนอใหม่-อนุมัติซ้ำ) — เลื่อนขึ้นทีละ 14%
+// จากตำแหน่งฐาน 78% ทุกครั้งที่ assignee ช่องนี้เคยตัดสินใจบนเอกสารนี้มาก่อนแล้ว (นับจาก workflow_steps
+// ที่ assignee_id เดียวกัน ไม่ใช่นับทุกคนแบบ markStackYPercent เพราะกล่องนี้เป็นของ ผอ. คนเดียว)
+const DECISION_BOX_BASE_Y = 78;
+const DECISION_BOX_STEP_Y = 14;
+const DECISION_BOX_MIN_Y = 22;
+function decisionBoxStackYPercent(documentId, stepId, assigneeId) {
+  const { c } = db.prepare(`
+    SELECT COUNT(*) as c FROM workflow_steps
+    WHERE document_id = ? AND id != ? AND assignee_id = ? AND status IN ('approved', 'acknowledged', 'rejected')
+  `).get(documentId, stepId, assigneeId);
+  return Math.max(DECISION_BOX_MIN_Y, DECISION_BOX_BASE_Y - c * DECISION_BOX_STEP_Y);
+}
+
 // คืนค่า warning message ถ้าประทับตราไม่สำเร็จ (undefined ถ้าสำเร็จ หรือข้ามเพราะไม่มีลายเซ็น/ไฟล์แนบ —
 // นั่นไม่ใช่ความผิดพลาด) เพื่อให้ผู้เรียกส่งกลับไปแจ้งผู้ใช้ต่อ ไม่ใช่กลืนความผิดพลาดแบบเงียบๆ เหมือนเดิม
 // ซึ่งทำให้ผู้ใช้ไม่รู้ว่าทำไมข้อความ/ลายเซ็นไม่ติดใน PDF ที่พิมพ์ออกมา
@@ -1063,9 +1088,9 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser,
   }
 }
 
-// กล่องความเห็น/ลงนามของผู้ตัดสินใจคนสุดท้าย — ลงเฉพาะตอนที่ผลลัพธ์เป็นการปิดเรื่อง (รับทราบ/ไม่อนุมัติ)
-// เท่านั้น ต่างจาก mark ด้านบนที่ลงทุกครั้งที่มีคนตัดสินใจในสาย ไม่ว่าจะปิดเรื่องหรือส่งต่อ — note คือ
-// ข้อความในช่อง "เห็นควรให้" ที่ผู้ใช้พิมพ์เอง ไม่ใช่ข้อความเกษียณภายในระบบ (คนละช่องกัน)
+// กล่องความเห็น/ลงนามของผู้ตัดสินใจคนสุดท้าย — เรียกจากทั้ง 3 endpoint (อนุมัติและส่งต่อ/รับทราบ/ไม่อนุมัติ)
+// ไม่ได้จำกัดแค่ตอนปิดเรื่องแล้ว เพราะ ผอ. อาจอยากบันทึกความเห็น/ติ๊กเครื่องหมายไว้ตั้งแต่ตอนส่งต่อก็ได้ —
+// note คือข้อความในช่อง "เห็นควรให้" ที่ผู้ใช้พิมพ์เอง ไม่ใช่ข้อความเกษียณภายในระบบ (คนละช่องกัน)
 // จำกัดเฉพาะ ผอ. ตัวจริง/ผู้รักษาการแทน ผอ. เท่านั้น (titleMode !== 'generic') — คนอื่นในสาย workflow แค่
 // "ทราบ" เฉยๆ ไม่มีตราประทับความเห็นทางการ (บังคับฝั่งเซิร์ฟเวอร์ ไม่พึ่งแค่ UI ที่ซ่อนปุ่ม/ช่องไว้แล้ว)
 async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser, decision, note, marks, decisionX, decisionY }) {
@@ -1075,6 +1100,7 @@ async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser
   if (!att) return;
   const doc = getDocument(documentId);
   const forLabel = actingForLabel(stepId, actorUser);
+  const { assignee_id: assigneeId } = db.prepare('SELECT assignee_id FROM workflow_steps WHERE id = ?').get(stepId);
   try {
     const originalBuffer = await readAttachmentBytes(att, { preferStamped: true });
     const stampedBuffer = await stampDirectorDecision({
@@ -1092,7 +1118,7 @@ async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser
       actingForLabel: titleMode === 'acting_director' ? forLabel : null,
       dateThaiLong: new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }),
       xPercent: decisionX,
-      yPercent: decisionY,
+      yPercent: decisionY ?? decisionBoxStackYPercent(documentId, stepId, assigneeId),
     });
     await saveStampedCopy(att, stampedBuffer, doc?.year_be);
     audit({ userId: actorUser.id, action: 'attachment_director_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId, decision, note, marks: marks || [] } });
