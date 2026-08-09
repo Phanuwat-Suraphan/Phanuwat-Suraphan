@@ -16,11 +16,21 @@ const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
  * document insert cannot interleave with another request (resolved
  * decision: Part 4 review #2/#3 — sequential, gapless, concurrency-safe).
  */
-export function createDocument({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, externalDocNumber, externalDocDate, dueDate, retentionClass, createdBy }) {
+// customDocNumber: เลขที่ที่ธุรการพิมพ์เองแทนเลขที่ระบบออกอัตโนมัติ (ไม่ใช่ทุกโรงเรียนใช้เลขเรียง
+// 0001/2569 อย่างเดียวเสมอไป — บางครั้งต้องต่อเลขจากทะเบียนกระดาษเดิม/มีเลขเฉพาะจากหน่วยงานอื่นกำกับ) —
+// running_number/year_be ยังนับเดินหน้าตามปกติเบื้องหลังเสมอ (ใช้คำนวณอายุการเก็บ/นับสถิติ) ไม่ผูกกับ
+// เลขที่กำหนดเอง เฉพาะ doc_number_display (เลขที่ที่แสดง/พิมพ์/ประทับตราจริง) เท่านั้นที่ถูกแทนที่
+export function createDocument({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, externalDocNumber, externalDocDate, dueDate, retentionClass, customDocNumber, createdBy }) {
   let result;
+  let duplicateDocNumberWarning = null;
   db.exec('BEGIN IMMEDIATE');
   try {
-    const { runningNumber, yearBe, display } = nextRunningNumber({ departmentId, docTypeId, direction });
+    const { runningNumber, yearBe, display: autoDisplay } = nextRunningNumber({ departmentId, docTypeId, direction });
+    const display = customDocNumber || autoDisplay;
+    if (customDocNumber) {
+      const dup = db.prepare('SELECT doc_number_display FROM documents WHERE doc_number_display = ? AND deleted_at IS NULL').get(customDocNumber);
+      if (dup) duplicateDocNumberWarning = `เลขที่ "${customDocNumber}" ซ้ำกับเอกสารที่มีอยู่แล้วในระบบ — บันทึกให้แล้วตามที่กรอก แต่โปรดตรวจสอบว่าตั้งใจใช้เลขซ้ำจริงหรือไม่`;
+    }
     const id = uuid();
     const now = nowIso();
     const retClass = retentionClass || 'normal_10y';
@@ -32,12 +42,12 @@ export function createDocument({ direction, title, subject, docTypeId, departmen
     `).run(id, direction, runningNumber, yearBe, display, externalDocNumber || null, externalDocDate || null, title, subject || null,
       docTypeId, departmentId, priority || 'normal', secretLevel || 'normal', correspondentName || null, dueDate || null, retClass, retentionUntil, createdBy, now, now);
     db.exec('COMMIT');
-    result = { id, docNumberDisplay: display };
+    result = { id, docNumberDisplay: display, duplicateDocNumberWarning };
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
   }
-  audit({ userId: createdBy, action: direction === 'incoming' ? 'document_received' : 'document_created', tableName: 'documents', recordId: result.id, detail: { docNumberDisplay: result.docNumberDisplay } });
+  audit({ userId: createdBy, action: direction === 'incoming' ? 'document_received' : 'document_created', tableName: 'documents', recordId: result.id, detail: { docNumberDisplay: result.docNumberDisplay, customDocNumber: customDocNumber || null } });
   return result;
 }
 

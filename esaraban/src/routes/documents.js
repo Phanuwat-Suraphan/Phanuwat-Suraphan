@@ -139,6 +139,11 @@ router.get('/documents/new', requirePage((ctx) => {
           <summary>⚙️ ตัวเลือกเพิ่มเติม (ไม่บังคับ — ไม่กรอกก็ใช้ค่าเริ่มต้นได้เลย)</summary>
           <div class="form-grid cols-2" style="margin-top:.8rem">
             <div class="field">
+              <label>เลขที่หนังสือ (กำหนดเอง)</label>
+              <input type="text" name="customDocNumber" placeholder="เว้นว่างให้ระบบออกเลขอัตโนมัติ (เช่น 0001/2569)" />
+              <div class="help-text">พิมพ์เลขที่เองได้ถ้าเลขที่ต้องการไม่ใช่เลขเรียงอัตโนมัติของระบบ — ระบบจะใช้เลขที่พิมพ์นี้แสดงแทนทุกที่ (ทะเบียน/ตราประทับ/พิมพ์เอกสาร)</div>
+            </div>
+            <div class="field">
               <label>เลขหนังสือ${direction === 'incoming' ? 'จากต้นทาง (ถ้ามี)' : 'อ้างอิง (ถ้ามี)'}</label>
               <input type="text" name="externalDocNumber" placeholder="เช่น ศธ 04123/55 หรือเว้นว่างถ้าไม่มี" />
             </div>
@@ -300,13 +305,15 @@ router.post('/documents', requireApi(async (ctx) => {
     title: b.title.trim(), subject: b.subject?.trim(), docTypeId: defaultDocTypeId(), departmentId: b.departmentId,
     priority: b.priority, secretLevel: b.secretLevel, correspondentName: b.correspondentName.trim(),
     externalDocNumber: b.externalDocNumber?.trim(), externalDocDate: b.externalDocDate || null, dueDate: b.dueDate || null,
-    retentionClass: b.retentionClass, createdBy: ctx.user.id,
+    retentionClass: b.retentionClass, customDocNumber: b.customDocNumber?.trim() || null, createdBy: ctx.user.id,
   });
-  let warn = '';
+  const warnParts = [];
+  if (doc.duplicateDocNumberWarning) warnParts.push(doc.duplicateDocNumberWarning);
   if (b.fileDataBase64) {
     const att = await saveAttachment({ documentId: doc.id, fileName: b.fileName, fileType: b.fileType, fileDataBase64: b.fileDataBase64, uploadedBy: ctx.user.id });
-    if (att?.duplicateWarning) warn = `&warn=${encodeURIComponent(att.duplicateWarning)}`;
+    if (att?.duplicateWarning) warnParts.push(att.duplicateWarning);
   }
+  const warn = warnParts.length ? `&warn=${encodeURIComponent(warnParts.join(' / '))}` : '';
   json(ctx, 201, { redirect: `/documents/${doc.id}?created=1${warn}` });
 }));
 
