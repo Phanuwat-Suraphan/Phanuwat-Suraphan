@@ -143,7 +143,7 @@ export async function stampDirectorDecision({ originalBuffer, schoolName, decisi
   // ค่าเริ่มต้นชิดมุมขวาล่างของหน้า ตามที่ตราจริงของโรงเรียนใช้ตำแหน่งนี้ (ตราลงรับของธุรการอยู่มุมขวาบน
   // แยกกันคนละมุม ไม่ชนกัน) — ผู้ใช้ยังลากปรับตำแหน่งเองได้ก่อนกดปุ่มตามปกติ
   const leftPt = Math.max(0, Math.min(80, xPercent ?? 58)) / 100 * PAGE_WIDTH_PT;
-  const topPt = Math.max(0, Math.min(88, yPercent ?? 72)) / 100 * PAGE_HEIGHT_PT;
+  const topPt = Math.max(0, Math.min(88, yPercent ?? 78)) / 100 * PAGE_HEIGHT_PT;
 
   let titleHtml, positionHtml;
   if (titleMode === 'director') {

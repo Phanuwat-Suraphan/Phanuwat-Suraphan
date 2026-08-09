@@ -503,11 +503,16 @@ router.get('/documents/:id', requirePage((ctx) => {
           </div>
         </div>
         <div class="field">
-          <label>ข้อความบนตราประทับ "เห็นควรให้..." (ใช้เมื่อกดรับทราบ/ไม่อนุมัติ — เว้นว่างได้)</label>
+          <div class="flex items-center justify-between">
+            <label style="margin-bottom:0">ข้อความบนตราประทับ "เห็นควรให้..." (ใช้เมื่อกดรับทราบ/ไม่อนุมัติ — เว้นว่างได้)</label>
+            <button type="button" class="btn btn-outline btn-sm" onclick="window.clearDecisionInputs()">🗑️ ล้างค่า</button>
+          </div>
           <textarea id="decisionNote" placeholder="พิมพ์ข้อความที่จะแสดงบนตราประทับในไฟล์ PDF จริง" oninput="window.updateDecisionMarksPreview && window.updateDecisionMarksPreview()"></textarea>
           <div class="help-text">
-            กด "👁️ ดูตัวอย่าง" ที่ไฟล์แนบไฟล์แรกด้านซ้ายเพื่อลากตำแหน่งลายเซ็น "ทราบ" ของคุณ และกล่องความเห็นนี้
-            ก่อนกดปุ่มด้านล่าง — ถ้าไม่ลาก ระบบจะวางในตำแหน่งเริ่มต้นให้อัตโนมัติ
+            เผื่อติ๊กหรือพิมพ์ผิด กด "ล้างค่า" ด้านบนเพื่อล้างเครื่องหมาย/ข้อความทั้งหมดแล้วเริ่มใหม่ได้ทุกเมื่อ —
+            ยังไม่มีผลอะไรจนกว่าจะกดปุ่มดำเนินการด้านล่าง กด "👁️ ดูตัวอย่าง" ที่ไฟล์แนบไฟล์แรกด้านซ้ายเพื่อลาก
+            ตำแหน่งลายเซ็น "ทราบ" ของคุณ และกล่องความเห็นนี้ ก่อนกดปุ่มด้านล่าง — ถ้าไม่ลาก ระบบจะวางใน
+            ตำแหน่งเริ่มต้นให้อัตโนมัติ
           </div>
         </div>` : ''}
         <div class="chip-row">
@@ -676,7 +681,7 @@ router.get('/documents/:id', requirePage((ctx) => {
               ${ctx.user.signature_image ? `'<img src="${esc(ctx.user.signature_image)}" />' +` : "''+"}
               '<div class="mark-name">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</div>' +
             '</div>';
-            var DECISION_HTML = '<div class="doc-decision-box" id="decisionBox" style="left:58%;top:72%">' +
+            var DECISION_HTML = '<div class="doc-decision-box" id="decisionBox" style="left:58%;top:78%">' +
               '<div class="box-title">${decisionBoxTitleHtml}</div>' +
               '<div id="decisionMarksPreview"></div>' +
               '<div class="box-note" id="decisionNotePreview">เห็นควรให้ ...</div>' +
@@ -695,6 +700,14 @@ router.get('/documents/:id', requirePage((ctx) => {
               var noteEl = document.getElementById('decisionNotePreview');
               var noteInput = document.getElementById('decisionNote');
               if (noteEl) noteEl.textContent = 'เห็นควรให้ ' + ((noteInput && noteInput.value.trim()) || '...');
+            };
+            // ล้างเครื่องหมาย/ข้อความที่ติ๊ก/พิมพ์ไว้ทั้งหมด เผื่อกดหรือพิมพ์ผิด — ไม่กระทบตำแหน่งที่ลากไว้
+            // (window.decisionPos) เพราะเป็นคนละเรื่องกัน
+            window.clearDecisionInputs = function () {
+              document.querySelectorAll('.decisionMark:checked').forEach(function (el) { el.checked = false; });
+              var noteInput = document.getElementById('decisionNote');
+              if (noteInput) noteInput.value = '';
+              window.updateDecisionMarksPreview();
             };
             window.markPos = null;
             window.decisionPos = null;
@@ -745,9 +758,20 @@ router.get('/documents/:id', requirePage((ctx) => {
               imgEl.replaceWith(note);
             };
             window.applyStamp = function(attId, btn){
+              // ให้ธุรการแก้ไขเลขรับ/เวลาที่จะแสดงบนตราได้ก่อนกดยืนยันจริง (เผื่อกด/พิมพ์ผิดตอนนี้จะได้แก้ทัน
+              // ก่อนที่จะฝังลง PDF จริงแบบแก้ไม่ได้อีก) — เลขรับ default เป็นเลขที่เอกสารนี้ แต่แก้ได้ ส่วนเวลา
+              // เว้นว่างได้ถ้าไม่ต้องการระบุ (จะแสดงเป็นบรรทัดว่างบนตราให้เขียนเติมเองทีหลังได้)
+              var num = prompt('เลขรับที่จะแสดงบนตราประทับ (แก้ไขได้ถ้าต้องการ)', ${JSON.stringify(doc.doc_number_display)});
+              if (num === null) return;
+              var defaultTime = ${JSON.stringify(new Date(doc.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }))};
+              var time = prompt('เวลาที่จะแสดงบนตราประทับ (เว้นว่างได้ถ้าไม่ต้องการระบุเวลา)', defaultTime);
+              if (time === null) return;
               if (!confirm('ยืนยันประทับตรา "ลงรับ" ลงในไฟล์ PDF จริง ณ ตำแหน่งที่ลากไว้ล่าสุด?\\nระบบจะสร้างไฟล์ใหม่ที่มีตราประทับ โดยเก็บไฟล์ต้นฉบับที่ไม่มีตราไว้เหมือนเดิม')) return;
               window.setBtnLoading(btn);
-              fetch('/documents/${doc.id}/attachments/' + attId + '/apply-stamp', { method: 'POST' })
+              fetch('/documents/${doc.id}/attachments/' + attId + '/apply-stamp', {
+                method: 'POST', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({ docNumberOverride: num.trim(), timeOverride: time.trim() }),
+              })
                 .then(r => r.json().then(d => ({ok: r.ok, d})))
                 .then(({ok, d}) => {
                   if (ok) { window.toast('ประทับตราลงไฟล์ PDF สำเร็จ', 'success'); location.reload(); }
@@ -995,11 +1019,11 @@ function directorTitleMode(stepId, actorUser) {
 }
 
 // ตำแหน่ง Y เริ่มต้นของตรา "ทราบ" มุมซ้ายล่าง — เรียงต่อกันเป็นแถวลงมาทีละคนตามจำนวนคนที่ผ่านเรื่องมาก่อน
-// หน้าแล้ว (ไม่ให้ทับกันเมื่อมีหลายคนในสาย workflow) เริ่มที่ 72% เท่ากับขอบบนของกล่องความเห็น ผอ. ฝั่งขวาล่าง
+// หน้าแล้ว (ไม่ให้ทับกันเมื่อมีหลายคนในสาย workflow) เริ่มที่ 78% เท่ากับขอบบนของกล่องความเห็น ผอ. ฝั่งขวาล่าง
 // พอดี (ผอ. เองไม่มีตรานี้ซ้อนอยู่แล้ว — ดู stampAcknowledgeMarkIfApplicable) นับเฉพาะขั้นตอนที่ตัดสินใจ
 // ไปแล้วก่อนหน้าขั้นตอนนี้ (ไม่รวมตัวเอง) — ใช้ร่วมกันทั้งตำแหน่งเริ่มต้นที่โชว์ในตัวอย่างบนเว็บ (ต้องตรงกัน
 // เป๊ะ ไม่งั้นลากดูตัวอย่างจะไม่ตรงกับตำแหน่งจริงที่ฝังตอนกดปุ่ม) และตำแหน่งที่ฝังจริงตอนกดปุ่ม
-const MARK_BASE_Y = 72;
+const MARK_BASE_Y = 78;
 const MARK_STEP_Y = 9;
 function markStackYPercent(documentId, stepId) {
   const { c } = db.prepare(`
@@ -1092,18 +1116,22 @@ router.post('/documents/:id/attachments/:attId/apply-stamp', requireApi(async (c
   const originalBuffer = await readAttachmentBytes(att, { preferStamped: false });
 
   const now = new Date(doc.created_at);
+  // เลขรับ/เวลาที่จะแสดงบนตรา แก้ไขได้จากที่ธุรการพิมพ์ตอนกดยืนยัน (ดู applyStamp ฝั่งเว็บ) — เลขรับถ้าเว้น
+  // ว่างไว้ใช้เลขที่เอกสารตามปกติ ส่วนเวลาเว้นว่างได้จริง (แสดงเป็นบรรทัดว่างบนตราให้เขียนเติมเองทีหลังได้)
+  const docNumberDisplay = (typeof ctx.body.docNumberOverride === 'string' && ctx.body.docNumberOverride.trim()) || doc.doc_number_display;
+  const timeStr = typeof ctx.body.timeOverride === 'string' ? ctx.body.timeOverride.trim() : now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
   const stampedBuffer = await stampPdf({
     originalBuffer,
     schoolName: 'โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ 1',
-    docNumberDisplay: doc.doc_number_display,
+    docNumberDisplay,
     dateThaiLong: now.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }),
-    timeStr: now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }),
+    timeStr,
     xPercent: doc.stamp_x,
     yPercent: doc.stamp_y,
   });
 
   await saveStampedCopy(att, stampedBuffer, doc.year_be);
-  audit({ userId: ctx.user.id, action: 'attachment_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId: doc.id } });
+  audit({ userId: ctx.user.id, action: 'attachment_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId: doc.id, docNumberDisplay, timeStr } });
   json(ctx, 200, { ok: true });
 }));
 
