@@ -504,7 +504,7 @@ router.get('/documents/:id', requirePage((ctx) => {
         </div>
         <div class="field">
           <label>ข้อความบนตราประทับ "เห็นควรให้..." (ใช้เมื่อกดรับทราบ/ไม่อนุมัติ — เว้นว่างได้)</label>
-          <textarea id="decisionNote" placeholder="พิมพ์ข้อความที่จะแสดงบนตราประทับในไฟล์ PDF จริง"></textarea>
+          <textarea id="decisionNote" placeholder="พิมพ์ข้อความที่จะแสดงบนตราประทับในไฟล์ PDF จริง" oninput="window.updateDecisionMarksPreview && window.updateDecisionMarksPreview()"></textarea>
           <div class="help-text">
             กด "👁️ ดูตัวอย่าง" ที่ไฟล์แนบไฟล์แรกด้านซ้ายเพื่อลากตำแหน่งลายเซ็น "ทราบ" ของคุณ และกล่องความเห็นนี้
             ก่อนกดปุ่มด้านล่าง — ถ้าไม่ลาก ระบบจะวางในตำแหน่งเริ่มต้นให้อัตโนมัติ
@@ -670,8 +670,8 @@ router.get('/documents/:id', requirePage((ctx) => {
             // เครื่องหมาย "ทราบ" + ลายเซ็นของผู้ใช้คนปัจจุบัน (ถ้ามีลายเซ็นบันทึกไว้ในโปรไฟล์) — ลากวาง
             // ตำแหน่งเองได้ก่อนกดปุ่มอนุมัติ/รับทราบ/ไม่อนุมัติ ตำแหน่งจะถูกส่งไปพร้อมคำขอนั้นเลย ไม่บันทึก
             // แยกต่างหาก (ต่างจากตราลงรับที่บันทึกทันทีที่ปล่อยเมาส์ เพราะอันนี้ยังไม่ได้ "ตัดสินใจ" จริง)
-            var CAN_MARK = ${(isCurrentAssignee && ctx.user.signature_image) ? 'true' : 'false'};
-            var MARK_HTML = '<div class="doc-mark" id="ackMark" style="left:8%;top:55%">' +
+            var CAN_MARK = ${(isCurrentAssignee && ctx.user.signature_image && !isDirectorDecision) ? 'true' : 'false'};
+            var MARK_HTML = '<div class="doc-mark" id="ackMark" style="left:8%;top:${step ? markStackYPercent(doc.id, step.id) : MARK_BASE_Y}%">' +
               '<div class="mark-word">ทราบ</div>' +
               ${ctx.user.signature_image ? `'<img src="${esc(ctx.user.signature_image)}" />' +` : "''+"}
               '<div class="mark-name">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</div>' +
@@ -679,7 +679,7 @@ router.get('/documents/:id', requirePage((ctx) => {
             var DECISION_HTML = '<div class="doc-decision-box" id="decisionBox" style="left:58%;top:72%">' +
               '<div class="box-title">${decisionBoxTitleHtml}</div>' +
               '<div id="decisionMarksPreview"></div>' +
-              '<div class="box-note">เห็นควรให้ ... (พิมพ์ในช่องด้านซ้าย)</div>' +
+              '<div class="box-note" id="decisionNotePreview">เห็นควรให้ ...</div>' +
               ${ctx.user.signature_image ? `'<div class="sig"><img src="${esc(ctx.user.signature_image)}" /></div>' +` : "''+"}
               '<div style="margin-top:.3rem">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</div>' +
             '</div>';
@@ -692,6 +692,9 @@ router.get('/documents/:id', requirePage((ctx) => {
               function m(v) { var box = document.querySelector('.decisionMark[value="' + v + '"]'); return box && box.checked ? '●' : '○'; }
               el.innerHTML = '<div>' + m('ทราบ') + ' ทราบ &nbsp; ' + m('อนุญาต') + ' อนุญาต &nbsp; ' + m('ไม่อนุญาต') + ' ไม่อนุญาต</div>' +
                 '<div>' + m('อนุมัติ') + ' อนุมัติ &nbsp; ' + m('ไม่อนุมัติ') + ' ไม่อนุมัติ</div>';
+              var noteEl = document.getElementById('decisionNotePreview');
+              var noteInput = document.getElementById('decisionNote');
+              if (noteEl) noteEl.textContent = 'เห็นควรให้ ' + ((noteInput && noteInput.value.trim()) || '...');
             };
             window.markPos = null;
             window.decisionPos = null;
@@ -856,13 +859,20 @@ function parseDecisionMarks(raw) {
 }
 
 router.post('/documents/:id/workflow/:stepId/approve', requireApi(async (ctx) => {
-  const { pin, nextAssigneeId, comment, markX, markY } = ctx.body;
+  const { pin, nextAssigneeId, comment, markX, markY, decisionX, decisionY, decisionNote, decisionMarks } = ctx.body;
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   if (!nextAssigneeId) throw httpError(400, 'กรุณาเลือกผู้รับที่จะส่งต่อ');
   approveAndForward({ stepId: ctx.params.stepId, nextAssigneeId, comment, actorUser: ctx.user });
-  const warning = await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
-  json(ctx, 200, { ok: true, warning });
+  const warning1 = await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
+  // ผอ./ผู้รักษาการแทน ผอ. ที่กด "อนุมัติและส่งต่อ" ก็ยังใส่ checkbox/เห็นควรให้ ลงตราประทับได้เหมือนกด
+  // รับทราบ/ไม่อนุมัติ — เดิม endpoint นี้ไม่เรียก stampDirectorDecisionIfApplicable เลย ทำให้ check/ข้อความ
+  // ที่กรอกไว้หายไปเงียบๆ ทั้งที่ฝั่ง client ส่งมาให้อยู่แล้ว (ดู stampPositionFields ในสคริปต์ฝั่งเว็บ)
+  const warning2 = await stampDirectorDecisionIfApplicable({
+    documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, decision: 'approve', note: decisionNote,
+    marks: parseDecisionMarks(decisionMarks), decisionX: parsePercent(decisionX), decisionY: parsePercent(decisionY),
+  });
+  json(ctx, 200, { ok: true, warning: warning1 || warning2 });
 }));
 
 router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx) => {
@@ -984,10 +994,27 @@ function directorTitleMode(stepId, actorUser) {
   return delegatorIsDirector ? 'acting_director' : 'generic';
 }
 
+// ตำแหน่ง Y เริ่มต้นของตรา "ทราบ" มุมซ้ายล่าง — เรียงต่อกันเป็นแถวลงมาทีละคนตามจำนวนคนที่ผ่านเรื่องมาก่อน
+// หน้าแล้ว (ไม่ให้ทับกันเมื่อมีหลายคนในสาย workflow) เริ่มที่ 72% เท่ากับขอบบนของกล่องความเห็น ผอ. ฝั่งขวาล่าง
+// พอดี (ผอ. เองไม่มีตรานี้ซ้อนอยู่แล้ว — ดู stampAcknowledgeMarkIfApplicable) นับเฉพาะขั้นตอนที่ตัดสินใจ
+// ไปแล้วก่อนหน้าขั้นตอนนี้ (ไม่รวมตัวเอง) — ใช้ร่วมกันทั้งตำแหน่งเริ่มต้นที่โชว์ในตัวอย่างบนเว็บ (ต้องตรงกัน
+// เป๊ะ ไม่งั้นลากดูตัวอย่างจะไม่ตรงกับตำแหน่งจริงที่ฝังตอนกดปุ่ม) และตำแหน่งที่ฝังจริงตอนกดปุ่ม
+const MARK_BASE_Y = 72;
+const MARK_STEP_Y = 9;
+function markStackYPercent(documentId, stepId) {
+  const { c } = db.prepare(`
+    SELECT COUNT(*) as c FROM workflow_steps WHERE document_id = ? AND id != ? AND status IN ('approved', 'acknowledged', 'rejected')
+  `).get(documentId, stepId);
+  return Math.min(94, MARK_BASE_Y + c * MARK_STEP_Y);
+}
+
 // คืนค่า warning message ถ้าประทับตราไม่สำเร็จ (undefined ถ้าสำเร็จ หรือข้ามเพราะไม่มีลายเซ็น/ไฟล์แนบ —
 // นั่นไม่ใช่ความผิดพลาด) เพื่อให้ผู้เรียกส่งกลับไปแจ้งผู้ใช้ต่อ ไม่ใช่กลืนความผิดพลาดแบบเงียบๆ เหมือนเดิม
 // ซึ่งทำให้ผู้ใช้ไม่รู้ว่าทำไมข้อความ/ลายเซ็นไม่ติดใน PDF ที่พิมพ์ออกมา
 async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser, markX, markY }) {
+  // ผอ./ผู้รักษาการแทน ผอ. มีลายเซ็นอยู่ในกล่องความเห็นทางการ (มุมขวาล่าง) อยู่แล้ว ไม่ต้องมีตรา "ทราบ"
+  // แยกซ้อนอีกอันนอกกล่อง — ตรานี้มีไว้สำหรับคนอื่นในสาย workflow ที่ไม่มีกล่องความเห็นเป็นของตัวเอง
+  if (directorTitleMode(stepId, actorUser) !== 'generic') return;
   if (!actorUser.signature_image) return;
   const att = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at LIMIT 1').get(documentId);
   if (!att) return;
@@ -1000,8 +1027,8 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser,
       firstName: actorUser.first_name,
       lastName: actorUser.last_name,
       dateThaiLong: new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }),
-      xPercent: markX,
-      yPercent: markY,
+      xPercent: markX ?? 8,
+      yPercent: markY ?? markStackYPercent(documentId, stepId),
       actingForLabel: actingForLabel(stepId, actorUser),
     });
     await saveStampedCopy(att, stampedBuffer, getDocument(documentId)?.year_be);
