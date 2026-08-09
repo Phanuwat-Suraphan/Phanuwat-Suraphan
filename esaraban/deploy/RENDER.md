@@ -9,7 +9,8 @@ this is for demoing the app, not for storing real documents long-term.
 stamp/signatures into the actual PDF — need system programs (`tesseract`, `poppler-utils`,
 `chromium`, `qpdf`) installed on the server. Render's **Node** runtime can't `apt install`
 anything, so those buttons fail there with a "ไม่พบโปรแกรม..." error. **Docker** runtime *can*
-install them (via `esaraban/Dockerfile`, already included in this repo), so use that from the
+install them, via the `Dockerfile` at the **root of this repo** (not inside `esaraban/` — kept
+there on purpose so Render's defaults find it with zero extra settings), so use that from the
 start:
 
 1. Go to <https://dashboard.render.com> and sign up / log in (GitHub login is easiest)
@@ -17,9 +18,15 @@ start:
 3. Connect your GitHub account and pick the `Phanuwat-Suraphan/Phanuwat-Suraphan` repo
    (grant Render access to it if asked)
 4. Fill in the form:
-   - **Root Directory**: `esaraban`
+   - **Root Directory**: leave **blank** (don't type `esaraban` here — the Dockerfile needs the
+     whole repo as its build context, see above)
    - **Runtime**: **Docker** (not Node — this matters, see above)
-   - **Build/Start Command**: leave both blank — Render uses `esaraban/Dockerfile` automatically
+   - **Dockerfile Path** / **Docker Build Context Directory**: leave both at their defaults —
+     don't type anything in either, Render's default (`./Dockerfile` at repo root) already
+     matches where the file actually is
+   - **Build/Start Command**: leave both blank — Render uses the Dockerfile automatically once
+     Runtime is set to Docker (if the form still marks these "Required" and won't let you leave
+     them blank, that means the Runtime dropdown is still on Node — go back and check it first)
    - **Instance Type**: **Free**
 5. Under **Environment Variables**, add:
    - `SESSION_SECRET` = click "Generate" (or paste output of `openssl rand -hex 32`)
@@ -28,10 +35,10 @@ start:
    inside the image, a few minutes) but only on the first build. Render gives you a URL like
    `https://esaraban.onrender.com` — that's your live link.
 
-A `render.yaml` file is also included in this folder's parent (`esaraban/render.yaml`) if you'd
-rather use Render's **Blueprint** flow (New + → Blueprint) — it already specifies Docker runtime
-and pre-fills the same settings above, including auto-generating `SESSION_SECRET`. If Render
-doesn't auto-detect it, point the "Blueprint config file path" field at `esaraban/render.yaml`.
+A `render.yaml` file is also included in this repo (`esaraban/render.yaml`) if you'd rather use
+Render's **Blueprint** flow (New + → Blueprint) — it already specifies Docker runtime and
+pre-fills the same settings above, including auto-generating `SESSION_SECRET`. If Render doesn't
+auto-detect it, point the "Blueprint config file path" field at `esaraban/render.yaml`.
 
 ### Already deployed on the Node runtime and seeing "ไม่พบโปรแกรม chromium"?
 
@@ -68,12 +75,17 @@ integration needed at all since the whole disk is already persistent).
 
 ## About the Dockerfile
 
-⚠️ I wrote and reasoned through `esaraban/Dockerfile` carefully (same apt package names as the
+⚠️ I wrote and reasoned through the `Dockerfile` carefully (same apt package names as the
 already-documented, working VPS instructions in `DEPLOY.md`), but **could not actually run
 `docker build` to verify it end-to-end** — the sandbox this was developed in doesn't have a
 working Docker daemon available. Please treat the first real deploy as the actual test, and
 report back if the build itself, the OCR button, or the PDF-stamping buttons don't work as
 expected so it can be debugged with real output in hand.
+
+It lives at the **root of the repo**, not inside `esaraban/`, specifically so Render's defaults
+(and any other Docker host's defaults) find it without you having to type a Dockerfile
+path/context/root-directory anywhere — those extra fields are exactly what caused the "no such
+file or directory" build failures during earlier attempts at this.
 
 If you deliberately don't need OCR or PDF-stamping and want the simpler/faster Node runtime
 instead, that's still fine — just pick **Node** in step 4 above and leave Build Command blank,
