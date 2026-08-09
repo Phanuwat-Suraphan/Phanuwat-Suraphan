@@ -435,20 +435,27 @@ tbody tr:last-child td { border-bottom: none; }
 .grid-2 { display: grid; grid-template-columns: 1fr; gap: 1rem; }
 @media (min-width: 900px) { .grid-2 { grid-template-columns: 2fr 1fr; } }
 .stack { display: flex; flex-direction: column; gap: .6rem; }
-.pdf-frame { width: 100%; height: 70vh; border: 1px solid var(--border); border-radius: 8px; background: #525659; object-fit: contain; display: block; }
+/* aspect-ratio ตรงกับ A4 (595x842pt) เป๊ะ แทนการตั้ง height ตายตัวแบบเดิม (70vh) — ตอนใช้
+   height ตายตัวที่ไม่ตรงสัดส่วนหน้าจริง object-fit:contain จะเหลือขอบว่าง (letterbox) ซ้าย-ขวาของ
+   ภาพหน้าเอกสาร ทำให้กล่องตราประทับ (ซึ่งอิง % ของ wrap ทั้งกล่อง ไม่ใช่ของภาพจริงที่แสดง) เพี้ยนขนาด/
+   ตำแหน่งไปจากของจริง — ให้ wrap มีสัดส่วนเท่าเอกสารเป๊ะ ภาพจะเต็มกล่องพอดีไม่มีขอบว่างเหลือ */
+.pdf-frame { width: 100%; aspect-ratio: 595 / 842; max-height: 90vh; border: 1px solid var(--border); border-radius: 8px; background: #525659; object-fit: contain; display: block; }
 
 /* ---------- ตราประทับ "ลงรับ" ซ้อนบนตัวอย่าง PDF (ลากวางตำแหน่งได้) ---------- */
-.pdf-preview-wrap { position: relative; }
+/* container-type:inline-size เปิดให้หน่วย cqw (=1% ของความกว้าง wrap) ใช้ได้ — ทุกขนาด/ระยะในกล่องตราประทับ
+   ด้านล่างนี้คำนวณเป็น cqw จากค่า pt จริงที่ใช้ตอนฝังลง PDF จริงใน src/services/pdfStamp.js
+   (pt / 595 * 100) เพื่อให้ตอนลากดูตัวอย่างเห็นขนาดจริง ไม่ใหญ่/เล็กกว่าที่จะพิมพ์ออกมาจริง */
+.pdf-preview-wrap { position: relative; container-type: inline-size; }
 .doc-stamp {
   position: absolute;
-  min-width: 160px;
+  width: 25.21cqw; /* 150pt */
   border: 2px solid #2222aa;
   background: rgba(255, 255, 255, 0.94);
   color: #2222aa;
-  padding: .5rem .7rem;
-  font-size: .76rem;
-  line-height: 1.6;
-  border-radius: 4px;
+  padding: 1.008cqw; /* 6pt */
+  font-size: 1.345cqw; /* 8pt */
+  line-height: 1.5;
+  border-radius: 0.672cqw; /* 4pt */
   z-index: 4;
   font-family: "Noto Sans Thai", sans-serif;
   user-select: none;
@@ -456,13 +463,13 @@ tbody tr:last-child td { border-bottom: none; }
   box-shadow: 0 2px 8px rgba(0, 0, 0, .2);
 }
 .doc-stamp .stamp-title {
-  font-weight: 700; text-align: center; margin-bottom: .3rem;
+  font-weight: 700; text-align: center; margin-bottom: 0.504cqw; /* 3pt */
 }
 /* เครื่องหมาย "ทราบ" + ลายเซ็นแบบง่าย ลากวางเองได้ — ของคนในสาย workflow ที่ตัดสินใจ (ต่างจาก .doc-stamp
    ตราลงรับของธุรการ และ .doc-decision-box กล่องความเห็นของผู้ตัดสินใจคนสุดท้าย) */
 .doc-mark {
   position: absolute;
-  width: 110px;
+  width: 21.85cqw; /* 130pt */
   text-align: center;
   color: #2222aa;
   z-index: 4;
@@ -474,19 +481,19 @@ tbody tr:last-child td { border-bottom: none; }
   border-radius: 6px;
   padding: .2rem;
 }
-.doc-mark .mark-word { font-size: 1.3rem; font-weight: 700; }
-.doc-mark img { max-height: 34px; max-width: 100px; display: block; margin: 0 auto; }
-.doc-mark .mark-name { font-size: .68rem; }
+.doc-mark .mark-word { font-size: 3.361cqw; /* 20pt */ font-weight: 700; }
+.doc-mark img { max-height: 5.042cqw; /* 30pt */ max-width: 18.49cqw; /* 110pt */ display: block; margin: 0 auto; }
+.doc-mark .mark-name { font-size: 1.176cqw; /* 7pt */ }
 .doc-decision-box {
   position: absolute;
-  width: 190px;
+  width: 31.93cqw; /* 190pt */
   border: 2px solid #2222aa;
   background: rgba(255, 255, 255, 0.94);
   color: #2222aa;
-  padding: .5rem .7rem;
-  font-size: .74rem;
+  padding: 1.176cqw; /* 7pt */
+  font-size: 1.345cqw; /* 8pt */
   line-height: 1.55;
-  border-radius: 4px;
+  border-radius: 0.672cqw; /* 4pt */
   z-index: 4;
   font-family: "Noto Sans Thai", sans-serif;
   user-select: none;
@@ -494,7 +501,7 @@ tbody tr:last-child td { border-bottom: none; }
   cursor: move;
   box-shadow: 0 2px 8px rgba(0, 0, 0, .2);
 }
-.doc-decision-box .box-title { font-weight: 700; text-align: center; margin-bottom: .3rem; }
+.doc-decision-box .box-title { font-weight: 700; text-align: center; margin-bottom: 0.672cqw; /* 4pt */ }
 .doc-decision-box .box-note { font-style: italic; }
 .chip-row { display: flex; gap: .4rem; flex-wrap: wrap; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(10,16,24,.5); display: none; align-items: center; justify-content: center; z-index: 60; padding: 1rem; }

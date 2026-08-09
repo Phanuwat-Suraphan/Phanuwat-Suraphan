@@ -25,6 +25,10 @@ const MAX_FILE_BYTES = 10 * 1024 * 1024;
 // แล้วลบทิ้งทันที) จึงไม่มีเหตุผลผูกกับเพดาน MAX_FILE_BYTES ของไฟล์แนบถาวร — ที่ผ่านมาใช้ค่าเดียวกัน
 // ทำให้ไฟล์สแกนความละเอียดสูงทั่วไป (ซึ่งมักใหญ่กว่า 10MB แม้แค่ 1-2 หน้า) ใช้ปุ่มนี้ไม่ได้เกือบทุกครั้ง
 const MAX_OCR_BYTES = 20 * 1024 * 1024;
+// checkbox บนตราประทับความเห็นของผู้ตัดสินใจ — ตรงกับตรายางจริงของโรงเรียน (ดู
+// docs/stamp-reference/) เลือกได้หลายอันพร้อมกัน ไม่ผูกกับปุ่ม "รับทราบ/ไม่อนุมัติ" ที่กดส่ง
+// (ปุ่มนั้นแค่ปิดขั้นตอน workflow เท่านั้น) ผู้ตัดสินใจติ๊กเองว่าอันไหนตรงกับความเห็นจริง
+const DECISION_MARK_OPTIONS = ['ทราบ', 'อนุญาต', 'ไม่อนุญาต', 'อนุมัติ', 'ไม่อนุมัติ'];
 
 function listDeptOptions(selected) {
   return db.prepare('SELECT * FROM departments ORDER BY name').all()
@@ -479,6 +483,15 @@ router.get('/documents/:id', requirePage((ctx) => {
         </div>
         ${attachments.length ? `
         <div class="field">
+          <label>เครื่องหมายบนตราประทับ (เลือกได้หลายอัน — เฉพาะอันที่ติ๊กจะแสดงบนตราที่ประทับลงไฟล์ PDF จริง)</label>
+          <div class="chip-row" style="gap:.9rem">
+            ${DECISION_MARK_OPTIONS.map((m) => `
+            <label style="display:flex;align-items:center;gap:.3rem;font-weight:400;cursor:pointer">
+              <input type="checkbox" class="decisionMark" value="${esc(m)}" onchange="window.updateDecisionMarksPreview && window.updateDecisionMarksPreview()" /> ${esc(m)}
+            </label>`).join('')}
+          </div>
+        </div>
+        <div class="field">
           <label>ข้อความบนตราประทับ "เห็นควรให้..." (ใช้เมื่อกดรับทราบ/ไม่อนุมัติ — เว้นว่างได้)</label>
           <textarea id="decisionNote" placeholder="พิมพ์ข้อความที่จะแสดงบนตราประทับในไฟล์ PDF จริง"></textarea>
           <div class="help-text">
@@ -503,6 +516,8 @@ router.get('/documents/:id', requirePage((ctx) => {
         if (window.decisionPos) { f.decisionX = window.decisionPos.x; f.decisionY = window.decisionPos.y; }
         var noteEl = document.getElementById('decisionNote');
         if (noteEl && noteEl.value.trim()) f.decisionNote = noteEl.value.trim();
+        var checkedMarks = Array.prototype.slice.call(document.querySelectorAll('.decisionMark:checked')).map(function (el) { return el.value; });
+        if (checkedMarks.length) f.decisionMarks = checkedMarks;
         return f;
       }
       function doApprove(btn){
@@ -649,10 +664,20 @@ router.get('/documents/:id', requirePage((ctx) => {
             '</div>';
             var DECISION_HTML = '<div class="doc-decision-box" id="decisionBox" style="left:58%;top:20%">' +
               '<div class="box-title">${decisionBoxTitleHtml}</div>' +
-              '<div>ทราบ / อนุญาต-ไม่อนุญาต / อนุมัติ-ไม่อนุมัติ</div>' +
+              '<div id="decisionMarksPreview"></div>' +
               '<div class="box-note">เห็นควรให้ ... (พิมพ์ในช่องด้านซ้าย)</div>' +
               '<div style="margin-top:.3rem">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</div>' +
             '</div>';
+            // แสดงเครื่องหมาย ●/○ ตามที่ผู้ใช้ติ๊กไว้จริงในกล่องด้านขวา ให้ตรงกับที่จะฝังลง PDF จริงเป๊ะ —
+            // เรียกทั้งตอนเปิด "ดูตัวอย่าง" ครั้งแรก และทุกครั้งที่ผู้ใช้ติ๊ก/ถอนติ๊กช่องด้านขวา (ถ้ากล่อง
+            // ยังไม่ถูกเปิดในหน้าตัวอย่าง ฟังก์ชันนี้จะไม่ทำอะไรเลย — ดู getElementById คืน null)
+            window.updateDecisionMarksPreview = function () {
+              var el = document.getElementById('decisionMarksPreview');
+              if (!el) return;
+              function m(v) { var box = document.querySelector('.decisionMark[value="' + v + '"]'); return box && box.checked ? '●' : '○'; }
+              el.innerHTML = '<div>' + m('ทราบ') + ' ทราบ &nbsp; ' + m('อนุญาต') + ' อนุญาต &nbsp; ' + m('ไม่อนุญาต') + ' ไม่อนุญาต</div>' +
+                '<div>' + m('อนุมัติ') + ' อนุมัติ &nbsp; ' + m('ไม่อนุมัติ') + ' ไม่อนุมัติ</div>';
+            };
             window.markPos = null;
             window.decisionPos = null;
             var stampSaveTimer = null;
@@ -697,7 +722,7 @@ router.get('/documents/:id', requirePage((ctx) => {
               imgEl.dataset.errored = '1';
               var note = document.createElement('div');
               note.className = 'pdf-preview-fallback';
-              note.style.cssText = 'min-height:300px;display:flex;align-items:center;justify-content:center;text-align:center;padding:1rem;color:var(--text-muted,#666);background:var(--bg-muted,#f4f4f4);border-radius:6px';
+              note.style.cssText = 'width:100%;aspect-ratio:595/842;max-height:90vh;display:flex;align-items:center;justify-content:center;text-align:center;padding:1rem;color:var(--text-muted,#666);background:var(--bg-muted,#f4f4f4);border-radius:6px';
               note.textContent = 'ไม่สามารถแสดงตัวอย่างไฟล์ได้ (เซิร์ฟเวอร์อาจยังไม่ได้ติดตั้ง poppler-utils — ดู DEPLOY.md) — ยังคงลากกล่องด้านล่างเพื่อกำหนดตำแหน่งได้ตามปกติ โดยอ้างอิงจากขอบเขตพื้นที่นี้';
               imgEl.replaceWith(note);
             };
@@ -735,6 +760,7 @@ router.get('/documents/:id', requirePage((ctx) => {
                   if (showStamp && STAMP_CAN_EDIT) makeStampDraggable(wrap, document.getElementById('docStamp'));
                   if (showMark) makeDraggable(wrap, document.getElementById('ackMark'), function(x, y) { window.markPos = { x: x, y: y }; });
                   if (showDecision) makeDraggable(wrap, document.getElementById('decisionBox'), function(x, y) { window.decisionPos = { x: x, y: y }; });
+                  if (showDecision) window.updateDecisionMarksPreview();
                 }
               } else {
                 el.style.display = 'none';
@@ -806,6 +832,14 @@ function parsePercent(v) {
   return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : undefined;
 }
 
+// รายการเครื่องหมายที่ผู้ใช้ติ๊กไว้ในกล่องความเห็น — กรองเฉพาะค่าที่รู้จัก (DECISION_MARK_OPTIONS)
+// ทิ้งอย่างอื่นทั้งหมด กันกรณี client ส่งค่าแปลกปลอมมา ไม่ใช่แค่กรอง XSS (esc() จัดการอยู่แล้ว) แต่กันไม่ให้
+// ค่าที่ไม่รู้จักหลุดเข้าไปปนกับ logic การเช็คใน stampDirectorDecision
+function parseDecisionMarks(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((m) => DECISION_MARK_OPTIONS.includes(m));
+}
+
 router.post('/documents/:id/workflow/:stepId/approve', requireApi(async (ctx) => {
   const { pin, nextAssigneeId, comment, markX, markY } = ctx.body;
   const { verifyPin } = await import('../auth.js');
@@ -817,25 +851,25 @@ router.post('/documents/:id/workflow/:stepId/approve', requireApi(async (ctx) =>
 }));
 
 router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx) => {
-  const { pin, comment, markX, markY, decisionX, decisionY, decisionNote } = ctx.body;
+  const { pin, comment, markX, markY, decisionX, decisionY, decisionNote, decisionMarks } = ctx.body;
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   acknowledgeAndComplete({ stepId: ctx.params.stepId, comment, actorUser: ctx.user });
   const warning1 = await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
   const warning2 = await stampDirectorDecisionIfApplicable({
     documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, decision: 'acknowledge', note: decisionNote,
-    decisionX: parsePercent(decisionX), decisionY: parsePercent(decisionY),
+    marks: parseDecisionMarks(decisionMarks), decisionX: parsePercent(decisionX), decisionY: parsePercent(decisionY),
   });
   json(ctx, 200, { ok: true, warning: warning1 || warning2 });
 }));
 
 router.post('/documents/:id/workflow/:stepId/reject', requireApi(async (ctx) => {
-  const { reason, markX, markY, decisionX, decisionY, decisionNote } = ctx.body;
+  const { reason, markX, markY, decisionX, decisionY, decisionNote, decisionMarks } = ctx.body;
   rejectStep({ stepId: ctx.params.stepId, reason, actorUser: ctx.user });
   const warning1 = await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
   const warning2 = await stampDirectorDecisionIfApplicable({
     documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, decision: 'reject', note: decisionNote || reason,
-    decisionX: parsePercent(decisionX), decisionY: parsePercent(decisionY),
+    marks: parseDecisionMarks(decisionMarks), decisionX: parsePercent(decisionX), decisionY: parsePercent(decisionY),
   });
   json(ctx, 200, { ok: true, warning: warning1 || warning2 });
 }));
@@ -966,7 +1000,7 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser,
 // กล่องความเห็น/ลงนามของผู้ตัดสินใจคนสุดท้าย — ลงเฉพาะตอนที่ผลลัพธ์เป็นการปิดเรื่อง (รับทราบ/ไม่อนุมัติ)
 // เท่านั้น ต่างจาก mark ด้านบนที่ลงทุกครั้งที่มีคนตัดสินใจในสาย ไม่ว่าจะปิดเรื่องหรือส่งต่อ — note คือ
 // ข้อความในช่อง "เห็นควรให้" ที่ผู้ใช้พิมพ์เอง ไม่ใช่ข้อความเกษียณภายในระบบ (คนละช่องกัน)
-async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser, decision, note, decisionX, decisionY }) {
+async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser, decision, note, marks, decisionX, decisionY }) {
   const att = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at LIMIT 1').get(documentId);
   if (!att) return;
   const doc = getDocument(documentId);
@@ -979,6 +1013,7 @@ async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser
       schoolName: SCHOOL_NAME,
       decision,
       note,
+      marks: marks || [],
       signatureDataUrl: actorUser.signature_image || null,
       prefix: actorUser.prefix,
       firstName: actorUser.first_name,
@@ -991,7 +1026,7 @@ async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser
       yPercent: decisionY,
     });
     await saveStampedCopy(att, stampedBuffer, doc?.year_be);
-    audit({ userId: actorUser.id, action: 'attachment_director_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId, decision, note } });
+    audit({ userId: actorUser.id, action: 'attachment_director_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId, decision, note, marks: marks || [] } });
   } catch (err) {
     audit({ userId: actorUser.id, action: 'attachment_director_stamp_failed', tableName: 'attachments', recordId: att.id, detail: { documentId, decision, error: err.message } });
     return `บันทึกผลสำเร็จ แต่ลงตราประทับ/ข้อความ "เห็นควรให้" ลงในไฟล์ PDF จริงไม่สำเร็จ: ${err.message}`;

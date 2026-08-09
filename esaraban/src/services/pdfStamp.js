@@ -134,8 +134,12 @@ export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, p
 // ผู้อำนวยการสถานศึกษา" 2 บรรทัด — คำนี้ห้ามใช้ผิดกับ "รักษาการในตำแหน่ง" เฉยๆ เพราะเป็นถ้อยคำทางการที่
 // ตรายางจริงใช้), 'generic' = ผู้ตัดสินใจปิดเรื่องที่ไม่ใช่ผู้อำนวยการ/ผู้รักษาการแทนผู้อำนวยการ (เช่น
 // หัวหน้าฝ่ายปิดเรื่องเอง) ใช้ตำแหน่งจริงของคนนั้นตรงๆ แทนคำที่ตายตัว
-export async function stampDirectorDecision({ originalBuffer, schoolName, decision, note, signatureDataUrl, prefix, firstName, lastName, position, titleMode, actingForLabel, dateThaiLong, xPercent, yPercent }) {
-  const mark = (on) => (on ? '●' : '○');
+export async function stampDirectorDecision({ originalBuffer, schoolName, decision, note, marks, signatureDataUrl, prefix, firstName, lastName, position, titleMode, actingForLabel, dateThaiLong, xPercent, yPercent }) {
+  // marks: รายการเครื่องหมายที่ผู้ตัดสินใจติ๊กเลือกเอง ('ทราบ'/'อนุญาต'/'ไม่อนุญาต'/'อนุมัติ'/'ไม่อนุมัติ')
+  // เลือกได้หลายอันพร้อมกัน ไม่ผูกกับ decision (ซึ่งเป็นแค่ปุ่ม workflow ที่กดปิด/ส่งกลับเรื่อง) — ค่านี้มา
+  // จากช่อง checkbox จริงในหน้าเว็บ กรองค่าที่ไม่รู้จักไว้แล้วที่ documents.js (parseDecisionMarks)
+  const marked = new Set(marks || []);
+  const mark = (label) => (marked.has(label) ? '●' : '○');
   // ค่าเริ่มต้นชิดมุมขวาบนของหน้า (ใต้ตราประทับ "ลงรับ" ที่อยู่มุมขวาบนสุดพอดี) ตามที่ตราจริงของ
   // โรงเรียนใช้ตำแหน่งนี้ — ผู้ใช้ยังลากปรับตำแหน่งเองได้ก่อนกดปุ่มตามปกติ
   const leftPt = Math.max(0, Math.min(80, xPercent ?? 58)) / 100 * PAGE_WIDTH_PT;
@@ -168,9 +172,8 @@ export async function stampDirectorDecision({ originalBuffer, schoolName, decisi
   </style></head><body>
     <div class="box">
       <div class="title">${titleHtml}</div>
-      <div>${mark(decision === 'acknowledge')} ทราบ</div>
-      <div>${mark(false)} อนุญาต &nbsp; ${mark(false)} ไม่อนุญาต</div>
-      <div>${mark(decision === 'approve')} อนุมัติ &nbsp; ${mark(decision === 'reject')} ไม่อนุมัติ</div>
+      <div>${mark('ทราบ')} ทราบ &nbsp; ${mark('อนุญาต')} อนุญาต &nbsp; ${mark('ไม่อนุญาต')} ไม่อนุญาต</div>
+      <div>${mark('อนุมัติ')} อนุมัติ &nbsp; ${mark('ไม่อนุมัติ')} ไม่อนุมัติ</div>
       <div class="note">เห็นควรให้ ${esc(note || '-')}</div>
       ${signatureDataUrl ? `<div class="sig"><img src="${esc(signatureDataUrl)}" /></div>` : ''}
       <div class="name">(${esc(prefix || '')}${esc(firstName)} ${esc(lastName)})</div>
