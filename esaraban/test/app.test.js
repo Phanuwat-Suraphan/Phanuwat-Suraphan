@@ -19,6 +19,9 @@ const {
   assertStepBelongsToDocument,
 } = await import('../src/services/workflow.js');
 const { nextRunningNumber } = await import('../src/numbering.js');
+const { readWorkbook } = await import('../src/services/xlsx.js');
+const { parseUploadedWorkbook, looksLikeHeader } = await import('../src/services/dailySummaryParse.js');
+const zlib = await import('node:zlib');
 
 const seed = db._seed;
 const adminUser = { id: seed.userIds.admin, roleCodes: ['admin'] };
@@ -241,6 +244,153 @@ describe('ACL: ยกเลิก/จัดเก็บ/มอบหมาย �
     const other = makeDoc({ title: 'แอดมินจัดการได้' });
     voidDocument({ documentId: other.id, reason: 'แอดมินสั่ง', actorUser: adminUser });
     assert.equal(getDocument(other.id).status, 'voided');
+  });
+});
+
+// ---- ตัวช่วยสร้างไฟล์ .xlsx ขนาดจิ๋วในเทสต์ (ไม่พึ่ง npm package ตามกติกาโปรเจกต์) ----
+// .xlsx = ZIP ของไฟล์ XML จึงประกอบ ZIP เองด้วย zlib + ตาราง CRC32
+const CRC_TABLE = (() => {
+  const t = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c;
+  }
+  return t;
+})();
+function crc32(buf) {
+  let c = 0 ^ -1;
+  for (let i = 0; i < buf.length; i++) c = (c >>> 8) ^ CRC_TABLE[(c ^ buf[i]) & 0xff];
+  return (c ^ -1) >>> 0;
+}
+function buildZip(files) {
+  const locals = [];
+  const central = [];
+  let offset = 0;
+  for (const [name, textContent] of Object.entries(files)) {
+    const nameBuf = Buffer.from(name, 'utf8');
+    const raw = Buffer.from(textContent, 'utf8');
+    const comp = zlib.deflateRawSync(raw);
+    const crc = crc32(raw);
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(8, 8);
+    lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(comp.length, 18); lh.writeUInt32LE(raw.length, 22);
+    lh.writeUInt16LE(nameBuf.length, 26);
+    locals.push(lh, nameBuf, comp);
+    const ch = Buffer.alloc(46);
+    ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(8, 10);
+    ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(comp.length, 20); ch.writeUInt32LE(raw.length, 24);
+    ch.writeUInt16LE(nameBuf.length, 28); ch.writeUInt32LE(offset, 42);
+    central.push(ch, nameBuf);
+    offset += lh.length + nameBuf.length + comp.length;
+  }
+  const localPart = Buffer.concat(locals);
+  const centralPart = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(Object.keys(files).length, 8);
+  eocd.writeUInt16LE(Object.keys(files).length, 10);
+  eocd.writeUInt32LE(centralPart.length, 12);
+  eocd.writeUInt32LE(localPart.length, 16);
+  return Buffer.concat([localPart, centralPart, eocd]);
+}
+const SHEET_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+function makeXlsx(sheetRows, { dateStyle = false, extraSheet = null } = {}) {
+  const colLetter = (i) => String.fromCharCode(65 + i);
+  const sheetXml = (rows) => `<?xml version="1.0"?><worksheet xmlns="${SHEET_NS}"><sheetData>` +
+    rows.map((row, ri) => `<row r="${ri + 1}">` + row.map((v, ci) => {
+      const ref = colLetter(ci) + (ri + 1);
+      if (typeof v === 'object' && v.serial != null) return `<c r="${ref}" s="1"><v>${v.serial}</v></c>`;
+      return `<c r="${ref}" t="inlineStr"><is><t>${String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</t></is></c>`;
+    }).join('') + '</row>').join('') + '</sheetData></worksheet>';
+
+  const files = {
+    'xl/workbook.xml': `<?xml version="1.0"?><workbook xmlns="${SHEET_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>` +
+      `<sheet name="Table 1" sheetId="1" r:id="rId1"/>` +
+      (extraSheet ? `<sheet name="การอ้างอิงแหล่งข้อมูล" sheetId="2" r:id="rId2"/>` : '') +
+      `</sheets></workbook>`,
+    'xl/_rels/workbook.xml.rels': `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="ws" Target="worksheets/sheet1.xml"/>` +
+      (extraSheet ? `<Relationship Id="rId2" Type="ws" Target="worksheets/sheet2.xml"/>` : '') +
+      `</Relationships>`,
+    'xl/worksheets/sheet1.xml': sheetXml(sheetRows),
+  };
+  if (dateStyle) {
+    files['xl/styles.xml'] = `<?xml version="1.0"?><styleSheet xmlns="${SHEET_NS}"><cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="14" applyNumberFormat="1"/></cellXfs></styleSheet>`;
+  }
+  if (extraSheet) files['xl/worksheets/sheet2.xml'] = sheetXml(extraSheet);
+  return buildZip(files);
+}
+
+const HEADER_ROW = ['ลำดับความสำคัญ', 'ชื่องาน/กิจกรรม', 'สิ่งที่ต้องปฏิบัติ', 'กำหนดการ', 'รายละเอียด/วิธีการ', 'แหล่งที่มา'];
+
+describe('xlsx: อ่านไฟล์ Excel โดยไม่ใช้ npm package', () => {
+  test('อ่านข้อความ หลายชีต และถอด XML entity ได้ถูกต้อง', () => {
+    const buf = makeXlsx([HEADER_ROW, ['ด่วน', 'งาน A & B', 'ทำ', '1 ก.ย.', '', '1']],
+      { extraSheet: [['ดัชนี', 'ข้อมูลอ้างอิง'], ['1', 'เอกสาร.pdf']] });
+    const sheets = readWorkbook(buf);
+    assert.equal(sheets.length, 2);
+    assert.equal(sheets[0].name, 'Table 1');
+    assert.equal(sheets[0].rows[1][1], 'งาน A & B');   // &amp; ต้องกลายเป็น & ไม่ใช่ &amp;
+    assert.equal(sheets[1].rows[1][1], 'เอกสาร.pdf');
+  });
+
+  test('ไฟล์ที่ไม่ใช่ .xlsx ถูกปฏิเสธ ไม่ใช่พังกลางทาง', () => {
+    assert.throws(() => readWorkbook(Buffer.from('ไม่ใช่ไฟล์ zip เลย')), /ไม่ใช่ไฟล์ Excel/);
+  });
+
+  test('เซลล์วันที่ของ Excel แปลงเป็นวันที่ไทย ไม่ใช่ตัวเลขลำดับวัน', () => {
+    // Excel เก็บวันที่เป็นตัวเลข ถ้าไม่แปลง ช่อง "กำหนดการ" จะขึ้นเป็น 46255
+    const buf = makeXlsx([HEADER_ROW, ['ด่วน', 'ประชุม', 'เข้าร่วม', { serial: 46255 }, '', '']], { dateStyle: true });
+    const schedule = readWorkbook(buf)[0].rows[1][3];
+    assert.doesNotMatch(schedule, /^\d+$/, 'ต้องไม่ใช่ตัวเลขดิบ');
+    assert.match(schedule, /สิงหาคม/);
+    assert.match(schedule, /2569/);
+  });
+});
+
+describe('สรุปงานรายวัน: แตกไฟล์เป็นรายการ', () => {
+  test('ตัดแถวหัวตารางออก แต่ต้องไม่ทิ้งแถวงานจริงที่มีคำว่า "กำหนดการ"/"ชื่องาน"', () => {
+    // บั๊กเดิม: ตัวกรองหัวตารางทำงานกับทุกแถว ทำให้งานจริงหายไปเงียบๆ โดยไม่มีใครรู้
+    const buf = makeXlsx([
+      HEADER_ROW,
+      ['ด่วนมาก', 'แจ้งกำหนดการประชุมผู้บริหาร', 'เข้าร่วมประชุม', '20 ส.ค.', '', '1'],
+      ['ด่วน', 'ส่งชื่องานวิจัยเข้าประกวด', 'ส่งผลงาน', '31 ส.ค.', '', '2'],
+    ]);
+    const { items } = parseUploadedWorkbook(buf);
+    assert.equal(items.length, 2, 'แถวงานจริงต้องอยู่ครบ ไม่ถูกกรองทิ้ง');
+    assert.equal(items[0].task_name, 'แจ้งกำหนดการประชุมผู้บริหาร');
+    assert.equal(items[1].task_name, 'ส่งชื่องานวิจัยเข้าประกวด');
+  });
+
+  test('ไฟล์ที่ไม่มีแถวหัวตาราง เก็บข้อมูลครบทุกแถว', () => {
+    const buf = makeXlsx([['ปกติ', 'งานแรก', 'ทำ', '', '', '']]);
+    assert.equal(parseUploadedWorkbook(buf).items.length, 1);
+  });
+
+  test('แถวว่างถูกข้าม และไฟล์ที่ไม่มีข้อมูลเลยถูกปฏิเสธ', () => {
+    const withBlanks = makeXlsx([HEADER_ROW, ['', '', '', '', '', ''], ['ปกติ', 'งานเดียว', '', '', '', '']]);
+    assert.equal(parseUploadedWorkbook(withBlanks).items.length, 1);
+    assert.throws(() => parseUploadedWorkbook(makeXlsx([HEADER_ROW])), /ไม่พบรายการงาน/);
+  });
+
+  test('อ่านชีตที่ 2 เป็นรายการไฟล์อ้างอิง โดยตัดเฉพาะแถวหัว', () => {
+    const buf = makeXlsx([HEADER_ROW, ['ปกติ', 'งาน', '', '', '', '1']],
+      { extraSheet: [['ดัชนี', 'ข้อมูลอ้างอิง'], ['1', 'ก.pdf'], ['2', 'ข.pdf']] });
+    const { sources } = parseUploadedWorkbook(buf);
+    assert.equal(sources.length, 2);
+    assert.deepEqual(sources[0], { ref_index: '1', ref_text: 'ก.pdf' });
+  });
+
+  test('แถวเกินเพดานถูกปฏิเสธตั้งแต่ตอนอัปโหลด (ไม่ปล่อยให้เข้ามาแล้วแก้ไม่ได้)', () => {
+    const many = [HEADER_ROW];
+    for (let i = 0; i < 501; i++) many.push(['ปกติ', 'งานที่ ' + i, '', '', '', '']);
+    assert.throws(() => parseUploadedWorkbook(makeXlsx(many)), /เกินที่ระบบรองรับ/);
+  });
+
+  test('looksLikeHeader ต้องใช้คำตรงกันอย่างน้อย 2 คำ', () => {
+    assert.equal(looksLikeHeader(HEADER_ROW), true);
+    assert.equal(looksLikeHeader(['ด่วน', 'แจ้งกำหนดการประชุม', '', '', '', '']), false);
   });
 });
 
