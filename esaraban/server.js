@@ -17,6 +17,7 @@ const MIME = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
 };
 
 function serveStatic(req, res, pathname) {
@@ -83,7 +84,7 @@ const server = http.createServer(async (req, res) => {
     const pathname = decodeURIComponent(url.pathname);
 
     if (pathname === '/' || !pathname.startsWith('/api') ) {
-      if (pathname.startsWith('/style.css') || pathname.startsWith('/app.js') || pathname.match(/\.(css|js|png|svg|ico)$/)) {
+      if (pathname.startsWith('/style.css') || pathname.startsWith('/app.js') || pathname.match(/\.(css|js|png|svg|ico|webmanifest)$/)) {
         if (serveStatic(req, res, pathname)) return;
       }
     }

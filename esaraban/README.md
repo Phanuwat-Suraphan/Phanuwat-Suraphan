@@ -105,6 +105,29 @@ Run the test suite with `npm test` (uses a throwaway SQLite file via `DB_PATH`, 
   (HSTS/CSP/X-Frame-Options/etc. on every response), `/health` endpoint for uptime monitoring
 - Automated test suite (`npm test` — Node's built-in `node:test`, zero packages) covering auth,
   atomic numbering, the full workflow lifecycle, void rules, ACL, and retention math
+- **Installable on phones (PWA), with "share a file straight from LINE"** — see below
+
+## Sharing a document straight from LINE (mobile)
+
+Receiving a PDF in LINE and getting it into this system used to mean: download it → switch to the
+browser → tap attach → hunt for the file, which is genuinely painful on a phone. Installing this
+app on the home screen removes all of that.
+
+**Install (Android):** open the site in Chrome → ⋮ menu → *Install app* / *Add to Home screen*.
+**Then:** in LINE, tap the PDF → Share → pick **สารบรรณ จพ.๑**. The new-document form opens with
+the file already attached — just type the subject and save.
+
+Implemented with the [Web Share Target API](https://developer.mozilla.org/en-US/docs/Web/Manifest/share_target):
+`public/manifest.webmanifest` declares the target and `public/sw.js` catches the incoming POST,
+stashes the file in Cache Storage, and hands it to the form. The service worker deliberately does
+**no** offline caching — a document registry showing stale statuses would be worse than useless.
+
+⚠️ **iPhone/iPad:** iOS does not implement Web Share Target, so the one-tap share does not work
+there — this is an iOS platform limitation, not something this app can work around. iOS users still
+save the file from LINE into the Files app first, then attach it normally. Installing to the home
+screen still works and still makes the app faster to open.
+
+Requires HTTPS (Render provides it automatically; so does any proper reverse-proxy setup).
 
 ## Explicitly deferred (documented, not built)
 

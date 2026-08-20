@@ -85,6 +85,38 @@ router.get('/', requirePage((ctx) => {
   const greeting = timeGreeting();
   const content = `
     ${ctx.query.warn ? `<div class="alert alert-warning">⚠️ ${esc(ctx.query.warn)}</div>` : ''}
+    <div id="installHint" class="card" hidden style="border-color:var(--primary)">
+      <div class="card-header">
+        <h3 class="mt-0">📲 ติดตั้งลงมือถือ เพื่อรับไฟล์จาก LINE ได้ในคลิกเดียว</h3>
+        <button class="btn btn-outline btn-sm" onclick="dismissInstallHint()">ไม่ต้องแสดงอีก</button>
+      </div>
+      <p style="margin:.2rem 0 .6rem">
+        ปกติถ้าได้หนังสือมาทาง LINE ต้องกดดาวน์โหลดลงเครื่องก่อน แล้วมาไล่หาไฟล์ตอนแนบ ซึ่งหายากมากบนมือถือ
+        ถ้าติดตั้งระบบนี้ลงหน้าจอโฮมแล้ว จะ<strong>แชร์ไฟล์จาก LINE เข้าระบบได้ตรงๆ ไม่ต้องดาวน์โหลดเลย</strong>
+      </p>
+      <div class="help-text">
+        <strong>วิธีติดตั้ง (Android):</strong> เปิดเว็บนี้ใน Chrome → กดปุ่ม ⋮ มุมขวาบน → เลือก "ติดตั้งแอป"
+        หรือ "เพิ่มลงในหน้าจอหลัก"<br/>
+        <strong>วิธีใช้หลังติดตั้ง:</strong> ใน LINE กดที่ไฟล์หนังสือ → กดปุ่มแชร์ → เลือก "สารบรรณ จพ.๑" →
+        ระบบจะเปิดฟอร์มรับหนังสือพร้อมไฟล์ให้เลย แค่กรอกชื่อเรื่องแล้วบันทึก<br/>
+        <strong>หมายเหตุสำหรับ iPhone/iPad:</strong> ระบบแชร์ไฟล์ตรงแบบนี้ iOS ยังไม่รองรับ (เป็นข้อจำกัดของ
+        ตัว iOS เอง ไม่ใช่ของระบบเรา) — บน iPhone ยังต้องกดบันทึกไฟล์จาก LINE ลงแอป "ไฟล์" ก่อน แล้วค่อยแนบ
+        ตามปกติ แต่ติดตั้งลงหน้าจอโฮมไว้ก็ยังเปิดใช้งานได้เร็วขึ้นเหมือนกัน
+      </div>
+    </div>
+    <script>
+      // โชว์เฉพาะบนมือถือ ที่ยังไม่ได้ติดตั้งเป็นแอป และยังไม่เคยกดปิด — บนเดสก์ท็อป/ในแอปที่ติดตั้งแล้วไม่ต้องกวน
+      (function () {
+        var installed = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+        var dismissed = localStorage.getItem('esaraban_install_hint_dismissed') === '1';
+        var isMobile = window.matchMedia('(max-width: 900px)').matches;
+        if (!installed && !dismissed && isMobile) document.getElementById('installHint').hidden = false;
+      })();
+      function dismissInstallHint(){
+        localStorage.setItem('esaraban_install_hint_dismissed', '1');
+        document.getElementById('installHint').hidden = true;
+      }
+    </script>
     <div class="card-header">
       <div>
         <h2 class="mt-0">${greeting.emoji} ${greeting.text} ${esc(user.prefix || '')}${esc(user.first_name)}</h2>

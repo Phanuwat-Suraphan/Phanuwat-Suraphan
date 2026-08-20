@@ -68,8 +68,17 @@ export function layout({ user, title, path: currentPath, content, flash }) {
 <title>${esc(title)} · ระบบสารบรรณอิเล็กทรอนิกส์</title>
 <link rel="stylesheet" href="/style.css" />
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<meta name="theme-color" content="#2059c9" />
+<meta name="mobile-web-app-capable" content="yes" />
+<link rel="apple-touch-icon" href="/icon-192.png" />
 <script>
   (function(){ var t = localStorage.getItem('esaraban_theme'); if (t==='light'||t==='dark') document.documentElement.setAttribute('data-theme', t); })();
+  // ลงทะเบียน service worker เพื่อเปิดใช้ "แชร์ไฟล์จาก LINE/แอปอื่น เข้าระบบโดยตรง" (ดู public/sw.js)
+  // ต้องเป็น HTTPS เท่านั้น (Render ให้มาอยู่แล้ว) — ถ้าเบราว์เซอร์ไม่รองรับก็แค่ไม่มีฟีเจอร์นี้ ระบบอื่นปกติ
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); });
+  }
 </script>
 </head>
 <body>

@@ -103,6 +103,13 @@ router.get('/documents', requirePage((ctx) => {
 }));
 
 // ---------------- new form ----------------
+// Web Share Target — ปกติ service worker (public/sw.js) จะดักคำขอนี้ไว้เองตั้งแต่ในเครื่องผู้ใช้ แล้วพา
+// ไฟล์เข้าฟอร์มให้เลย ไม่วิ่งมาถึงเซิร์ฟเวอร์ เส้นทางนี้เป็นทางสำรองเผื่อ SW ยังไม่ทันทำงาน (เช่น เพิ่งติดตั้ง
+// แอปครั้งแรก) — กู้ไฟล์คืนไม่ได้เพราะเป็น multipart ที่ระบบนี้ไม่ได้ parse ไว้ จึงพาไปฟอร์มพร้อมบอกให้แนบเอง
+router.post('/share-target', requirePage((ctx) => {
+  redirect(ctx, '/documents/new?direction=incoming&shareerr=sw');
+}));
+
 router.get('/documents/new', requirePage((ctx) => {
   const direction = ctx.query.direction === 'outgoing' ? 'outgoing' : 'incoming';
   const content = `
@@ -196,6 +203,39 @@ router.get('/documents/new', requirePage((ctx) => {
       </form>
     </div>
     <script>
+      // รับไฟล์ที่ผู้ใช้แชร์มาจากแอปอื่น (LINE ฯลฯ) — service worker พักไฟล์ไว้ใน Cache Storage แล้วพามาที่
+      // หน้านี้พร้อม ?shared=1 ตรงนี้ทำหน้าที่หยิบไฟล์ออกมาใส่ช่อง "ไฟล์แนบ 1" ให้อัตโนมัติ ผู้ใช้แค่กรอก
+      // ชื่อเรื่องกับหน่วยงานต้นทางแล้วกดบันทึกได้เลย ไม่ต้องดาวน์โหลดไฟล์ลงเครื่องแล้วไล่หาเองอีก
+      // รอ load ก่อน เพราะ /app.js (เจ้าของ window.toast / window.attachFilePreview) ถูกโหลดท้าย body
+      window.addEventListener('load', async function pickUpSharedFile(){
+        var params = new URLSearchParams(location.search);
+        if (params.get('shareerr')) {
+          window.toast(params.get('shareerr') === 'sw'
+            ? 'เปิดแอปครั้งแรกยังรับไฟล์ที่แชร์มาอัตโนมัติไม่ได้ กรุณาแนบไฟล์เองครั้งนี้ ครั้งต่อไปจะเข้าให้เองอัตโนมัติ'
+            : 'รับไฟล์ที่แชร์มาไม่สำเร็จ กรุณาแนบไฟล์เองครับ', 'warning');
+        }
+        if (params.get('shared') !== '1' || !('caches' in window)) return;
+        try {
+          var cache = await caches.open('esaraban-shared-inbox');
+          var res = await cache.match('/__shared-file__');
+          if (!res) return;
+          var blob = await res.blob();
+          var name = decodeURIComponent(res.headers.get('X-Shared-Filename') || 'shared.pdf');
+          await cache.delete('/__shared-file__'); // ใช้ครั้งเดียวแล้วลบ กันไฟล์เก่าค้างมาโผล่รอบหน้า
+          if (blob.size > 10 * 1024 * 1024) { window.toast('ไฟล์ที่แชร์มาใหญ่เกิน 10MB', 'warning'); return; }
+
+          var input = document.getElementById('fileInput');
+          var dt = new DataTransfer();
+          dt.items.add(new File([blob], name, { type: blob.type || 'application/pdf' }));
+          input.files = dt.files;
+          window.attachFilePreview(input, 'filePreview');
+          window.toast('รับไฟล์ "' + name + '" จากแอปที่แชร์มาแล้ว — กรอกชื่อเรื่องแล้วบันทึกได้เลย', 'success');
+          var titleEl = document.querySelector('input[name="title"]');
+          if (titleEl) titleEl.focus();
+        } catch (err) {
+          window.toast('รับไฟล์ที่แชร์มาไม่สำเร็จ กรุณาแนบไฟล์เองครับ', 'warning');
+        }
+      });
       document.getElementById('docForm').addEventListener('submit', async function(e){
         e.preventDefault();
         var formEl = this;
