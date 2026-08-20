@@ -134,12 +134,14 @@ export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, p
 // ผู้อำนวยการสถานศึกษา" 2 บรรทัด — คำนี้ห้ามใช้ผิดกับ "รักษาการในตำแหน่ง" เฉยๆ เพราะเป็นถ้อยคำทางการที่
 // ตรายางจริงใช้), 'generic' = ผู้ตัดสินใจปิดเรื่องที่ไม่ใช่ผู้อำนวยการ/ผู้รักษาการแทนผู้อำนวยการ (เช่น
 // หัวหน้าฝ่ายปิดเรื่องเอง) ใช้ตำแหน่งจริงของคนนั้นตรงๆ แทนคำที่ตายตัว
-export async function stampDirectorDecision({ originalBuffer, schoolName, decision, note, marks, signatureDataUrl, prefix, firstName, lastName, position, titleMode, actingForLabel, dateThaiLong, xPercent, yPercent }) {
-  // marks: รายการเครื่องหมายที่ผู้ตัดสินใจติ๊กเลือกเอง ('ทราบ'/'อนุญาต'/'ไม่อนุญาต'/'อนุมัติ'/'ไม่อนุมัติ')
-  // เลือกได้หลายอันพร้อมกัน ไม่ผูกกับ decision (ซึ่งเป็นแค่ปุ่ม workflow ที่กดปิด/ส่งกลับเรื่อง) — ค่านี้มา
-  // จากช่อง checkbox จริงในหน้าเว็บ กรองค่าที่ไม่รู้จักไว้แล้วที่ documents.js (parseDecisionMarks)
+export async function stampDirectorDecision({ originalBuffer, schoolName, decision, note, marks, notifyTarget, signatureDataUrl, prefix, firstName, lastName, position, titleMode, actingForLabel, dateThaiLong, xPercent, yPercent }) {
+  // marks: รายการเครื่องหมายที่ผู้ตัดสินใจติ๊กเลือกเอง — ถ้อยคำอ้างอิงตรายางจริงของโรงเรียน (ดู
+  // DECISION_MARK_OPTIONS ใน routes/documents.js) เลือกได้หลายอันพร้อมกัน ไม่ผูกกับ decision (ซึ่งเป็นแค่
+  // ปุ่ม workflow ที่กดปิด/ส่งกลับเรื่อง) — กรองค่าที่ไม่รู้จักไว้แล้วที่ documents.js (parseDecisionMarks)
   const marked = new Set(marks || []);
-  const mark = (label) => (marked.has(label) ? '●' : '○');
+  // วาดช่องติ๊กด้วย CSS ล้วน (ไม่ใช้อักขระ ☑/✓) เพราะ image ของ Docker มีแต่ฟอนต์ไทย (fonts-thai-tlwg)
+  // ซึ่งไม่มี glyph พวกนี้ ถ้าใช้ตัวอักษรจะกลายเป็นสี่เหลี่ยมโบ๋ตอนประทับลง PDF จริง
+  const box = (on) => (on ? '<span class="cb"><i></i></span>' : '<span class="cb"></span>');
   // ค่าเริ่มต้นชิดมุมขวาล่างของหน้า ตามที่ตราจริงของโรงเรียนใช้ตำแหน่งนี้ (ตราลงรับของธุรการอยู่มุมขวาบน
   // แยกกันคนละมุม ไม่ชนกัน) — ผู้ใช้ยังลากปรับตำแหน่งเองได้ก่อนกดปุ่มตามปกติ
   const leftPt = Math.max(0, Math.min(80, xPercent ?? 58)) / 100 * PAGE_WIDTH_PT;
@@ -165,16 +167,23 @@ export async function stampDirectorDecision({ originalBuffer, schoolName, decisi
     body { margin: 0; font-family: "Noto Sans Thai", sans-serif; -webkit-print-color-adjust: exact; }
     .box { position: absolute; left: ${leftPt}pt; top: ${topPt}pt; width: 190pt; border: 2px solid #2222aa; color: #2222aa; padding: 7pt; font-size: 8pt; line-height: 1.55; border-radius: 4pt; }
     .box .title { font-weight: 700; text-align: center; margin-bottom: 4pt; }
-    .box .note { margin: 3pt 0; word-break: break-word; }
+    .box .opt { margin: 1.5pt 0; }
+    .box .cb { display: inline-block; width: 7pt; height: 7pt; border: 0.8pt solid #2222aa; position: relative; vertical-align: -1pt; margin-right: 3.5pt; }
+    .box .cb i { position: absolute; left: 2pt; top: -0.5pt; width: 2.4pt; height: 5pt; border-right: 1.2pt solid #2222aa; border-bottom: 1.2pt solid #2222aa; transform: rotate(40deg); }
+    .box .fill { display: inline-block; min-width: 54pt; border-bottom: 0.6pt dotted #2222aa; text-align: center; padding: 0 2pt; }
+    .box .note { margin: 3pt 0 0; word-break: break-word; }
     .box .sig { text-align: center; margin-top: 4pt; }
     .box .sig img { max-height: 34pt; max-width: 110pt; }
     .box .name { text-align: center; }
   </style></head><body>
     <div class="box">
       <div class="title">${titleHtml}</div>
-      <div>${mark('ทราบ')} ทราบ &nbsp; ${mark('อนุญาต')} อนุญาต &nbsp; ${mark('ไม่อนุญาต')} ไม่อนุญาต</div>
-      <div>${mark('อนุมัติ')} อนุมัติ &nbsp; ${mark('ไม่อนุมัติ')} ไม่อนุมัติ</div>
-      <div class="note">เห็นควรให้ ${esc(note || '-')}</div>
+      <div class="opt">${box(marked.has('ทราบ'))} ทราบ</div>
+      <div class="opt">${box(marked.has('เก็บรวมเรื่อง'))} เก็บรวมเรื่อง</div>
+      <div class="opt">${box(marked.has('แจ้งคณะครูทราบ'))} แจ้งคณะครูทราบ</div>
+      <div class="opt">${box(marked.has('แจ้งให้ทราบ'))} แจ้งให้ <span class="fill">${esc(notifyTarget || '')}</span> ทราบ</div>
+      <div class="opt">${box(marked.has('ดำเนินการ'))} ดำเนินการ</div>
+      <div class="note">ความเห็น ${esc(note || '')}</div>
       ${signatureDataUrl ? `<div class="sig"><img src="${esc(signatureDataUrl)}" /></div>` : ''}
       <div class="name">(${esc(prefix || '')}${esc(firstName)} ${esc(lastName)})</div>
       ${positionHtml}

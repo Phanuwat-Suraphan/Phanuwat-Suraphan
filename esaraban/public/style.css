@@ -504,6 +504,21 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .doc-decision-box .box-title { font-weight: 700; text-align: center; margin-bottom: .3rem; }
 .doc-decision-box .box-note { font-style: italic; }
+/* ช่องติ๊กบนกล่องตัวอย่าง — วาดด้วย CSS ล้วนให้เหมือนกับที่ประทับลง PDF จริง (ดู stampDirectorDecision
+   ใน services/pdfStamp.js) จะได้เห็นหน้าตาตรงกันทั้งตอนลากดูตัวอย่างและตอนพิมพ์ออกมาจริง */
+.doc-decision-box .opt { margin: .1rem 0; }
+.doc-decision-box .cb {
+  display: inline-block; width: 10px; height: 10px; border: 1px solid #2222aa;
+  position: relative; vertical-align: -1px; margin-right: 5px;
+}
+.doc-decision-box .cb.on::after {
+  content: ''; position: absolute; left: 3px; top: -1px; width: 3px; height: 7px;
+  border-right: 2px solid #2222aa; border-bottom: 2px solid #2222aa; transform: rotate(40deg);
+}
+.doc-decision-box .fill {
+  display: inline-block; min-width: 70px; border-bottom: 1px dotted #2222aa;
+  text-align: center; padding: 0 2px;
+}
 .doc-decision-box .sig { text-align: center; margin-top: .3rem; }
 .doc-decision-box .sig img { max-height: 40px; max-width: 130px; }
 .chip-row { display: flex; gap: .4rem; flex-wrap: wrap; }
