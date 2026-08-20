@@ -10,3 +10,4 @@ import './health.js';
 import './leave.js';
 import './announcements.js';
 import './delegation.js';
+import './dailySummary.js';

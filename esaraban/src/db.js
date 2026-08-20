@@ -314,6 +314,43 @@ export function migrate() {
     created_at TEXT NOT NULL
   );
 
+  -- สรุปงานรายวันที่ธุรการอัปโหลดมาเป็นไฟล์ Excel แล้วระบบแตกออกมาเก็บเป็นรายการ เพื่อให้แก้ไขต่อในระบบได้
+  -- และรวมดูข้ามวันได้ — แยกเก็บทีละวัน (summary_date) เพื่อให้ย้อนหาเอกสารของวันนั้นๆ ได้ง่าย
+  CREATE TABLE IF NOT EXISTS daily_summaries (
+    id TEXT PRIMARY KEY,
+    summary_date TEXT NOT NULL,
+    source_filename TEXT,
+    note TEXT,
+    uploaded_by TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS daily_summary_items (
+    id TEXT PRIMARY KEY,
+    summary_id TEXT NOT NULL REFERENCES daily_summaries(id) ON DELETE CASCADE,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    priority TEXT,
+    task_name TEXT,
+    action_needed TEXT,
+    schedule TEXT,
+    detail TEXT,
+    source_ref TEXT,
+    is_done INTEGER NOT NULL DEFAULT 0
+  );
+
+  -- ชีตที่ 2 ของไฟล์ต้นฉบับ (ดัชนี -> ชื่อไฟล์เอกสารอ้างอิง) เก็บไว้ให้ธุรการตามกลับไปหาไฟล์จริงได้
+  CREATE TABLE IF NOT EXISTS daily_summary_sources (
+    id TEXT PRIMARY KEY,
+    summary_id TEXT NOT NULL REFERENCES daily_summaries(id) ON DELETE CASCADE,
+    ref_index TEXT,
+    ref_text TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_daily_summaries_date ON daily_summaries(summary_date);
+  CREATE INDEX IF NOT EXISTS idx_daily_summary_items_summary ON daily_summary_items(summary_id, sort_order);
+  CREATE INDEX IF NOT EXISTS idx_daily_summary_sources_summary ON daily_summary_sources(summary_id);
+
   CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
   CREATE INDEX IF NOT EXISTS idx_documents_dept ON documents(department_id);
   CREATE INDEX IF NOT EXISTS idx_documents_title ON documents(title);
