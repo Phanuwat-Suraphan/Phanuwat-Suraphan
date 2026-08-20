@@ -1,4 +1,4 @@
-# ระบบสารบรรณอิเล็กทรอนิกส์ โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ 1 — MVP Prototype
+# ระบบสารบรรณอิเล็กทรอนิกส์ โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ ๑ — MVP Prototype
 
 Working prototype covering the Phase 1 (MVP) loop end-to-end: **login → รับ/ส่งหนังสือ →
 มอบหมาย/เกษียณ → อนุมัติ/ส่งต่อ → รับทราบด้วย PIN → เสร็จสิ้น → รายงาน**, responsive on both

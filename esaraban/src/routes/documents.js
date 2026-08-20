@@ -442,7 +442,7 @@ router.get('/documents/:id/print', requirePage((ctx) => {
     <button onclick="window.print()">🖨️ พิมพ์ / บันทึกเป็น PDF</button>
   </div>
   <h1>บันทึกข้อความ</h1>
-  <p><span class="field-label">ส่วนราชการ</span> ${esc(doc.dept_name)} โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ 1</p>
+  <p><span class="field-label">ส่วนราชการ</span> ${esc(doc.dept_name)} ${esc(SCHOOL_NAME)}</p>
   <div class="header-row">
     <p><span class="field-label">ที่</span> ${esc(doc.doc_number_display)}</p>
     <p><span class="field-label">วันที่</span> ${fmtThaiDateLong(doc.created_at)}</p>
@@ -740,7 +740,7 @@ router.get('/documents/:id', requirePage((ctx) => {
             var STAMP_X = ${doc.stamp_x != null ? doc.stamp_x : 70};
             var STAMP_Y = ${doc.stamp_y != null ? doc.stamp_y : 3};
             var STAMP_HTML = '<div class="doc-stamp"' + (STAMP_CAN_EDIT ? ' id="docStamp" style="cursor:move;left:' : ' style="left:') + STAMP_X + '%;top:' + STAMP_Y + '%">' +
-              '<div class="stamp-title">โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ 1</div>' +
+              '<div class="stamp-title">${esc(SCHOOL_NAME)}</div>' +
               '<div>เลขรับ......${esc(doc.doc_number_display)}......</div>' +
               '<div>วันที่......${new Date(doc.created_at).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' })}......</div>' +
               '<div>เวลา......${new Date(doc.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}......</div>' +
@@ -1090,7 +1090,7 @@ async function saveStampedCopy(att, stampedBuffer, yearBe) {
   }
 }
 
-const SCHOOL_NAME = 'โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ 1';
+const SCHOOL_NAME = 'โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ ๑';
 
 // เครื่องหมาย "ทราบ" + ลายเซ็นแบบง่าย — ทุกคนในสาย workflow ที่ตัดสินใจ (อนุมัติ/ส่งต่อ/รับทราบ/ไม่อนุมัติ)
 // ได้เครื่องหมายของตัวเองคนละอัน ไม่จำกัดแค่ผู้อำนวยการ (มีกี่คนตอบก็มีลายเซ็นเท่านั้นบนไฟล์) ตำแหน่ง/
@@ -1240,7 +1240,7 @@ router.post('/documents/:id/attachments/:attId/apply-stamp', requireApi(async (c
   const timeStr = typeof ctx.body.timeOverride === 'string' ? ctx.body.timeOverride.trim() : now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
   const stampedBuffer = await stampPdf({
     originalBuffer,
-    schoolName: 'โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ 1',
+    schoolName: SCHOOL_NAME,
     docNumberDisplay,
     dateThaiLong: now.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }),
     timeStr,

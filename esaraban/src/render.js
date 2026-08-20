@@ -108,7 +108,7 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
       <div class="logo-dot">จพ</div>
-      <div>ระบบสารบรรณ<br/><span class="text-muted" style="font-weight:400;font-size:.72rem">ร.ร.เจ้าพ่อหลวงอุปถัมภ์ 1</span></div>
+      <div>ระบบสารบรรณ<br/><span class="text-muted" style="font-weight:400;font-size:.72rem">ร.ร.เจ้าพ่อหลวงอุปถัมภ์ ๑</span></div>
     </div>
     ${navItem('/', '🏠', 'แดชบอร์ด', currentPath)}
     ${navItem('/documents?direction=incoming', '📥', 'หนังสือเข้า', currentPath)}

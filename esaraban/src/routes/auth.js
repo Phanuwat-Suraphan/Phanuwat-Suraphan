@@ -8,7 +8,7 @@ function loginPage({ error } = {}) {
       <div class="login-illustration">
         ${illustration('loginWelcome')}
         <h3>ระบบสารบรรณอิเล็กทรอนิกส์</h3>
-        <p>โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ 1</p>
+        <p>โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ ๑</p>
       </div>
       <div class="login-form-panel">
         <div class="login-logo">
