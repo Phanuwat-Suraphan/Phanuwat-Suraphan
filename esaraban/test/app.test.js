@@ -15,7 +15,7 @@ const { db, computeRetentionUntil, beYear } = await import('../src/db.js');
 const { login } = await import('../src/auth.js');
 const {
   createDocument, getDocument, canUserSeeDocument, currentStep,
-  assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep, voidDocument,
+  assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep, voidDocument, archiveDocument,
   assertStepBelongsToDocument,
 } = await import('../src/services/workflow.js');
 const { nextRunningNumber } = await import('../src/numbering.js');
@@ -31,7 +31,10 @@ function makeDoc(overrides = {}) {
   return createDocument({
     direction: 'incoming', title: 'เอกสารทดสอบ', correspondentName: 'ผู้ทดสอบ',
     docTypeId: typeId, departmentId: deptId, priority: 'normal', secretLevel: 'normal',
-    createdBy: adminUser.id, ...overrides,
+    // ธุรการเป็นผู้ลงทะเบียนหนังสือเข้าในความเป็นจริง จึงเป็นทั้งผู้บันทึกและผู้เสนอ/ยกเลิกเอง — เดิม fixture
+    // ตั้งผู้บันทึกเป็นแอดมินแต่ไปเสนอ/ยกเลิกด้วยธุรการ ซึ่งเป็นสถานการณ์ที่ไม่เกิดขึ้นจริง และบังเอิญผ่านมาได้
+    // เพราะตอนนั้นฝั่งเซิร์ฟเวอร์ยังไม่ได้ตรวจสิทธิ์ในสองฟังก์ชันนั้นเลย
+    createdBy: registrarUser.id, ...overrides,
   });
 }
 
@@ -196,6 +199,48 @@ describe('retention: computeRetentionUntil matches the regulation\'s year counts
 
   test('permanent never expires', () => {
     assert.equal(computeRetentionUntil(2569, 'permanent'), null);
+  });
+});
+
+// ช่องโหว่จริงที่เคยเกิด: ปุ่มถูกซ่อนไว้ใน UI (isCreatorOrAdmin) แต่ฝั่งเซิร์ฟเวอร์ไม่ตรวจสิทธิ์เลย ใครก็ตามที่
+// ล็อกอินอยู่จึงยิง API ตรงๆ ข้าม UI แล้วยกเลิก/จัดเก็บ/มอบหมายงานในหนังสือราชการของคนอื่นได้ทั้งระบบ
+describe('ACL: ยกเลิก/จัดเก็บ/มอบหมาย ต้องบังคับสิทธิ์ฝั่งเซิร์ฟเวอร์ ไม่ใช่แค่ซ่อนปุ่ม', () => {
+  test('ครูที่ไม่ใช่ผู้บันทึกเอกสาร ยกเลิกเอกสารของคนอื่นไม่ได้', () => {
+    const doc = makeDoc({ title: 'ห้ามให้คนอื่นยกเลิก' });
+    assert.throws(
+      () => voidDocument({ documentId: doc.id, reason: 'ไม่มีสิทธิ์', actorUser: teacherUser }),
+      /เฉพาะผู้บันทึกเอกสารหรือผู้ดูแลระบบ/,
+    );
+    assert.equal(getDocument(doc.id).status, 'registered');
+  });
+
+  test('ครูที่ไม่ใช่ผู้บันทึกเอกสาร มอบหมายงานในเอกสารของคนอื่นไม่ได้', () => {
+    const doc = makeDoc({ title: 'ห้ามให้คนอื่นมอบหมาย' });
+    assert.throws(
+      () => assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: teacherUser }),
+      /เฉพาะผู้บันทึกเอกสารหรือผู้ดูแลระบบ/,
+    );
+  });
+
+  test('ครูที่ไม่ใช่ผู้บันทึกเอกสาร จัดเก็บเอกสารของคนอื่นไม่ได้', () => {
+    const doc = makeDoc({ title: 'ห้ามให้คนอื่นจัดเก็บ' });
+    assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    acknowledgeAndComplete({ stepId: currentStep(doc.id).id, comment: 'ทราบ', actorUser: teacherUser });
+    assert.equal(getDocument(doc.id).status, 'completed');
+    assert.throws(
+      () => archiveDocument({ documentId: doc.id, actorUser: teacherUser }),
+      /เฉพาะผู้บันทึกเอกสารหรือผู้ดูแลระบบ/,
+    );
+  });
+
+  test('ผู้บันทึกเอกสารเอง และแอดมิน ยังทำได้ตามปกติ', () => {
+    const own = makeDoc({ title: 'ของธุรการเอง' });
+    voidDocument({ documentId: own.id, reason: 'สร้างผิด', actorUser: registrarUser });
+    assert.equal(getDocument(own.id).status, 'voided');
+
+    const other = makeDoc({ title: 'แอดมินจัดการได้' });
+    voidDocument({ documentId: other.id, reason: 'แอดมินสั่ง', actorUser: adminUser });
+    assert.equal(getDocument(other.id).status, 'voided');
   });
 });
 

@@ -112,6 +112,10 @@ export function currentStep(documentId) {
 export function assignStep({ documentId, assigneeId, instruction, actorUser }) {
   const doc = getDocument(documentId);
   if (!doc) throw httpError(404, 'ไม่พบเอกสาร');
+  // เดิม route ตรวจแค่ว่า "เห็นเอกสารนี้ได้ไหม" ซึ่งกว้างกว่าที่ UI ตั้งใจไว้มาก (ปุ่ม "เสนอ" ขึ้นเฉพาะผู้บันทึก
+  // เอกสาร/แอดมิน) ทำให้ใครก็ตามที่แค่เห็นเอกสารในฝ่ายตัวเองยิง API มอบหมายงานให้ใครก็ได้ — คนในสาย workflow
+  // ที่ต้องส่งต่อจริงๆ ใช้ปุ่มอนุมัติ/ส่งต่อ (approveAndForward) ซึ่งมี assertOwnsStep คุมอยู่แล้ว คนละทางกัน
+  assertCanManageDocument(doc, actorUser, 'มอบหมายงานในเอกสาร');
   if (!['registered', 'returned'].includes(doc.status)) throw httpError(409, 'เอกสารนี้ไม่อยู่ในสถานะที่มอบหมายงานใหม่ได้');
 
   const maxOrder = db.prepare('SELECT COALESCE(MAX(step_order),0) m FROM workflow_steps WHERE document_id = ?').get(documentId).m;
@@ -221,9 +225,20 @@ export function returnStep({ stepId, reason, actorUser }) {
   audit({ userId: actorUser.id, action: 'workflow_returned', tableName: 'workflow_steps', recordId: stepId, detail: { reason } });
 }
 
+// ยกเลิก/จัดเก็บเอกสาร อนุญาตเฉพาะผู้บันทึกเอกสารเองหรือแอดมิน — ตรงกับเงื่อนไขที่ซ่อน/แสดงปุ่มในหน้าเว็บ
+// (isCreatorOrAdmin ใน routes/documents.js) เดิมตรวจแค่ฝั่ง UI อย่างเดียว ฝั่งเซิร์ฟเวอร์ไม่ตรวจเลย ใครก็ตาม
+// ที่ล็อกอินอยู่จึงยิง POST /documents/<id>/void ตรงๆ ข้าม UI แล้วยกเลิกหนังสือราชการของคนอื่นได้ทั้งระบบ
+// (ทดสอบยืนยันแล้วว่าเดิมทำได้จริง) — ต้องบังคับฝั่งเซิร์ฟเวอร์ด้วยเสมอ ห้ามพึ่งการซ่อนปุ่มอย่างเดียว
+function assertCanManageDocument(doc, actorUser, what) {
+  if (doc.created_by === actorUser.id) return;
+  if (actorUser.roleCodes.includes('admin')) return;
+  throw httpError(403, `${what}ได้เฉพาะผู้บันทึกเอกสารหรือผู้ดูแลระบบเท่านั้น`);
+}
+
 export function voidDocument({ documentId, reason, actorUser }) {
   const doc = getDocument(documentId);
   if (!doc) throw httpError(404, 'ไม่พบเอกสาร');
+  assertCanManageDocument(doc, actorUser, 'ยกเลิกเอกสาร');
   if (!['draft', 'registered'].includes(doc.status)) {
     throw httpError(409, 'ห้ามลบ/ยกเลิกหนังสือที่อยู่ระหว่างดำเนินการ (Business Rule) — เลขที่ออกไปแล้วต้องคงอยู่ในลำดับเสมอ');
   }
@@ -263,6 +278,7 @@ export async function forceDeleteDocument({ documentId, reason, actorUser }) {
 export function archiveDocument({ documentId, actorUser }) {
   const doc = getDocument(documentId);
   if (!doc) throw httpError(404, 'ไม่พบเอกสาร');
+  assertCanManageDocument(doc, actorUser, 'จัดเก็บเอกสาร');
   if (doc.status !== 'completed') throw httpError(409, 'จัดเก็บได้เฉพาะเอกสารที่เสร็จสิ้นแล้ว');
   db.prepare(`UPDATE documents SET status = 'archived', updated_at = ? WHERE id = ?`).run(nowIso(), documentId);
   audit({ userId: actorUser.id, action: 'document_archived', tableName: 'documents', recordId: documentId });
