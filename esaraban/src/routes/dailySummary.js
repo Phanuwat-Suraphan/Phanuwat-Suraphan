@@ -76,7 +76,20 @@ router.get('/daily-summary', requirePage((ctx) => {
         <div class="form-grid cols-2">
           <div class="field">
             <label>วันที่ของสรุปงานนี้ *</label>
-            <input type="date" id="summaryDate" required value="${todayInBangkok()}" />
+            <input type="date" id="summaryDate" required value="${todayInBangkok()}" oninput="echoThaiDate()" />
+            <!-- ช่องเลือกวันที่ของเบราว์เซอร์แสดงตามภาษาของเครื่อง ซึ่งอาจเป็น ค.ศ. หรือแบบ ด/ว/ป สลับกัน
+                 จึงทวนวันที่ที่เลือกเป็นภาษาไทย พ.ศ. ให้อ่านยืนยันอีกที กันบันทึกผิดวันโดยไม่รู้ตัว -->
+            <div class="help-text" id="summaryDateThai"></div>
+            <script>
+              function echoThaiDate(){
+                var v = document.getElementById('summaryDate').value;
+                var out = document.getElementById('summaryDateThai');
+                if (!v) { out.textContent = ''; return; }
+                out.textContent = 'วันที่เลือกไว้: ' + new Date(v + 'T00:00:00')
+                  .toLocaleDateString('th-TH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+              }
+              echoThaiDate();
+            </script>
           </div>
           <div class="field">
             <label>ไฟล์ Excel (.xlsx) *</label>

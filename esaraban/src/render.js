@@ -23,6 +23,43 @@ export function fmtThaiDateLong(iso) {
   return d.toLocaleString('th-TH', { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
+// วันที่แบบสั้นอ่านง่าย "25 ส.ค. 2569" — ใช้กับตารางและหน้ารายละเอียดทั่วไป ที่ต้องการเห็นวันเร็วๆ
+// (ห้ามโชว์รูปแบบดิบจากฐานข้อมูลอย่าง "2026-08-25" ให้ผู้ใช้เห็น — เป็น ค.ศ. และไม่ใช่รูปแบบไทย
+//  อ่านแล้วต้องแปลงในหัวเองทุกครั้ง หน้าอื่นๆ ในระบบก็แสดงเป็น พ.ศ. อยู่แล้ว จะสับสนกันเอง)
+export function fmtThaiDateShort(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso.length === 10 ? `${iso}T00:00:00` : iso);
+  if (Number.isNaN(d.getTime())) return esc(iso);
+  return d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+// จำนวนวันจากวันนี้ถึงวันครบกำหนด — ติดลบแปลว่าเลยกำหนดมาแล้ว
+export function daysUntil(dateStr) {
+  if (!dateStr) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const target = new Date(`${String(dateStr).slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(target.getTime())) return null;
+  return Math.round((target - today) / 86400000);
+}
+
+// ป้ายบอกว่าเหลืออีกกี่วัน/เลยมากี่วัน — คนละเรื่องกับ "ความเร็ว" ที่ธุรการกรอกตอนลงทะเบียน
+// อันนั้นคือความเร่งด่วนที่ต้นทางระบุมา อันนี้คือความจริงว่าวันนี้ยังทันไหม
+export function dueChip(n) {
+  if (n === null) return '';
+  if (n < 0) return `<span class="badge badge-danger">เลยกำหนด ${Math.abs(n)} วัน</span>`;
+  if (n === 0) return '<span class="badge badge-danger">ครบกำหนดวันนี้</span>';
+  if (n <= 3) return `<span class="badge badge-warning">อีก ${n} วัน</span>`;
+  return `<span class="text-muted" style="font-size:.8rem">อีก ${n} วัน</span>`;
+}
+
+// วันครบกำหนดพร้อมป้ายนับถอยหลัง สำหรับใส่ในช่องตาราง/แถวรายละเอียด
+export function dueCell(dateStr, { long = false } = {}) {
+  if (!dateStr) return '<span class="text-muted">—</span>';
+  const n = daysUntil(dateStr);
+  const text = long ? fmtThaiDateLong(dateStr) : fmtThaiDateShort(dateStr);
+  return `${esc(text)}<div style="margin-top:.2rem">${dueChip(n)}</div>`;
+}
+
 const PRIORITY_LABEL = { normal: 'ปกติ', urgent: 'ด่วน', very_urgent: 'ด่วนมาก', most_urgent: 'ด่วนที่สุด' };
 const PRIORITY_BADGE = { normal: 'badge-muted', urgent: 'badge-warning', very_urgent: 'badge-danger', most_urgent: 'badge-danger' };
 const SECRET_LABEL = { normal: 'ปกติ', internal: 'ภายใน', secret: 'ลับ', top_secret: 'ลับมาก' };
@@ -111,17 +148,24 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
       <div>ระบบสารบรรณ<br/><span class="text-muted" style="font-weight:400;font-size:.72rem">ร.ร.เจ้าพ่อหลวงอุปถัมภ์ ๑</span></div>
     </div>
     ${navItem('/', '🏠', 'แดชบอร์ด', currentPath)}
+    ${navItem('/tasks', '📌', 'งานของฉัน', currentPath)}
+    ${navItem('/notifications', '🔔', 'การแจ้งเตือน', currentPath)}
+
+    <div class="nav-section-label">ทะเบียนหนังสือ</div>
     ${navItem('/documents?direction=incoming', '📥', 'หนังสือเข้า', currentPath)}
     ${navItem('/documents?direction=outgoing', '📤', 'หนังสือออก', currentPath)}
-    ${navItem('/tasks', '📌', 'งานของฉัน', currentPath)}
     ${navItem('/summary', '🗒️', 'สรุปงานที่ต้องทำ', currentPath)}
     ${navItem('/daily-summary', '📅', 'สรุปงานรายวัน', currentPath)}
-    ${navItem('/notifications', '🔔', 'การแจ้งเตือน', currentPath)}
+
+    <div class="nav-section-label">งานบุคคล</div>
     ${navItem('/leave', '🗓️', 'ลา/ไปราชการ', currentPath)}
     ${navItem('/delegations', '🪪', 'มอบหมายรักษาการแทน', currentPath)}
     ${navItem('/announcements', '📢', 'ประกาศ/ประชาสัมพันธ์', currentPath)}
+
+    <div class="nav-section-label">รายงาน</div>
     ${navItem('/reports', '📊', 'รายงาน', currentPath)}
-    ${user.roleCodes.some((r) => ['admin', 'registrar', 'director', 'vice_director'].includes(r)) ? navItem('/retention', '🗄️', 'อายุการเก็บ/ทำลายหนังสือ', currentPath) : ''}
+    ${user.roleCodes.some((r) => ['admin', 'registrar', 'director', 'vice_director'].includes(r)) ? navItem('/retention', '🗄️', 'อายุการเก็บ/ทำลาย', currentPath) : ''}
+
     <div class="nav-section-label">ระบบ</div>
     ${user.roleCodes.includes('admin') ? navItem('/admin/users', '⚙️', 'จัดการผู้ใช้', currentPath) : ''}
     ${user.roleCodes.includes('admin') ? navItem('/admin/audit', '🧾', 'Audit Log', currentPath) : ''}

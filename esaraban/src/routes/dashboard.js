@@ -1,5 +1,5 @@
 import { router, html } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateLong, statusBadge, priorityBadge, illustratedEmptyState } from '../render.js';
+import { layout, esc, fmtDate, statusBadge, priorityBadge, illustratedEmptyState, daysUntil, dueCell } from '../render.js';
 import { requirePage } from '../middleware.js';
 import { db } from '../db.js';
 import { canUserSeeDocument } from '../services/workflow.js';
@@ -13,11 +13,15 @@ const MY_OR_DELEGATED_STEP_SQL = `(ws.assignee_id = ? OR ws.assignee_id IN (
 
 // สีวงกลมไอคอนแต่ละใบสื่อความหมาย: primary=เข้า, secret=ออก(สีต่างให้แยกจากเข้าง่ายๆ), warning=รอดำเนินการ,
 // danger=เกินกำหนด, success=เสร็จสิ้น — ไม่ชนกับสีของ badge สถานะเอกสาร (แยกคนละระบบสีกัน)
-function kpi(value, label, emoji, tone) {
-  return `<div class="kpi-card">
-    <div class="kpi-icon kpi-icon-${tone || 'primary'}">${emoji}</div>
-    <div><div class="kpi-value">${value}</div><div class="kpi-label">${esc(label)}</div></div>
-  </div>`;
+//
+// การ์ดที่มี href กดได้ — เห็น "เกินกำหนด 1" แล้วต้องกดไปดูได้ทันทีว่าฉบับไหน ไม่ใช่เห็นตัวเลขบอกว่ามีปัญหา
+// แล้วต้องไปไล่หาเองในเมนูอื่น (เป็นปัญหาที่เจอตอนไล่ดูหน้าจอจริง)
+function kpi(value, label, emoji, tone, href) {
+  const inner = `<div class="kpi-icon kpi-icon-${tone || 'primary'}">${emoji}</div>
+    <div><div class="kpi-value">${value}</div><div class="kpi-label">${esc(label)}</div></div>`;
+  return href
+    ? `<a class="kpi-card kpi-card-link" href="${href}">${inner}</a>`
+    : `<div class="kpi-card">${inner}</div>`;
 }
 
 // ทักทายตามช่วงเวลา (UX Bible Part 21 §1) — ใช้เวลาของเซิร์ฟเวอร์ตรงๆ ไม่ผูก timezone ผู้ใช้
@@ -132,11 +136,11 @@ router.get('/', requirePage((ctx) => {
     </div>
 
     <div class="kpi-grid">
-      ${kpi(inToday, 'หนังสือเข้าวันนี้', '📥', 'primary')}
-      ${kpi(outToday, 'หนังสือออกวันนี้', '📤', 'secret')}
-      ${kpi(myTasks, 'งานรอฉันดำเนินการ', '📌', 'warning')}
-      ${kpi(overdue, 'เกินกำหนด', '⏰', 'danger')}
-      ${kpi(completedToday, 'เสร็จสิ้นวันนี้', '✅', 'success')}
+      ${kpi(inToday, 'หนังสือเข้าวันนี้', '📥', 'primary', '/documents?direction=incoming')}
+      ${kpi(outToday, 'หนังสือออกวันนี้', '📤', 'secret', '/documents?direction=outgoing')}
+      ${kpi(myTasks, 'งานรอฉันดำเนินการ', '📌', 'warning', '/tasks')}
+      ${kpi(overdue, 'เกินกำหนด', '⏰', 'danger', '/summary')}
+      ${kpi(completedToday, 'เสร็จสิ้นวันนี้', '✅', 'success', '/documents?status=completed')}
     </div>
 
     ${execKpiHtml}
@@ -173,15 +177,43 @@ router.get('/tasks', requirePage((ctx) => {
     WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' ORDER BY d.priority DESC, ws.created_at ASC
   `).all(ctx.user.id, ctx.user.id, ctx.user.id);
 
+  // กรองชั้นความลับด้วยเสมอ เหมือนหน้าอื่นๆ — ปกติคนที่ถูกมอบหมายก็เห็นอยู่แล้ว แต่ถ้าชั้นความลับของ
+  // เอกสารถูกยกระดับขึ้นทีหลัง แถวเก่าต้องหายไปจากหน้านี้ด้วย ไม่ใช่ยังโชว์ชื่อเรื่องค้างไว้
+  const rows = rawRows.filter((d) => canUserSeeDocument(ctx.user, d));
+
+  // เรียงของที่ "เลยกำหนด/ใกล้ครบกำหนด" ขึ้นก่อนเสมอ แล้วค่อยเรียงตามความเร็วที่ต้นทางระบุ —
+  // เดิมเรียงตามความเร็วอย่างเดียว ทำให้หนังสือ "ปกติ" ที่เลยกำหนดมา 5 วันไปจมอยู่ท้ายตาราง
+  rows.sort((a, b) => {
+    const da = daysUntil(a.due_date), dbb = daysUntil(b.due_date);
+    if (da === null && dbb !== null) return 1;
+    if (dbb === null && da !== null) return -1;
+    if (da !== null && dbb !== null && da !== dbb) return da - dbb;
+    return new Date(a.assigned_at) - new Date(b.assigned_at);
+  });
+  const overdueCount = rows.filter((d) => daysUntil(d.due_date) < 0).length;
+
   const content = `
-    <h2>📌 งานของฉัน</h2>
+    <div class="card-header">
+      <div>
+        <h2 class="mt-0">📌 งานของฉัน</h2>
+        <p class="text-muted" style="margin:-.3rem 0 0;font-size:.85rem">
+          ${rows.length ? `รอคุณดำเนินการ ${rows.length} ฉบับ${overdueCount ? ` · <strong style="color:var(--danger)">เลยกำหนดแล้ว ${overdueCount}</strong>` : ''} — เรียงตามวันครบกำหนด กดที่แถวเพื่อเปิดเอกสาร`
+            : 'ไม่มีงานค้างอยู่ในมือคุณตอนนี้'}
+        </p>
+      </div>
+    </div>
     <div class="card">
       ${rows.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ความเร็ว</th><th>ชั้นความลับ</th><th>มอบหมายเมื่อ</th></tr></thead>
-        <tbody>${rows.map((d) => `<tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer">
-          <td>${esc(d.doc_number_display)}${d.is_delegated ? ' <span title="รักษาการแทน">🪪</span>' : ''}</td><td>${esc(d.title)}</td>
-          <td>${priorityBadge(d.priority)}</td><td>${d.secret_level !== 'normal' ? '🔒 ' + esc(d.secret_level) : '-'}</td>
-          <td class="text-muted">${fmtDate(d.assigned_at)}</td></tr>`).join('')}</tbody>
+        <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ความเร็ว</th><th>ครบกำหนด</th><th>มอบหมายเมื่อ</th></tr></thead>
+        <tbody>${rows.map((d) => {
+          const n = daysUntil(d.due_date);
+          return `<tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer${n !== null && n < 0 ? ';background:rgba(220,38,38,.06)' : ''}">
+            <td style="white-space:nowrap">${esc(d.doc_number_display)}${d.is_delegated ? ' <span title="รักษาการแทน">🪪</span>' : ''}${d.secret_level !== 'normal' ? ' <span title="ชั้นความลับ">🔒</span>' : ''}</td>
+            <td class="wrap"><strong>${esc(d.title)}</strong></td>
+            <td>${priorityBadge(d.priority)}</td>
+            <td style="white-space:nowrap">${dueCell(d.due_date)}</td>
+            <td class="text-muted">${fmtDate(d.assigned_at)}</td></tr>`;
+        }).join('')}</tbody>
       </table></div>` : illustratedEmptyState('allClear', 'ไม่มีงานค้างสำหรับคุณเลยครับ พักผ่อนสบายๆ ได้เลยครับ ☕')}
     </div>`;
   html(ctx, 200, layout({ user: ctx.user, title: 'งานของฉัน', path: '/tasks', content }));
@@ -214,19 +246,10 @@ router.get('/summary', requirePage((ctx) => {
   const truncated = rawRows.length > 300;
   const rows = rawRows.slice(0, 300).filter((d) => canUserSeeDocument(ctx.user, d));
 
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const daysLeft = (due) => Math.round((new Date(due + 'T00:00:00') - today) / 86400000);
-  // ป้ายบอกความเร่งด่วนจากวันครบกำหนดจริง (คนละเรื่องกับ "ความเร็ว" ที่ธุรการกรอกไว้ตอนลงทะเบียน) —
-  // ตัวเลขติดลบแปลว่าเลยกำหนดมาแล้วกี่วัน
-  const dueChip = (n) => {
-    if (n < 0) return `<span class="badge badge-danger">เลยกำหนด ${Math.abs(n)} วัน</span>`;
-    if (n === 0) return '<span class="badge badge-danger">ครบกำหนดวันนี้</span>';
-    if (n <= 3) return `<span class="badge badge-warning">อีก ${n} วัน</span>`;
-    return `<span class="text-muted" style="font-size:.8rem">อีก ${n} วัน</span>`;
-  };
-
-  const overdue = rows.filter((d) => daysLeft(d.due_date) < 0).length;
-  const soon = rows.filter((d) => { const n = daysLeft(d.due_date); return n >= 0 && n <= 3; }).length;
+  // ป้ายนับถอยหลัง/เลยกำหนด ใช้ helper กลางจาก render.js เพื่อให้หน้ารายการหนังสือเข้าและหน้ารายละเอียด
+  // แสดงผลเหมือนกันเป๊ะ — เดิมตรรกะนี้อยู่เฉพาะหน้านี้หน้าเดียว หน้าอื่นจึงไม่บอกเลยว่าเลยกำหนดหรือยัง
+  const overdue = rows.filter((d) => daysUntil(d.due_date) < 0).length;
+  const soon = rows.filter((d) => { const n = daysUntil(d.due_date); return n >= 0 && n <= 3; }).length;
 
   const content = `
     <div class="card-header">
@@ -247,10 +270,10 @@ router.get('/summary', requirePage((ctx) => {
           <th>รายละเอียดสิ่งที่ต้องทำ</th><th>วิธีการดำเนินการ</th><th>หมายเหตุ/ข้อมูลเพิ่มเติม</th>
         </tr></thead>
         <tbody>${rows.map((d) => {
-          const n = daysLeft(d.due_date);
+          const n = daysUntil(d.due_date);
           return `<tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer${n < 0 ? ';background:rgba(220,38,38,.06)' : ''}">
             <td>${priorityBadge(d.priority)}</td>
-            <td style="white-space:nowrap">${esc(fmtThaiDateLong(d.due_date))}<div style="margin-top:.2rem">${dueChip(n)}</div></td>
+            <td style="white-space:nowrap">${dueCell(d.due_date, { long: true })}</td>
             <td><strong>${esc(d.title)}</strong><div class="text-muted" style="font-size:.78rem">${esc(d.doc_number_display)}${d.secret_level !== 'normal' ? ' 🔒' : ''}</div></td>
             <td>${d.subject ? esc(d.subject).replace(/\n/g, '<br/>') : '<span class="text-muted">—</span>'}</td>
             <td>${d.pending_instruction ? esc(d.pending_instruction).replace(/\n/g, '<br/>') : '<span class="text-muted">—</span>'}

@@ -255,7 +255,7 @@ a.avatar:hover { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--primary);
   display: flex; align-items: center; gap: .7rem;
 }
 .kpi-card .kpi-value { font-size: 1.6rem; font-weight: 800; line-height: 1.1; }
-.kpi-card .kpi-label { color: var(--text-muted); font-size: .78rem; margin-top: .15rem; }
+.kpi-card .kpi-label { color: var(--text-muted); font-size: .82rem; margin-top: .15rem; }
 .kpi-icon {
   width: 42px; height: 42px; border-radius: 50%; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center; font-size: 1.25rem;
@@ -302,7 +302,7 @@ a.avatar:hover { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--primary);
 .btn[disabled] { opacity: .5; cursor: not-allowed; }
 
 /* ---------- Forms ---------- */
-label { display: block; font-size: .82rem; font-weight: 600; margin-bottom: .3rem; color: var(--text-muted); }
+label { display: block; font-size: .88rem; font-weight: 600; margin-bottom: .3rem; color: var(--text-muted); }
 .field { margin-bottom: .9rem; }
 input[type=text], input[type=password], input[type=date], input[type=email], input[type=number], input[type=tel], select, textarea {
   width: 100%; border: 1px solid var(--border); background: var(--surface);
@@ -313,7 +313,7 @@ textarea { resize: vertical; min-height: 80px; }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
 .form-grid { display: grid; grid-template-columns: 1fr; gap: 0 1rem; }
 @media (min-width: 640px) { .form-grid.cols-2 { grid-template-columns: 1fr 1fr; } }
-.help-text { font-size: .76rem; color: var(--text-muted); margin-top: .25rem; }
+.help-text { font-size: .82rem; line-height: 1.65; color: var(--text-muted); margin-top: .25rem; }
 
 /* ---------- Progressive disclosure: "ตัวเลือกเพิ่มเติม" (keeps forms short for first-time users) ---------- */
 .field-more { margin-bottom: 1rem; }
@@ -343,9 +343,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); o
 
 /* ---------- Table ---------- */
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
-table { width: 100%; border-collapse: collapse; font-size: .87rem; min-width: 640px; }
+table { width: 100%; border-collapse: collapse; font-size: .92rem; min-width: 640px; }
 th, td { text-align: left; padding: .65rem .8rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
-thead th { background: var(--surface-2); color: var(--text-muted); font-size: .74rem; text-transform: uppercase; letter-spacing: .03em; }
+thead th { background: var(--surface-2); color: var(--text-muted); font-size: .8rem; letter-spacing: .01em; }
 tbody tr:hover { background: var(--surface-2); }
 tbody tr:last-child td { border-bottom: none; }
 
@@ -598,3 +598,60 @@ kbd {
 @media (prefers-reduced-motion: reduce) {
   .confetti-layer { display: none; }
 }
+
+/* ---------- อ่านง่าย/ใช้ง่าย: ปรับจากการดูหน้าจอจริงทั้งเดสก์ท็อปและมือถือ ---------- */
+
+/* คอลัมน์ชื่อเรื่องต้องตัดบรรทัดได้ ไม่งั้นชื่อหนังสือไทยยาวๆ ดันตารางกว้างจนต้องเลื่อนซ้ายขวาหาอ่าน */
+th.wrap, td.wrap { white-space: normal; min-width: 13rem; }
+
+/* การ์ดตัวเลขบนแดชบอร์ดกดได้ — ต้องดูออกว่ากดได้ ไม่ใช่แค่กดได้เฉยๆ */
+.kpi-card-link { color: inherit; text-decoration: none; transition: transform .12s ease, box-shadow .12s ease; }
+.kpi-card-link:hover { text-decoration: none; transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,.10); border-color: var(--primary); }
+.kpi-card-link:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+/* เลขลำดับขั้นตอนในกล่องดำเนินการ — บอกว่าทำอะไรก่อนหลัง แทนที่จะเป็นช่องกรอกเรียงกันเฉยๆ */
+.step-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.35rem; height: 1.35rem; border-radius: 50%; margin-right: .35rem;
+  background: var(--primary); color: var(--primary-contrast);
+  font-size: .75rem; font-weight: 800; line-height: 1;
+}
+
+/* คำอธิบายยาวๆ พับเก็บไว้ก่อน — เดิมเป็นย่อหน้าสีเทายาว 5-8 บรรทัดคาหน้าจอ ทำให้หาปุ่มที่ต้องกดไม่เจอ */
+.help-details { margin-top: .3rem; }
+.help-details summary {
+  cursor: pointer; font-size: .8rem; font-weight: 600; color: var(--primary);
+  list-style: none; display: inline-flex; align-items: center; gap: .3rem;
+  -webkit-tap-highlight-color: transparent;
+}
+.help-details summary::-webkit-details-marker { display: none; }
+.help-details summary::before { content: '❔'; font-size: .8rem; }
+.help-details summary:hover { text-decoration: underline; }
+
+/* คำแนะนำสำคัญที่ต้องเห็นจริงๆ (เดิมซ่อนอยู่กลางย่อหน้าสีเทา เลยไม่มีใครอ่านเจอ) */
+.callout-tip {
+  margin-top: .5rem; padding: .55rem .7rem; border-radius: 8px;
+  background: var(--info-bg); border-left: 3px solid var(--primary);
+  font-size: .82rem; line-height: 1.6;
+}
+
+/* ปุ่มดำเนินการ: ปุ่มหลักเต็มความกว้างและตัวใหญ่ ปุ่มรองเล็กกว่าและอยู่คนละแถว
+   เดิมสี่ปุ่มน้ำหนักเท่ากันเรียงติดกัน แยกไม่ออกว่าอันไหนคือทางปกติ อันไหนคือทางที่ไม่ควรกดพลาด */
+.action-buttons { display: flex; flex-direction: column; gap: .5rem; margin-top: .3rem; }
+.action-buttons .btn-lg { width: 100%; padding: .8rem 1rem; font-size: 1rem; }
+.action-buttons-secondary {
+  display: flex; gap: .5rem; flex-wrap: wrap; justify-content: center;
+  margin-top: .2rem; padding-top: .6rem; border-top: 1px dashed var(--border);
+}
+
+/* บนมือถือ กล่อง "ดำเนินการ" ต้องอยู่บนสุด — คนเปิดเอกสารจากหน้างานของฉันมาเพื่อ "ตัดสินใจ"
+   เดิมต้องเลื่อนผ่านรายละเอียด ไฟล์แนบ และความคิดเห็น ยาวสามหน้าจอกว่าจะเจอปุ่ม */
+@media (max-width: 899px) {
+  .doc-detail-grid { display: flex; flex-direction: column; }
+  .doc-detail-grid .doc-side { order: -1; }
+}
+
+/* ตารางแนวตั้งแบบ "ป้ายกำกับ + ค่า" (เช่น กล่องรายละเอียดเอกสาร) ต้องตัดบรรทัดได้ — ค่าอย่าง
+   "ปกติ (อย่างน้อย 10 ปี) (ครบกำหนด 31 ธันวาคม 2579)" ยาวเกินความกว้างจอมือถือ ถ้า nowrap จะล้นออกนอกการ์ด */
+.table-plain td { white-space: normal; }
+.table-plain td:first-child { white-space: nowrap; width: 1%; }

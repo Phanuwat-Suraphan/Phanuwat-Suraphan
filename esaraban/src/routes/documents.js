@@ -1,5 +1,5 @@
 import { router, html, json, redirect } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateLong, priorityBadge, secretBadge, statusBadge, emptyState, LABELS } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, priorityBadge, secretBadge, statusBadge, emptyState, LABELS } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, nowIso, audit, RETENTION_LABEL } from '../db.js';
 import {
@@ -76,19 +76,33 @@ router.get('/documents', requirePage((ctx) => {
 
   const rows = db.prepare(sql).all(...params).filter((d) => canUserSeeDocument(ctx.user, d));
 
-  const rowsHtml = rows.map((d) => `
-    <tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer">
-      <td><strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong></td>
-      <td>${esc(d.title)}${d.secret_level !== 'normal' ? ' 🔒' : ''}</td>
+  // เรื่องที่ยังไม่ปิดถือว่ายัง "นับเวลาอยู่" — เรื่องที่ปิดแล้วไม่ต้องขึ้นเตือนว่าเลยกำหนดอีก
+  const stillOpen = (d) => !['completed', 'archived', 'voided', 'destroyed', 'rejected'].includes(d.status);
+  const overdueCount = rows.filter((d) => stillOpen(d) && daysUntil(d.due_date) < 0).length;
+
+  const rowsHtml = rows.map((d) => {
+    const n = stillOpen(d) ? daysUntil(d.due_date) : null;
+    return `
+    <tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer${n !== null && n < 0 ? ';background:rgba(220,38,38,.06)' : ''}">
+      <td style="white-space:nowrap"><strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong></td>
+      <td class="wrap">${esc(d.title)}${d.secret_level !== 'normal' ? ' 🔒' : ''}</td>
       <td>${esc(d.dept_name)}</td>
       <td>${priorityBadge(d.priority)}</td>
       <td>${statusBadge(d.status)}</td>
-      <td class="text-muted">${fmtDate(d.created_at)}</td>
-    </tr>`).join('');
+      <td style="white-space:nowrap">${d.due_date ? (n === null ? esc(fmtThaiDateShort(d.due_date)) : dueCell(d.due_date)) : '<span class="text-muted">—</span>'}</td>
+      <td class="text-muted" style="white-space:nowrap">${fmtDate(d.created_at)}</td>
+    </tr>`;
+  }).join('');
 
   const content = `
     <div class="card-header">
-      <h2 class="mt-0">${direction === 'incoming' ? '📥 หนังสือเข้า' : '📤 หนังสือออก'}</h2>
+      <div>
+        <h2 class="mt-0">${direction === 'incoming' ? '📥 หนังสือเข้า' : '📤 หนังสือออก'}</h2>
+        <p class="text-muted" style="margin:-.3rem 0 0;font-size:.85rem">
+          ${rows.length ? `ทั้งหมด ${rows.length} ฉบับ${rows.length >= 200 ? ' (แสดง 200 ฉบับล่าสุด — ใช้ช่องค้นหาเพื่อจำกัดผลลัพธ์)' : ''}${overdueCount ? ` · <strong style="color:var(--danger)">เลยกำหนดแล้ว ${overdueCount}</strong>` : ''}`
+            : 'ยังไม่มีรายการ'}
+        </p>
+      </div>
       <a class="btn btn-primary" href="/documents/new?direction=${direction}">+ ${direction === 'incoming' ? 'รับหนังสือใหม่' : 'สร้างหนังสือส่ง'}</a>
     </div>
     <div class="card">
@@ -102,7 +116,7 @@ router.get('/documents', requirePage((ctx) => {
         <button class="btn btn-outline" type="submit">กรอง</button>
       </form>
       ${rows.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ฝ่าย</th><th>ความเร็ว</th><th>สถานะ</th><th>วันที่</th></tr></thead>
+        <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ฝ่าย</th><th>ความเร็ว</th><th>สถานะ</th><th>ครบกำหนด</th><th>วันที่ลงทะเบียน</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table></div>`
       : emptyState('📭', `ไม่มี${direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก'}ในรายการนี้`)}
     </div>`;
@@ -528,11 +542,11 @@ router.get('/documents/:id', requirePage((ctx) => {
       </div>` : ''}
       <div class="stack">
         <div>
-          <label>${isDirectorDecision ? 'ส่งต่อ/อนุมัติไปยัง (ถ้าต้องการส่งต่อ)' : 'มอบหมายให้ (ถ้าต้องการส่งต่อ)'}</label>
-          <select id="nextAssignee"><option value="">— เลือกผู้รับ (ถ้าไม่เลือก แปลว่าคุณคือผู้รับคนสุดท้าย) —</option>${listUserOptions(ctx.user.id)}</select>
+          <label><span class="step-num">1</span> ${isDirectorDecision ? 'ส่งต่อ/อนุมัติไปยัง' : 'มอบหมายให้'} <span class="text-muted" style="font-weight:400">(ไม่เลือกก็ได้ ถ้าจบที่คุณ)</span></label>
+          <select id="nextAssignee"><option value="">— ไม่ส่งต่อ จบเรื่องที่ฉัน —</option>${listUserOptions(ctx.user.id)}</select>
         </div>
         <div class="field">
-          <label>ความเห็น/ข้อความเกษียณ</label>
+          <label><span class="step-num">2</span> ความเห็น/ข้อความเกษียณ</label>
           <div class="chip-row" style="margin-bottom:.4rem">
             <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('เห็นชอบ')">เห็นชอบ</button>
             <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('อนุมัติ')">อนุมัติ</button>
@@ -541,15 +555,19 @@ router.get('/documents/:id', requirePage((ctx) => {
             <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('เพื่อพิจารณา')">เพื่อพิจารณา</button>
             <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('เพื่อทราบและดำเนินการ')">เพื่อทราบและดำเนินการ</button>
           </div>
-          <textarea id="stepComment" placeholder="เลือกจากปุ่มด้านบน แล้วพิมพ์ข้อความเพิ่มเติมได้ตามต้องการ — หรือพิมพ์เองทั้งหมดก็ได้"></textarea>
-          <div class="help-text">
-            "อนุมัติ" ใช้เมื่อใช้อำนาจตามระเบียบ (เช่น อนุมัติโครงการ/งบประมาณ) · "เห็นชอบ" ใช้เมื่อเห็นด้วยกับหลักการ
-            แล้วให้หน่วยที่เกี่ยวข้องไปจัดทำรายละเอียดต่อ · "ทราบ" ใช้รับทราบเฉยๆ ไม่ได้สั่งการเพิ่ม
-          </div>
+          <textarea id="stepComment" placeholder="กดปุ่มด้านบนเพื่อใส่ข้อความสำเร็จรูป แล้วพิมพ์เพิ่มได้ หรือพิมพ์เองทั้งหมด"></textarea>
+          <details class="help-details">
+            <summary>คำไหนใช้ตอนไหน?</summary>
+            <div class="help-text">
+              <strong>อนุมัติ</strong> — ใช้อำนาจตามระเบียบ เช่น อนุมัติโครงการ/งบประมาณ<br/>
+              <strong>เห็นชอบ</strong> — เห็นด้วยกับหลักการ แล้วให้หน่วยที่เกี่ยวข้องไปจัดทำรายละเอียดต่อ<br/>
+              <strong>ทราบ</strong> — รับทราบเฉยๆ ไม่ได้สั่งการเพิ่ม
+            </div>
+          </details>
         </div>
         ${attachments.length && isDirectorDecision ? `
         <div class="field">
-          <label>เครื่องหมายบนตราประทับ (เลือกได้หลายอัน — เฉพาะอันที่ติ๊กจะแสดงบนตราที่ประทับลงไฟล์ PDF จริง)</label>
+          <label><span class="step-num">3</span> เครื่องหมายบนตราประทับ <span class="text-muted" style="font-weight:400">(ติ๊กได้หลายอัน — เฉพาะอันที่ติ๊กจะขึ้นบนตราใน PDF จริง)</span></label>
           <div class="stack" style="gap:.35rem">
             ${DECISION_MARK_OPTIONS.map((m) => `
             <label style="display:flex;align-items:center;gap:.4rem;font-weight:400;cursor:pointer">
@@ -564,27 +582,29 @@ router.get('/documents/:id', requirePage((ctx) => {
           </div>
         </div>
         <div class="field">
-          <div class="flex items-center justify-between">
-            <label style="margin-bottom:0">ข้อความบนตราประทับ "ความเห็น..." (เว้นว่างได้)</label>
-            <button type="button" class="btn btn-outline btn-sm" onclick="window.clearDecisionInputs()">🗑️ ล้างค่า</button>
+          <div class="flex items-center justify-between gap-2" style="flex-wrap:nowrap">
+            <label style="margin-bottom:0"><span class="step-num">4</span> ข้อความบนตราประทับ "ความเห็น..." <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+            <button type="button" class="btn btn-outline btn-sm" style="flex:0 0 auto;white-space:nowrap" onclick="window.clearDecisionInputs()">🗑️ ล้างค่า</button>
           </div>
           <textarea id="decisionNote" placeholder="พิมพ์ข้อความที่จะแสดงบนตราประทับในไฟล์ PDF จริง" oninput="window.updateDecisionMarksPreview && window.updateDecisionMarksPreview()"></textarea>
-          <div class="help-text">
-            เผื่อติ๊กหรือพิมพ์ผิด กด "ล้างค่า" ด้านบนเพื่อล้างเครื่องหมาย/ข้อความทั้งหมดแล้วเริ่มใหม่ได้ทุกเมื่อ —
-            ยังไม่มีผลอะไรจนกว่าจะกดปุ่มดำเนินการด้านล่าง กด "👁️ ดูตัวอย่าง" ที่ไฟล์แนบไฟล์แรกด้านซ้ายเพื่อลาก
-            ตำแหน่งลายเซ็น "ทราบ" ของคุณ และกล่องความเห็นนี้ ก่อนกดปุ่มด้านล่าง — ถ้าไม่ลาก ระบบจะวางใน
-            ตำแหน่งเริ่มต้นให้อัตโนมัติ
+          <div class="callout-tip">
+            💡 อยากเลือกตำแหน่งตราประทับเอง? กด <strong>👁️ ดูตัวอย่าง</strong> ที่ไฟล์แนบไฟล์แรก แล้วลากกล่องไปวางตรงที่ต้องการ
+            <span class="text-muted">— ถ้าไม่ลาก ระบบจะวางตำแหน่งเริ่มต้นให้อัตโนมัติ</span>
           </div>
+          <div class="help-text">ติ๊กผิด/พิมพ์ผิดกด "ล้างค่า" ได้ทุกเมื่อ ยังไม่มีผลจนกว่าจะกดปุ่มด้านล่าง</div>
         </div>` : ''}
-        <div class="chip-row">
+        <div class="action-buttons">
           ${isDirectorDecision ? `
-          <button class="btn btn-success" data-pin-title="ยืนยัน PIN เพื่ออนุมัติและส่งต่อ" onclick="doApprove(this)">✅ อนุมัติและส่งต่อ</button>
-          <button class="btn btn-primary" data-pin-title="ยืนยัน PIN เพื่อรับทราบและปิดเรื่อง" onclick="doAcknowledge(this)">✔️ รับทราบ/ปิดเรื่อง</button>
-          <button class="btn btn-outline" onclick="actionWithReason(this, '/documents/${doc.id}/workflow/${step.id}/return', 'ระบุเหตุผลที่ส่งกลับแก้ไข')">↩️ ส่งกลับแก้ไข</button>
-          <button class="btn btn-danger" onclick="doReject(this)">✖️ ไม่อนุมัติ</button>` : `
-          <button class="btn btn-success" data-pin-title="ยืนยัน PIN เพื่อมอบหมายให้" onclick="doApprove(this)">➡️ มอบหมายให้</button>
-          <button class="btn btn-primary" data-pin-title="ยืนยัน PIN เพื่อทราบ" onclick="doAcknowledge(this)">✔️ ทราบ</button>`}
+          <button class="btn btn-success btn-lg" data-pin-title="ยืนยัน PIN เพื่ออนุมัติและส่งต่อ" onclick="doApprove(this)">✅ อนุมัติและส่งต่อ</button>
+          <button class="btn btn-primary btn-lg" data-pin-title="ยืนยัน PIN เพื่อรับทราบและปิดเรื่อง" onclick="doAcknowledge(this)">✔️ รับทราบ/ปิดเรื่อง</button>
+          <div class="action-buttons-secondary">
+            <button class="btn btn-outline btn-sm" onclick="actionWithReason(this, '/documents/${doc.id}/workflow/${step.id}/return', 'ระบุเหตุผลที่ส่งกลับแก้ไข')">↩️ ส่งกลับแก้ไข</button>
+            <button class="btn btn-outline btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="doReject(this)">✖️ ไม่อนุมัติ</button>
+          </div>` : `
+          <button class="btn btn-success btn-lg" data-pin-title="ยืนยัน PIN เพื่อมอบหมายให้" onclick="doApprove(this)">➡️ มอบหมายให้</button>
+          <button class="btn btn-primary btn-lg" data-pin-title="ยืนยัน PIN เพื่อทราบ" onclick="doAcknowledge(this)">✔️ ทราบ</button>`}
         </div>
+        <div class="help-text" style="text-align:center">ทุกปุ่มต้องยืนยันด้วย PIN 6 หลักก่อนเสมอ</div>
       </div>
     </div>
     <script>
@@ -664,13 +684,26 @@ router.get('/documents/:id', requirePage((ctx) => {
       }
     </script>` : '';
 
+  // ป้าย "เลยกำหนด/อีกกี่วัน" ขึ้นไปอยู่บนหัวเรื่องเลย เพราะเป็นข้อมูลที่ตัดสินใจว่าจะทำก่อนหรือหลัง —
+  // เดิมวันครบกำหนดซ่อนอยู่กลางตารางรายละเอียด และแสดงเป็นวันที่ดิบ (2026-08-25) ไม่มีบอกว่าเหลือกี่วัน
+  const docStillOpen = !['completed', 'archived', 'voided', 'destroyed', 'rejected'].includes(doc.status);
+  const dueSummaryChip = doc.due_date && docStillOpen
+    ? `<span class="badge ${daysUntil(doc.due_date) < 0 ? 'badge-danger' : daysUntil(doc.due_date) <= 3 ? 'badge-warning' : 'badge-muted'}">⏰ ครบกำหนด ${esc(fmtThaiDateShort(doc.due_date))}${
+        daysUntil(doc.due_date) < 0 ? ` (เลยมาแล้ว ${Math.abs(daysUntil(doc.due_date))} วัน)`
+          : daysUntil(doc.due_date) === 0 ? ' (วันนี้)' : ` (อีก ${daysUntil(doc.due_date)} วัน)`}</span>`
+    : '';
+
   const content = `
     ${ctx.query.created ? '<div class="alert alert-success">✅ บันทึกและออกเลขเอกสารเรียบร้อยแล้ว</div>' : ''}
     ${ctx.query.warn ? `<div class="alert alert-warning">⚠️ ${esc(ctx.query.warn)}</div>` : ''}
     <div class="card-header">
       <div>
         <h2 class="mt-0"><span style="color:var(--primary)">${esc(doc.doc_number_display)}</span> — ${esc(doc.title)}</h2>
-        <div class="chip-row">${statusBadge(doc.status)}${priorityBadge(doc.priority)}${secretBadge(doc.secret_level)}</div>
+        <div class="chip-row">${statusBadge(doc.status)}${priorityBadge(doc.priority)}${
+          // แสดงป้ายชั้นความลับเฉพาะตอนที่ "ไม่ปกติ" — เดิมขึ้น "ปกติ" ต่อท้าย "ด่วน" เสมอ
+          // อ่านแล้วขัดกันเอง (ด่วน ปกติ?) ทั้งที่คนละเรื่องกัน และเป็นค่าที่ไม่ได้บอกอะไรเลย
+          doc.secret_level !== 'normal' ? secretBadge(doc.secret_level) : ''
+        }${dueSummaryChip}</div>
       </div>
       <div class="chip-row">
         <a class="btn btn-outline btn-sm" href="${attachments.length ? `/files/${attachments[0].id}` : `/documents/${doc.id}/print`}" target="_blank" rel="noopener">🖨️ พิมพ์เอกสาร${attachments.length ? ' (PDF ที่บันทึกไว้)' : ''}</a>
@@ -693,18 +726,18 @@ router.get('/documents/:id', requirePage((ctx) => {
       }
     </script>` : ''}
 
-    <div class="grid-2">
-      <div>
+    <div class="grid-2 doc-detail-grid">
+      <div class="doc-main">
         <div class="card">
           <h3>รายละเอียด</h3>
-          <table style="min-width:0">
+          <table class="table-plain" style="min-width:0">
             <tbody>
               <tr><td class="text-muted">${doc.direction === 'incoming' ? 'หน่วยงานต้นทาง' : 'หน่วยงานปลายทาง'}</td><td>${esc(doc.correspondent_name)}</td></tr>
               ${doc.external_doc_number ? `<tr><td class="text-muted">เลขหนังสืออ้างอิง</td><td>${esc(doc.external_doc_number)}</td></tr>` : ''}
-              ${doc.external_doc_date ? `<tr><td class="text-muted">ลงวันที่</td><td>${esc(doc.external_doc_date)}</td></tr>` : ''}
+              ${doc.external_doc_date ? `<tr><td class="text-muted">ลงวันที่</td><td>${esc(fmtThaiDateLong(doc.external_doc_date))}</td></tr>` : ''}
               <tr><td class="text-muted">ฝ่าย</td><td>${esc(doc.dept_name)}</td></tr>
-              ${doc.due_date ? `<tr><td class="text-muted">กำหนดเสร็จ</td><td>${esc(doc.due_date)}</td></tr>` : ''}
-              <tr><td class="text-muted">อายุการเก็บ</td><td>${esc(RETENTION_LABEL[doc.retention_class] || doc.retention_class)}${doc.retention_until ? ` (ครบกำหนด ${esc(doc.retention_until)})` : ''}</td></tr>
+              ${doc.due_date ? `<tr><td class="text-muted">กำหนดเสร็จ</td><td>${docStillOpen ? dueCell(doc.due_date, { long: true }) : esc(fmtThaiDateLong(doc.due_date))}</td></tr>` : ''}
+              <tr><td class="text-muted">อายุการเก็บ</td><td>${esc(RETENTION_LABEL[doc.retention_class] || doc.retention_class)}${doc.retention_until ? ` (ครบกำหนด ${esc(fmtThaiDateLong(doc.retention_until))})` : ''}</td></tr>
               <tr><td class="text-muted">ผู้บันทึก</td><td>${esc(doc.creator_first)} ${esc(doc.creator_last)}</td></tr>
               <tr><td class="text-muted">วันที่บันทึก</td><td>${fmtDate(doc.created_at)}</td></tr>
             </tbody>
@@ -933,7 +966,7 @@ router.get('/documents/:id', requirePage((ctx) => {
         </div>
       </div>
 
-      <div>
+      <div class="doc-side">
         ${actionBox}
         ${assignBox}
         <div class="card">

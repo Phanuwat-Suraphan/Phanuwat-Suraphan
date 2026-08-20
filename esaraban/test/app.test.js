@@ -394,6 +394,84 @@ describe('สรุปงานรายวัน: แตกไฟล์เป�
   });
 });
 
+// หน้าเว็บทั้งหมดพังได้เงียบๆ ถ้าเทมเพลตอ้างตัวแปรผิดชื่อ เพราะ template string จะระเบิดตอน "เรนเดอร์"
+// เท่านั้น ไม่ใช่ตอนโหลดไฟล์ — เทสต์เดิมเรียกเฉพาะ service ฝั่งใน จึงไม่เคยแตะหน้าเว็บจริงเลย ผลคือหน้า
+// "งานของฉัน" (/tasks) เคย 500 ทุกครั้งที่เปิดกับผู้ใช้ทุกคน โดยเทสต์ทั้งชุดยังเขียวหมด
+// ชุดนี้จึงยิงทุกหน้า GET ที่ไม่มีพารามิเตอร์ ด้วยผู้ใช้หลายบทบาท แล้วบังคับว่าต้องไม่ระเบิด
+const { router } = await import('../src/router.js');
+await import('../src/routes/index.js'); // ลงทะเบียนทุก route เข้ากับ router (ต้องอยู่นอก describe เพราะ import แบบ await)
+
+describe('smoke: ทุกหน้าต้องเปิดได้จริง ไม่ 500', () => {
+  function fakeRes() {
+    return {
+      statusCode: 0, body: '', headers: {}, headersSent: false,
+      setHeader(k, v) { this.headers[k] = v; },
+      getHeader(k) { return this.headers[k]; },
+      writeHead(status, headers) { this.statusCode = status; Object.assign(this.headers, headers || {}); this.headersSent = true; return this; },
+      write(chunk) { if (chunk) this.body += chunk; return true; },
+      end(chunk) { if (chunk) this.body += chunk; },
+      on() {}, once() {},
+    };
+  }
+
+  async function openPage(pathname, user) {
+    const res = fakeRes();
+    const url = new URL(`http://test${pathname}`);
+    const ctx = {
+      req: { method: 'GET', headers: {}, url: pathname }, res, url,
+      query: {}, user, body: {}, ip: '127.0.0.1', params: {},
+    };
+    const handled = await router.dispatch('GET', pathname, ctx);
+    // ถ้าไม่ match แปลว่าถอด pattern จาก regex ผิด — ต้องดังตรงนี้ ไม่ใช่ปล่อยให้เทสต์เขียวทั้งที่ไม่ได้ยิงอะไรเลย
+    assert.ok(handled, `router ไม่รู้จักหน้า ${pathname}`);
+    return res;
+  }
+
+  // ผู้ใช้เหมือนที่ getSessionUser คืนออกมา (ข้อมูลผู้ใช้เต็มแถว + roleCodes) เพราะหน้าเว็บใช้ทั้ง
+  // user.first_name/prefix (แสดงผล) และ user.roleCodes (แตกกิ่งตามสิทธิ์)
+  function userAs(code) {
+    const row = db.prepare('SELECT * FROM users WHERE id = ?').get(seed.userIds[code]);
+    const roleCodes = db.prepare(
+      'SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ?',
+    ).all(row.id).map((r) => r.name);
+    return { ...row, roleCodes, roles: roleCodes.map((name) => ({ name })), unreadCount: 0 };
+  }
+
+  // ดึงรายการหน้าจาก router เอง ไม่ใช่ลิสต์ที่พิมพ์มือ — หน้าใหม่ที่เพิ่มทีหลังจะถูกคุมอัตโนมัติ
+  const SKIP = new Set([
+    '/logout',                       // ลบ session ทิ้ง ทำให้เทสต์ที่เหลือใช้ผู้ใช้คนนั้นไม่ได้
+    '/admin/google-drive/start',     // เด้งออกไปหา Google
+    '/admin/google-drive/callback',  // ต้องมี code จาก Google จริง
+  ]);
+  const pages = router.routes
+    .filter((r) => r.method === 'GET' && r.keys.length === 0)
+    // regex.source มี \/ ตาม escape ของ RegExp ต้องถอดกลับเป็น path จริงก่อน
+    .map((r) => r.regex.source.replace(/^\^/, '').replace(/\$$/, '').replace(/\\(.)/g, '$1'))
+    .filter((p) => !SKIP.has(p));
+
+  test('พบรายการหน้าจาก router (กันกรณี filter ผิดแล้วเทสต์ผ่านเพราะไม่ได้ยิงอะไรเลย)', () => {
+    assert.ok(pages.length >= 15, `ควรเจอหน้ามากกว่านี้ แต่เจอ ${pages.length}: ${pages.join(', ')}`);
+    assert.ok(pages.includes('/tasks') && pages.includes('/'), pages.join(', '));
+  });
+
+  for (const code of ['admin', 'director01', 'reg001', 'teacher001']) {
+    test(`เปิดทุกหน้าในบทบาทของ ${code} ได้โดยไม่ระเบิด`, async () => {
+      const user = userAs(code);
+      const broken = [];
+      for (const pathname of pages) {
+        try {
+          const res = await openPage(pathname, user);
+          // 403 ถือว่าถูกต้อง (หน้าเฉพาะแอดมิน) แต่ 500 คือระบบพัง
+          if (res.statusCode >= 500) broken.push(`${pathname} -> ${res.statusCode}`);
+        } catch (err) {
+          broken.push(`${pathname} -> โยน error: ${err.message}`);
+        }
+      }
+      assert.deepEqual(broken, [], `หน้าที่เปิดไม่ได้:\n  ${broken.join('\n  ')}`);
+    });
+  }
+});
+
 test('cleanup: remove the throwaway test database file', () => {
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });
