@@ -9,7 +9,7 @@ import {
 } from '../services/workflow.js';
 import { extractTextFromPdf, guessFieldsFromText, renderPdfFirstPageImage } from '../services/ocr.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream } from '../services/googleDrive.js';
-import { stampPdf, stampDirectorDecision, stampAcknowledgeMark } from '../services/pdfStamp.js';
+import { stampPdf, stampDirectorDecision, stampAcknowledgeMark, DECISION_MAX_TOP_PERCENT } from '../services/pdfStamp.js';
 import { getActiveDelegateFor } from '../services/delegation.js';
 import { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
@@ -222,7 +222,10 @@ router.get('/documents/new', requirePage((ctx) => {
             ? 'เปิดแอปครั้งแรกยังรับไฟล์ที่แชร์มาอัตโนมัติไม่ได้ กรุณาแนบไฟล์เองครั้งนี้ ครั้งต่อไปจะเข้าให้เองอัตโนมัติ'
             : 'รับไฟล์ที่แชร์มาไม่สำเร็จ กรุณาแนบไฟล์เองครับ', 'warning');
         }
-        if (params.get('shared') !== '1' || !('caches' in window)) return;
+        // ตั้งใจไม่เช็ค ?shared=1 เป็นเงื่อนไขบังคับ — ถ้าเซสชันหมดอายุพอดี ระบบจะเด้งไปหน้า login ก่อน
+        // แล้ว query string หายไป พอ login เสร็จกลับมาที่ฟอร์มนี้จะไม่มี ?shared=1 ติดมาด้วย ถ้าเช็คแบบตายตัว
+        // ไฟล์ที่ผู้ใช้อุตส่าห์แชร์มาจะค้างใน cache เฉยๆ ไม่มีใครหยิบไปใช้ — เช็คจาก cache ตรงๆ ครอบคลุมกว่า
+        if (!('caches' in window)) return;
         try {
           var cache = await caches.open('esaraban-shared-inbox');
           var res = await cache.match('/__shared-file__');
@@ -234,7 +237,11 @@ router.get('/documents/new', requirePage((ctx) => {
 
           var input = document.getElementById('fileInput');
           var dt = new DataTransfer();
-          dt.items.add(new File([blob], name, { type: blob.type || 'application/pdf' }));
+          // บางแอป (รวมถึง LINE บางรุ่น) แชร์ไฟล์มาเป็น application/octet-stream ทั้งที่เป็น PDF —
+          // ถ้าปล่อยไว้จะไปตกตอนกดบันทึก (เซิร์ฟเวอร์รับเฉพาะ application/pdf) หลังผู้ใช้กรอกฟอร์มจนเสร็จ
+          // แล้ว เสียเวลาเปล่า จึงตั้ง type ให้ถูกตั้งแต่ตรงนี้ (เซิร์ฟเวอร์ยังตรวจ magic number ซ้ำอยู่ดี)
+          var sharedType = /\.pdf$/i.test(name) ? 'application/pdf' : (blob.type || 'application/pdf');
+          dt.items.add(new File([blob], name, { type: sharedType }));
           input.files = dt.files;
           window.attachFilePreview(input, 'filePreview');
           window.toast('รับไฟล์ "' + name + '" จากแอปที่แชร์มาแล้ว — กรอกชื่อเรื่องแล้วบันทึกได้เลย', 'success');
@@ -600,7 +607,7 @@ router.get('/documents/:id', requirePage((ctx) => {
       function confirmIfNoMarksChecked(){
         var allMarks = document.querySelectorAll('.decisionMark');
         if (!allMarks.length || document.querySelectorAll('.decisionMark:checked').length) return true;
-        return confirm('คุณยังไม่ได้ติ๊กเครื่องหมายใดๆ บนตราประทับ (ทราบ/อนุญาต/ไม่อนุญาต/อนุมัติ/ไม่อนุมัติ) เลย ต้องการดำเนินการต่อโดยไม่ติ๊กเครื่องหมายเลยหรือไม่?');
+        return confirm('คุณยังไม่ได้ติ๊กเครื่องหมายใดๆ บนตราประทับเลย ต้องการดำเนินการต่อโดยไม่ติ๊กเครื่องหมายหรือไม่?');
       }
       function doApprove(btn){
         var next = document.getElementById('nextAssignee').value;
@@ -747,7 +754,7 @@ router.get('/documents/:id', requirePage((ctx) => {
               ${ctx.user.signature_image ? `'<img src="${esc(ctx.user.signature_image)}" />' +` : "''+"}
               '<div class="mark-name">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</div>' +
             '</div>';
-            var DECISION_HTML = '<div class="doc-decision-box" id="decisionBox" style="left:58%;top:78%">' +
+            var DECISION_HTML = '<div class="doc-decision-box" id="decisionBox" style="left:58%;top:' + DECISION_MAX_TOP + '%">' +
               '<div class="box-title">${decisionBoxTitleHtml}</div>' +
               '<div id="decisionMarksPreview"></div>' +
               '<div class="box-note" id="decisionNotePreview">ความเห็น ...</div>' +
@@ -796,7 +803,10 @@ router.get('/documents/:id', requirePage((ctx) => {
                 .then(({ok, d}) => { if (ok) window.toast('บันทึกตำแหน่งตราประทับแล้ว', 'success'); else window.toast(d.error, 'danger'); })
                 .catch(e => window.toast(e.message, 'danger'));
             }
-            function makeDraggable(wrap, el, onDragEnd) {
+            var DECISION_MAX_TOP = ${DECISION_MAX_TOP_PERCENT};
+            // maxY: เพดานเฉพาะตัว (กล่องความเห็น ผอ. ห้ามต่ำกว่า DECISION_MAX_TOP ไม่งั้นตอนประทับจริง
+            // ส่วนท้ายกล่องจะตกหน้า 2 แล้วหาย) — ถ้าไม่ส่งมา ใช้ 96% ตามเดิม
+            function makeDraggable(wrap, el, onDragEnd, maxY) {
               el.addEventListener('pointerdown', function (e) {
                 e.preventDefault();
                 // overlay โปร่งใสคลุมทั้งกล่อง preview ระหว่างลาก — กัน iframe ของ PDF แย่ง pointer event
@@ -809,7 +819,7 @@ router.get('/documents/:id', requirePage((ctx) => {
                   var x = ((ev.clientX - rect.left) / rect.width) * 100;
                   var y = ((ev.clientY - rect.top) / rect.height) * 100;
                   x = Math.max(0, Math.min(96, x));
-                  y = Math.max(0, Math.min(96, y));
+                  y = Math.max(0, Math.min(maxY == null ? 96 : maxY, y));
                   el.style.left = x + '%';
                   el.style.top = y + '%';
                   el.dataset.x = x;
@@ -879,7 +889,7 @@ router.get('/documents/:id', requirePage((ctx) => {
                   var wrap = document.getElementById('stampWrap');
                   if (showStamp && STAMP_CAN_EDIT) makeStampDraggable(wrap, document.getElementById('docStamp'));
                   if (showMark) makeDraggable(wrap, document.getElementById('ackMark'), function(x, y) { window.markPos = { x: x, y: y }; });
-                  if (showDecision) makeDraggable(wrap, document.getElementById('decisionBox'), function(x, y) { window.decisionPos = { x: x, y: y }; });
+                  if (showDecision) makeDraggable(wrap, document.getElementById('decisionBox'), function(x, y) { window.decisionPos = { x: x, y: y }; }, DECISION_MAX_TOP);
                   if (showDecision) window.updateDecisionMarksPreview();
                 }
               } else {
@@ -1126,9 +1136,10 @@ function markStackYPercent(documentId, stepId) {
 // เดียวกันมากกว่า 1 ครั้งโดยไม่ได้ลากตำแหน่งเอง (เช่น ส่งกลับแก้ไข-เสนอใหม่-อนุมัติซ้ำ) — เลื่อนขึ้นทีละ 14%
 // จากตำแหน่งฐาน 78% ทุกครั้งที่ assignee ช่องนี้เคยตัดสินใจบนเอกสารนี้มาก่อนแล้ว (นับจาก workflow_steps
 // ที่ assignee_id เดียวกัน ไม่ใช่นับทุกคนแบบ markStackYPercent เพราะกล่องนี้เป็นของ ผอ. คนเดียว)
-const DECISION_BOX_BASE_Y = 78;
-const DECISION_BOX_STEP_Y = 14;
-const DECISION_BOX_MIN_Y = 22;
+// ระยะเลื่อนขึ้นต่อครั้งต้องมากกว่าความสูงกล่อง (~230pt ≈ 27% ของหน้า) ไม่งั้นกล่องรอบที่ 2 ยังทับรอบแรก
+const DECISION_BOX_BASE_Y = DECISION_MAX_TOP_PERCENT;
+const DECISION_BOX_STEP_Y = 27;
+const DECISION_BOX_MIN_Y = 4;
 function decisionBoxStackYPercent(documentId, stepId, assigneeId) {
   const { c } = db.prepare(`
     SELECT COUNT(*) as c FROM workflow_steps

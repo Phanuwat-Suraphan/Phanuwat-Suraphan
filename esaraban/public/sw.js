@@ -44,6 +44,8 @@ async function handleSharedFile(request) {
         'X-Shared-Filename': encodeURIComponent(file.name || 'shared.pdf'),
       },
     }));
+    // ไฟล์ค้างอยู่ใน Cache Storage ต่อไปแม้เซสชันหมดอายุแล้วโดนเด้งไปหน้า login — พอ login เสร็จและกลับ
+    // มาที่ฟอร์มรับหนังสือ ตัวหน้าจะมาหยิบไฟล์ไปใส่ให้เอง (ดู pickUpSharedFile) ไฟล์ที่แชร์มาจึงไม่หายฟรี
     return Response.redirect('/documents/new?direction=incoming&shared=1', 303);
   } catch (err) {
     return Response.redirect('/documents/new?direction=incoming&shareerr=failed', 303);

@@ -14,6 +14,9 @@ const PAGE_HEIGHT_PT = 842;
 // ปรับได้ผ่าน env var เผื่อ distro ตั้งชื่อไบนารีต่างกัน (Debian มักชื่อ "chromium", Ubuntu เก่าบางรุ่น
 // "chromium-browser") — ดูขั้นตอนติดตั้งใน DEPLOY.md
 const CHROME_BIN = process.env.CHROME_BIN || 'chromium';
+// เพดานตำแหน่งบนสุดของกล่องความเห็น ผอ. (ดูเหตุผลใน stampDirectorDecision) — export ให้ฝั่ง
+// route/ตัวอย่างบนเว็บใช้ค่าเดียวกัน จะได้ไม่ลากไปวางในตำแหน่งที่ประทับจริงแล้วข้อมูลหาย
+export const DECISION_MAX_TOP_PERCENT = 72;
 
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -144,8 +147,14 @@ export async function stampDirectorDecision({ originalBuffer, schoolName, decisi
   const box = (on) => (on ? '<span class="cb"><i></i></span>' : '<span class="cb"></span>');
   // ค่าเริ่มต้นชิดมุมขวาล่างของหน้า ตามที่ตราจริงของโรงเรียนใช้ตำแหน่งนี้ (ตราลงรับของธุรการอยู่มุมขวาบน
   // แยกกันคนละมุม ไม่ชนกัน) — ผู้ใช้ยังลากปรับตำแหน่งเองได้ก่อนกดปุ่มตามปกติ
+  //
+  // เพดาน 72% ห้ามเกินเด็ดขาด: กล่องนี้สูงได้ถึง ~230pt (กรณีหนักสุด = หัวตรารักษาการแทน 2 บรรทัด +
+  // ข้อความความเห็นยาว) ถ้าวางต่ำกว่านี้ Chromium จะดันส่วนท้ายกล่องตกไปหน้า 2 ของไฟล์ตรา แล้ว
+  // qpdf --overlay --to=1 ซ้อนให้แค่หน้า 1 → ลายเซ็น/ชื่อ/ตำแหน่ง/วันที่ หายไปจากเอกสารจริงแบบเงียบๆ
+  // (วัดจริงแล้ว: 72% ยังพอดี 1 หน้า, 74% ขึ้นไปกลายเป็น 2 หน้าทันที) ที่ 72% ขอบล่างกล่องก็ชิดท้าย
+  // กระดาษพอดีอยู่แล้ว จึงยังได้ตำแหน่ง "ขวาล่าง" ตามตราจริงโดยไม่เสี่ยงข้อมูลหาย
   const leftPt = Math.max(0, Math.min(80, xPercent ?? 58)) / 100 * PAGE_WIDTH_PT;
-  const topPt = Math.max(0, Math.min(88, yPercent ?? 78)) / 100 * PAGE_HEIGHT_PT;
+  const topPt = Math.max(0, Math.min(DECISION_MAX_TOP_PERCENT, yPercent ?? DECISION_MAX_TOP_PERCENT)) / 100 * PAGE_HEIGHT_PT;
 
   let titleHtml, positionHtml;
   if (titleMode === 'director') {

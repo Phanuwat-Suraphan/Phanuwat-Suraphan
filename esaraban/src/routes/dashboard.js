@@ -166,7 +166,7 @@ router.get('/', requirePage((ctx) => {
 }));
 
 router.get('/tasks', requirePage((ctx) => {
-  const rows = db.prepare(`
+  const rawRows = db.prepare(`
     SELECT d.*, dt.name as type_name, ws.id as step_id, ws.created_at as assigned_at, (ws.assignee_id != ?) as is_delegated
     FROM workflow_steps ws
     JOIN documents d ON d.id = ws.document_id JOIN document_types dt ON dt.id = d.doc_type_id
@@ -192,22 +192,27 @@ router.get('/tasks', requirePage((ctx) => {
 // สรุปงานที่โรงเรียนใช้อยู่จริง (ระดับความสำคัญ / วันที่ต้องดำเนินการ / หัวข้อ / รายละเอียด / วิธีดำเนินการ /
 // หมายเหตุ) เพื่อให้ดูแล้วเห็นภาพรวมได้ทันทีว่าค้างอะไรบ้าง ต้องทำอะไรก่อน โดยไม่ต้องเปิดทีละฉบับ
 router.get('/summary', requirePage((ctx) => {
-  const rows = db.prepare(`
+  const rawRows = db.prepare(`
     SELECT d.*, dep.name as dept_name,
       (SELECT ws.instruction FROM workflow_steps ws
         WHERE ws.document_id = d.id AND ws.status = 'waiting'
         ORDER BY ws.step_order DESC LIMIT 1) as pending_instruction,
-      (SELECT u.prefix || u.first_name || ' ' || u.last_name FROM workflow_steps ws
+      (SELECT COALESCE(u.prefix, '') || u.first_name || ' ' || u.last_name FROM workflow_steps ws
         JOIN users u ON u.id = ws.assignee_id
         WHERE ws.document_id = d.id AND ws.status = 'waiting'
         ORDER BY ws.step_order DESC LIMIT 1) as pending_assignee
     FROM documents d JOIN departments dep ON dep.id = d.department_id
     WHERE d.deleted_at IS NULL
       AND d.due_date IS NOT NULL AND d.due_date != ''
-      AND d.status NOT IN ('completed', 'archived', 'voided', 'destroyed')
-    ORDER BY d.due_date ASC, d.priority DESC
-    LIMIT 300
-  `).all().filter((d) => canUserSeeDocument(ctx.user, d));
+      AND d.status NOT IN ('completed', 'archived', 'voided', 'destroyed', 'rejected')
+    ORDER BY d.due_date ASC,
+      CASE d.priority WHEN 'most_urgent' THEN 0 WHEN 'very_urgent' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END ASC
+    LIMIT 301
+  `).all();
+  // ดึงมา 301 เพื่อรู้ว่าโดนตัดหรือเปล่า (LIMIT ทำงานก่อนกรองสิทธิ์ในระดับ JS ด้านล่าง ตัวเลขสรุปด้านบน
+  // จึงอาจไม่ครบถ้าเอกสารเยอะมาก) — ถ้าโดนตัดจริงจะขึ้นหมายเหตุบอกผู้ใช้ ไม่ปล่อยให้เข้าใจผิดว่าครบแล้ว
+  const truncated = rawRows.length > 300;
+  const rows = rawRows.slice(0, 300).filter((d) => canUserSeeDocument(ctx.user, d));
 
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const daysLeft = (due) => Math.round((new Date(due + 'T00:00:00') - today) / 86400000);
@@ -255,6 +260,7 @@ router.get('/summary', requirePage((ctx) => {
         }).join('')}</tbody>
       </table></div>` : illustratedEmptyState('allClear', 'ยังไม่มีเอกสารที่ตั้งกำหนดเสร็จไว้ และยังค้างอยู่ครับ')}
     </div>
+    ${truncated ? '<div class="alert alert-warning" style="margin-top:.6rem">⚠️ มีเอกสารที่มีกำหนดเสร็จมากกว่า 300 รายการ ตารางนี้แสดงเฉพาะ 300 รายการที่ใกล้ครบกำหนดที่สุด</div>' : ''}
     <div class="help-text" style="margin-top:.6rem">
       รายการนี้ดึงจากเอกสารที่กรอก "กำหนดเสร็จ" ไว้ตอนลงทะเบียน (อยู่ในหัวข้อ ⚙️ ตัวเลือกเพิ่มเติม) —
       ถ้าเอกสารไหนยังไม่โผล่ในตารางนี้ แปลว่ายังไม่ได้ใส่วันกำหนดเสร็จให้เอกสารฉบับนั้น
