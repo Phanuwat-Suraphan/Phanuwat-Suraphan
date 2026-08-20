@@ -5,7 +5,7 @@ import { db, uuid, nowIso, audit, RETENTION_LABEL } from '../db.js';
 import {
   createDocument, getDocument, canUserSeeDocument, getWorkflowSteps, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
-  voidDocument, archiveDocument, forceDeleteDocument, httpError,
+  voidDocument, archiveDocument, forceDeleteDocument, httpError, assertStepBelongsToDocument,
 } from '../services/workflow.js';
 import { extractTextFromPdf, guessFieldsFromText, renderPdfFirstPageImage } from '../services/ocr.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream } from '../services/googleDrive.js';
@@ -892,11 +892,13 @@ function parseDecisionMarks(raw) {
   return raw.filter((m) => DECISION_MARK_OPTIONS.includes(m));
 }
 
+
 router.post('/documents/:id/workflow/:stepId/approve', requireApi(async (ctx) => {
   const { pin, nextAssigneeId, comment, markX, markY, decisionX, decisionY, decisionNote, decisionMarks } = ctx.body;
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   if (!nextAssigneeId) throw httpError(400, 'กรุณาเลือกผู้รับที่จะส่งต่อ');
+  assertStepBelongsToDocument(ctx.params.id, ctx.params.stepId);
   approveAndForward({ stepId: ctx.params.stepId, nextAssigneeId, comment, actorUser: ctx.user });
   const warning1 = await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
   // ผอ./ผู้รักษาการแทน ผอ. ที่กด "อนุมัติและส่งต่อ" ก็ยังใส่ checkbox/เห็นควรให้ ลงตราประทับได้เหมือนกด
@@ -913,6 +915,7 @@ router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx
   const { pin, comment, markX, markY, decisionX, decisionY, decisionNote, decisionMarks } = ctx.body;
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
+  assertStepBelongsToDocument(ctx.params.id, ctx.params.stepId);
   acknowledgeAndComplete({ stepId: ctx.params.stepId, comment, actorUser: ctx.user });
   const warning1 = await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
   const warning2 = await stampDirectorDecisionIfApplicable({
@@ -924,6 +927,7 @@ router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx
 
 router.post('/documents/:id/workflow/:stepId/reject', requireApi(async (ctx) => {
   const { reason, markX, markY, decisionX, decisionY, decisionNote, decisionMarks } = ctx.body;
+  assertStepBelongsToDocument(ctx.params.id, ctx.params.stepId);
   rejectStep({ stepId: ctx.params.stepId, reason, actorUser: ctx.user });
   const warning1 = await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
   const warning2 = await stampDirectorDecisionIfApplicable({
@@ -934,6 +938,7 @@ router.post('/documents/:id/workflow/:stepId/reject', requireApi(async (ctx) => 
 }));
 
 router.post('/documents/:id/workflow/:stepId/return', requireApi(async (ctx) => {
+  assertStepBelongsToDocument(ctx.params.id, ctx.params.stepId);
   returnStep({ stepId: ctx.params.stepId, reason: ctx.body.reason, actorUser: ctx.user });
   json(ctx, 200, { ok: true });
 }));

@@ -16,6 +16,7 @@ const { login } = await import('../src/auth.js');
 const {
   createDocument, getDocument, canUserSeeDocument, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep, voidDocument,
+  assertStepBelongsToDocument,
 } = await import('../src/services/workflow.js');
 const { nextRunningNumber } = await import('../src/numbering.js');
 
@@ -152,6 +153,30 @@ describe('ACL: secret documents are hidden from unrelated departments', () => {
   test('admin can always see every document regardless of secrecy level', () => {
     const doc = makeDoc({ title: 'เอกสารลับ 2', secretLevel: 'top_secret', departmentId: seed.deptIds.BUDGET });
     assert.equal(canUserSeeDocument({ id: adminUser.id, roleCodes: ['admin'] }, getDocument(doc.id)), true);
+  });
+});
+
+describe('ACL: a workflow step cannot be used against a different document', () => {
+  test('pairing your own stepId with someone else\'s documentId is rejected', () => {
+    const mine = makeDoc({ title: 'เอกสารของฉัน' });
+    assignStep({ documentId: mine.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    const myStep = currentStep(mine.id);
+
+    const other = makeDoc({ title: 'เอกสารของคนอื่น' });
+
+    // เดิมช่องโหว่นี้ทำให้ประทับลายเซ็นลง PDF ของเอกสารอื่นได้ เพราะ assertOwnsStep ตรวจแค่เจ้าของขั้นตอน
+    // (ผ่าน เพราะ myStep เป็นของเราจริง) แต่ documentId ที่ใช้ประทับตรามาจาก URL ที่ผู้ใช้กำหนดเองได้
+    assert.throws(
+      () => assertStepBelongsToDocument(other.id, myStep.id),
+      (err) => err.statusCode === 404,
+    );
+  });
+
+  test('the matching document/step pair still passes', () => {
+    const doc = makeDoc({ title: 'เอกสารคู่ถูกต้อง' });
+    assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    const step = currentStep(doc.id);
+    assert.doesNotThrow(() => assertStepBelongsToDocument(doc.id, step.id));
   });
 });
 

@@ -55,6 +55,16 @@ export function getDocument(id) {
   return db.prepare('SELECT * FROM documents WHERE id = ? AND deleted_at IS NULL').get(id);
 }
 
+// ขั้นตอน workflow ที่อ้างถึงต้องเป็นของเอกสารที่อ้างถึงจริงๆ — ห้ามเชื่อว่า documentId กับ stepId ที่ส่งมา
+// คู่กันเอง เพราะ assertOwnsStep ตรวจแค่ว่า "ผู้ใช้เป็นเจ้าของขั้นตอนนั้นไหม" โดยหาเอกสารจากตัว step เอง
+// ส่วนฟังก์ชันประทับตราใช้ documentId ที่ส่งเข้ามาตรงๆ ถ้าไม่ตรวจว่าทั้งคู่ตรงกัน ผู้ใช้ที่มีขั้นตอนค้างอยู่บน
+// เอกสาร A จะยิงคำขอโดยใส่ stepId ของตัวเอง (บนเอกสาร A) คู่กับ id ของเอกสาร B ที่ตัวเองไม่มีสิทธิ์เลยได้
+// แล้วลายเซ็นจะไปประทับลงไฟล์ PDF ของเอกสาร B แทน (ทดสอบยืนยันแล้วว่าเดิมทำได้จริง — ปลอมลายเซ็นข้ามเอกสาร)
+export function assertStepBelongsToDocument(documentId, stepId) {
+  const step = db.prepare('SELECT document_id FROM workflow_steps WHERE id = ?').get(stepId);
+  if (!step || step.document_id !== documentId) throw httpError(404, 'ไม่พบขั้นตอนนี้ในเอกสารดังกล่าว');
+}
+
 // "รักษาการแทน" — ผู้ที่ได้รับมอบหมายให้รักษาการแทนคนที่กำลังถือขั้นตอนอยู่ (ยังไม่ตัดสินใจ) ของเอกสารนี้
 // ต้องเห็น/ดำเนินการแทนได้เหมือนเป็นผู้ถูกมอบหมายเอง ไม่งั้นจะดำเนินการแทนไม่ได้เพราะหาเอกสารในระบบไม่เจอ
 function hasActiveDelegateStep(documentId, userId) {
