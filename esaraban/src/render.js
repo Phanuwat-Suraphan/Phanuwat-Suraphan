@@ -114,6 +114,7 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
     ${navItem('/documents?direction=incoming', '📥', 'หนังสือเข้า', currentPath)}
     ${navItem('/documents?direction=outgoing', '📤', 'หนังสือออก', currentPath)}
     ${navItem('/tasks', '📌', 'งานของฉัน', currentPath)}
+    ${navItem('/summary', '🗒️', 'สรุปงานที่ต้องทำ', currentPath)}
     ${navItem('/notifications', '🔔', 'การแจ้งเตือน', currentPath)}
     ${navItem('/leave', '🗓️', 'ลา/ไปราชการ', currentPath)}
     ${navItem('/delegations', '🪪', 'มอบหมายรักษาการแทน', currentPath)}

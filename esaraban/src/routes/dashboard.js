@@ -1,7 +1,8 @@
 import { router, html } from '../router.js';
-import { layout, esc, fmtDate, statusBadge, priorityBadge, illustratedEmptyState } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateLong, statusBadge, priorityBadge, illustratedEmptyState } from '../render.js';
 import { requirePage } from '../middleware.js';
 import { db } from '../db.js';
+import { canUserSeeDocument } from '../services/workflow.js';
 
 // รวมงานที่มอบหมายให้ตรงๆ + งานที่มีคนมอบหมายให้เรารักษาการแทน (ยัง active วันนี้) เข้าเป็นเงื่อนไขเดียว —
 // ใช้ซ้ำได้ทั้งตัวนับ KPI, การ์ด "งานของฉัน" ในแดชบอร์ด, และหน้า /tasks
@@ -184,4 +185,79 @@ router.get('/tasks', requirePage((ctx) => {
       </table></div>` : illustratedEmptyState('allClear', 'ไม่มีงานค้างสำหรับคุณเลยครับ พักผ่อนสบายๆ ได้เลยครับ ☕')}
     </div>`;
   html(ctx, 200, layout({ user: ctx.user, title: 'งานของฉัน', path: '/tasks', content }));
+}));
+
+// ---------------- สรุปงานที่ต้องทำ ----------------
+// ตารางรวมเอกสารที่ "มีกำหนดเสร็จและยังไม่ปิดเรื่อง" เรียงตามวันครบกำหนด — รูปแบบคอลัมน์อ้างอิงตาราง
+// สรุปงานที่โรงเรียนใช้อยู่จริง (ระดับความสำคัญ / วันที่ต้องดำเนินการ / หัวข้อ / รายละเอียด / วิธีดำเนินการ /
+// หมายเหตุ) เพื่อให้ดูแล้วเห็นภาพรวมได้ทันทีว่าค้างอะไรบ้าง ต้องทำอะไรก่อน โดยไม่ต้องเปิดทีละฉบับ
+router.get('/summary', requirePage((ctx) => {
+  const rows = db.prepare(`
+    SELECT d.*, dep.name as dept_name,
+      (SELECT ws.instruction FROM workflow_steps ws
+        WHERE ws.document_id = d.id AND ws.status = 'waiting'
+        ORDER BY ws.step_order DESC LIMIT 1) as pending_instruction,
+      (SELECT u.prefix || u.first_name || ' ' || u.last_name FROM workflow_steps ws
+        JOIN users u ON u.id = ws.assignee_id
+        WHERE ws.document_id = d.id AND ws.status = 'waiting'
+        ORDER BY ws.step_order DESC LIMIT 1) as pending_assignee
+    FROM documents d JOIN departments dep ON dep.id = d.department_id
+    WHERE d.deleted_at IS NULL
+      AND d.due_date IS NOT NULL AND d.due_date != ''
+      AND d.status NOT IN ('completed', 'archived', 'voided', 'destroyed')
+    ORDER BY d.due_date ASC, d.priority DESC
+    LIMIT 300
+  `).all().filter((d) => canUserSeeDocument(ctx.user, d));
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const daysLeft = (due) => Math.round((new Date(due + 'T00:00:00') - today) / 86400000);
+  // ป้ายบอกความเร่งด่วนจากวันครบกำหนดจริง (คนละเรื่องกับ "ความเร็ว" ที่ธุรการกรอกไว้ตอนลงทะเบียน) —
+  // ตัวเลขติดลบแปลว่าเลยกำหนดมาแล้วกี่วัน
+  const dueChip = (n) => {
+    if (n < 0) return `<span class="badge badge-danger">เลยกำหนด ${Math.abs(n)} วัน</span>`;
+    if (n === 0) return '<span class="badge badge-danger">ครบกำหนดวันนี้</span>';
+    if (n <= 3) return `<span class="badge badge-warning">อีก ${n} วัน</span>`;
+    return `<span class="text-muted" style="font-size:.8rem">อีก ${n} วัน</span>`;
+  };
+
+  const overdue = rows.filter((d) => daysLeft(d.due_date) < 0).length;
+  const soon = rows.filter((d) => { const n = daysLeft(d.due_date); return n >= 0 && n <= 3; }).length;
+
+  const content = `
+    <div class="card-header">
+      <div>
+        <h2 class="mt-0">🗒️ สรุปงานที่ต้องทำ</h2>
+        <p class="text-muted" style="margin:-.3rem 0 0;font-size:.85rem">
+          เอกสารที่มีกำหนดเสร็จและยังไม่ปิดเรื่อง เรียงตามวันครบกำหนด — ทั้งหมด ${rows.length} รายการ${overdue ? ` · <strong style="color:var(--danger)">เลยกำหนด ${overdue}</strong>` : ''}${soon ? ` · ใกล้ครบกำหนด ${soon}` : ''}
+        </p>
+      </div>
+      <div class="chip-row">
+        <button class="btn btn-outline btn-sm" onclick="window.print()">🖨️ พิมพ์ตาราง</button>
+      </div>
+    </div>
+    <div class="card">
+      ${rows.length ? `<div class="table-wrap"><table>
+        <thead><tr>
+          <th>ระดับความสำคัญ</th><th>วันที่ต้องดำเนินการ</th><th>หัวข้อปฏิบัติ</th>
+          <th>รายละเอียดสิ่งที่ต้องทำ</th><th>วิธีการดำเนินการ</th><th>หมายเหตุ/ข้อมูลเพิ่มเติม</th>
+        </tr></thead>
+        <tbody>${rows.map((d) => {
+          const n = daysLeft(d.due_date);
+          return `<tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer${n < 0 ? ';background:rgba(220,38,38,.06)' : ''}">
+            <td>${priorityBadge(d.priority)}</td>
+            <td style="white-space:nowrap">${esc(fmtThaiDateLong(d.due_date))}<div style="margin-top:.2rem">${dueChip(n)}</div></td>
+            <td><strong>${esc(d.title)}</strong><div class="text-muted" style="font-size:.78rem">${esc(d.doc_number_display)}${d.secret_level !== 'normal' ? ' 🔒' : ''}</div></td>
+            <td>${d.subject ? esc(d.subject).replace(/\n/g, '<br/>') : '<span class="text-muted">—</span>'}</td>
+            <td>${d.pending_instruction ? esc(d.pending_instruction).replace(/\n/g, '<br/>') : '<span class="text-muted">—</span>'}
+              ${d.pending_assignee ? `<div class="text-muted" style="font-size:.78rem;margin-top:.2rem">ผู้รับผิดชอบ: ${esc(d.pending_assignee)}</div>` : ''}</td>
+            <td>${statusBadge(d.status)}<div class="text-muted" style="font-size:.78rem;margin-top:.2rem">${esc(d.correspondent_name || '')}${d.dept_name ? `<br/>ฝ่าย${esc(d.dept_name)}` : ''}</div></td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div>` : illustratedEmptyState('allClear', 'ยังไม่มีเอกสารที่ตั้งกำหนดเสร็จไว้ และยังค้างอยู่ครับ')}
+    </div>
+    <div class="help-text" style="margin-top:.6rem">
+      รายการนี้ดึงจากเอกสารที่กรอก "กำหนดเสร็จ" ไว้ตอนลงทะเบียน (อยู่ในหัวข้อ ⚙️ ตัวเลือกเพิ่มเติม) —
+      ถ้าเอกสารไหนยังไม่โผล่ในตารางนี้ แปลว่ายังไม่ได้ใส่วันกำหนดเสร็จให้เอกสารฉบับนั้น
+    </div>`;
+  html(ctx, 200, layout({ user: ctx.user, title: 'สรุปงานที่ต้องทำ', path: '/summary', content }));
 }));
