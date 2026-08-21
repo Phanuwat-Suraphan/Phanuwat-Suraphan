@@ -514,6 +514,8 @@ tbody tr:last-child td { border-bottom: none; }
 /* ช่องติ๊กบนกล่องตัวอย่าง — วาดด้วย CSS ล้วนให้เหมือนกับที่ประทับลง PDF จริง (ดู stampDirectorDecision
    ใน services/pdfStamp.js) จะได้เห็นหน้าตาตรงกันทั้งตอนลากดูตัวอย่างและตอนพิมพ์ออกมาจริง */
 .doc-decision-box .opt { margin: .1rem 0; }
+/* ระยะห่างระหว่างคู่ อนุญาต/ไม่อนุญาต และ อนุมัติ/ไม่อนุมัติ ให้ตรงกับตราที่ประทับลง PDF จริง */
+.doc-decision-box .gap { display: inline-block; width: 13px; }
 .doc-decision-box .cb {
   display: inline-block; width: 10px; height: 10px; border: 1px solid #2222aa;
   position: relative; vertical-align: -1px; margin-right: 5px;

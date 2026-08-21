@@ -48,15 +48,33 @@ function run(cmd, args) {
   });
 }
 
-// ซ้อน HTML กล่องหนึ่งกล่อง (ตราประทับ/กล่องลงนาม) ทับหน้าแรกของ PDF จริง — ใช้ร่วมกันทั้ง stampPdf
-// (ตรา "ลงรับ" ของธุรการ) และ stampDirectorDecision (กล่องความเห็น/ลงนามของผู้อำนวยการ) สองขั้นตอน:
-// 1) render กล่อง HTML เป็น PDF หน้าเดียวด้วย headless Chromium (รองรับภาษาไทยถูกต้อง ต่างจากการ
-//    เขียน PDF content stream เองที่ต้องฝัง font ภาษาไทยเอง ซับซ้อนและเสี่ยงผิดพลาดมาก)
-// 2) ซ้อนหน้านั้นทับหน้าแรกของ PDF เดิมด้วย qpdf --overlay (แก้แค่หน้า 1 เท่านั้น หน้าอื่นไม่แตะ)
-// เรียกซ้ำได้หลายรอบ (เช่น ธุรการประทับตรารับก่อน แล้ว ผอ. ลงนามทีหลัง) เพราะรับ "ไฟล์เดิม" เป็น input
-// ทุกครั้ง แล้ว output ออกมาเป็นไฟล์ใหม่ที่มีกล่องเดิม + กล่องใหม่ซ้อนกันอยู่ — ไฟล์ที่ส่งเข้ามา
-// (originalBuffer) ไม่ถูกแก้ไข ฟังก์ชันนี้คืนค่าเป็น buffer ของไฟล์ใหม่เท่านั้น
-async function overlayHtmlOnFirstPage(originalBuffer, html) {
+// นับจำนวนหน้าของ PDF ที่ Chromium สร้าง — ใช้ตรวจว่ากล่องตราล้นไปหน้า 2 หรือยัง
+// (ไฟล์นี้ Chromium สร้างเองล้วนๆ โครงสร้างเรียบง่าย นับ /Type /Page ได้ตรง ไม่ต้องพึ่ง qpdf/pdfinfo)
+export function countPdfPages(buffer) {
+  const matches = buffer.toString('latin1').match(/\/Type\s*\/Page(?![s])/g);
+  return matches ? matches.length : 1;
+}
+
+const MAX_FIT_ATTEMPTS = 8;
+const FIT_STEP_PT = 18; // เลื่อนขึ้นทีละประมาณหนึ่งบรรทัดครึ่งของกล่อง
+
+/**
+ * ซ้อน HTML กล่องหนึ่งกล่อง (ตราประทับ/กล่องลงนาม) ทับหน้าแรกของ PDF จริง สองขั้นตอน:
+ * 1) render กล่อง HTML เป็น PDF ด้วย headless Chromium (รองรับภาษาไทยถูกต้อง ต่างจากการเขียน
+ *    PDF content stream เองที่ต้องฝัง font ภาษาไทยเอง ซับซ้อนและเสี่ยงผิดพลาดมาก)
+ * 2) ซ้อนหน้านั้นทับหน้าแรกของ PDF เดิมด้วย qpdf --overlay (แก้แค่หน้า 1 เท่านั้น หน้าอื่นไม่แตะ)
+ *
+ * เรียกซ้ำได้หลายรอบ (เช่น ธุรการประทับตรารับก่อน แล้ว ผอ. ลงนามทีหลัง) เพราะรับ "ไฟล์เดิม" เป็น input
+ * ทุกครั้ง แล้ว output ออกมาเป็นไฟล์ใหม่ที่มีกล่องเดิม + กล่องใหม่ซ้อนกันอยู่
+ *
+ * buildHtml(shiftUpPt) ต้องคืน HTML ที่เลื่อนกล่องขึ้นจากตำแหน่งที่ขอไว้ตามจำนวน pt ที่ส่งให้ —
+ * เพราะ qpdf --overlay --to=1 ซ้อนให้แค่หน้า 1 ถ้ากล่องสูงจนตกไปหน้า 2 ส่วนท้ายกล่อง (ลายเซ็น ชื่อ
+ * ตำแหน่ง วันที่) จะหายไปจากเอกสารจริงแบบเงียบๆ ไม่มีอะไรฟ้อง จึงต้อง render แล้วนับหน้าจริงทุกครั้ง
+ * ถ้าเกินหนึ่งหน้าให้เลื่อนกล่องขึ้นแล้ว render ใหม่ — เชื่อถือได้กว่าการวัดความสูงกล่องไว้ล่วงหน้าเป็น
+ * ค่าคงที่ เพราะความสูงจริงขึ้นกับฟอนต์บนเครื่องเซิร์ฟเวอร์ ความยาวข้อความ และจำนวนบรรทัดที่ตัดคำ
+ * ซึ่งเปลี่ยนได้ทุกเมื่อโดยไม่มีใครทันสังเกต
+ */
+async function overlayHtmlOnFirstPage(originalBuffer, buildHtml) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esaraban-stamp-'));
   const originalPath = path.join(tmpDir, 'original.pdf');
   const stampHtmlPath = path.join(tmpDir, 'stamp.html');
@@ -64,10 +82,20 @@ async function overlayHtmlOnFirstPage(originalBuffer, html) {
   const outputPath = path.join(tmpDir, 'output.pdf');
   try {
     fs.writeFileSync(originalPath, originalBuffer);
-    fs.writeFileSync(stampHtmlPath, html);
 
-    await run(CHROME_BIN, ['--headless', '--disable-gpu', '--no-sandbox', `--print-to-pdf=${stampPdfPath}`, '--print-to-pdf-no-header', stampHtmlPath]);
-    if (!fs.existsSync(stampPdfPath)) throw httpError(500, 'สร้างภาพตราประทับไม่สำเร็จ');
+    let pages = 0;
+    for (let attempt = 0; attempt < MAX_FIT_ATTEMPTS; attempt++) {
+      fs.rmSync(stampPdfPath, { force: true });
+      fs.writeFileSync(stampHtmlPath, buildHtml(attempt * FIT_STEP_PT));
+      await run(CHROME_BIN, ['--headless', '--disable-gpu', '--no-sandbox', `--print-to-pdf=${stampPdfPath}`, '--print-to-pdf-no-header', stampHtmlPath]);
+      if (!fs.existsSync(stampPdfPath)) throw httpError(500, 'สร้างภาพตราประทับไม่สำเร็จ');
+      pages = countPdfPages(fs.readFileSync(stampPdfPath));
+      if (pages === 1) break;
+    }
+    if (pages !== 1) {
+      // ยอมล้มเหลวแบบเสียงดัง ดีกว่าประทับตราที่ลายเซ็นหายไปโดยไม่มีใครรู้
+      throw httpError(500, 'กล่องตราประทับยาวเกินกว่าจะวางในหน้าเดียวได้ — กรุณาลดความยาวข้อความ "เห็นควรให้" แล้วลองใหม่');
+    }
 
     // --to=1 จำกัดให้ทับแค่หน้า 1 ของ original เท่านั้น (อ้างอิงเอกสาร qpdf --help=overlay-underlay)
     await run('qpdf', [originalPath, '--overlay', stampPdfPath, '--to=1', '--', outputPath]);
@@ -84,10 +112,10 @@ async function overlayHtmlOnFirstPage(originalBuffer, html) {
 export async function stampPdf({ originalBuffer, schoolName, docNumberDisplay, dateThaiLong, timeStr, xPercent, yPercent }) {
   const leftPt = Math.max(0, Math.min(96, xPercent ?? 70)) / 100 * PAGE_WIDTH_PT;
   const topPt = Math.max(0, Math.min(96, yPercent ?? 3)) / 100 * PAGE_HEIGHT_PT;
-  const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+  const build = (shiftUpPt) => `<!doctype html><html><head><meta charset="utf-8"><style>
     @page { size: ${PAGE_WIDTH_PT}pt ${PAGE_HEIGHT_PT}pt; margin: 0; }
     body { margin: 0; font-family: "Noto Sans Thai", sans-serif; -webkit-print-color-adjust: exact; }
-    .stamp { position: absolute; left: ${leftPt}pt; top: ${topPt}pt; width: 150pt; border: 2px solid #2222aa; color: #2222aa; padding: 6pt; font-size: 8pt; line-height: 1.5; border-radius: 4pt; }
+    .stamp { position: absolute; left: ${leftPt}pt; top: ${Math.max(0, topPt - shiftUpPt)}pt; width: 150pt; border: 2px solid #2222aa; color: #2222aa; padding: 6pt; font-size: 8pt; line-height: 1.5; border-radius: 4pt; }
     .stamp .title { font-weight: 700; text-align: center; padding-bottom: 3pt; margin-bottom: 3pt; }
   </style></head><body>
     <div class="stamp">
@@ -97,7 +125,7 @@ export async function stampPdf({ originalBuffer, schoolName, docNumberDisplay, d
       <div>เวลา......${esc(timeStr)}......</div>
     </div>
   </body></html>`;
-  return overlayHtmlOnFirstPage(originalBuffer, html);
+  return overlayHtmlOnFirstPage(originalBuffer, build);
 }
 
 // เครื่องหมาย "ทราบ" + ลายเซ็นแบบง่าย ไม่มีกรอบ — เลียนแบบวิธีที่คนจริงเขียน "ทราบ" ด้วยลายมือแล้วเซ็นชื่อ
@@ -107,10 +135,10 @@ export async function stampPdf({ originalBuffer, schoolName, docNumberDisplay, d
 export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, prefix, firstName, lastName, dateThaiLong, xPercent, yPercent, actingForLabel }) {
   const leftPt = Math.max(0, Math.min(90, xPercent ?? 8)) / 100 * PAGE_WIDTH_PT;
   const topPt = Math.max(0, Math.min(94, yPercent ?? 55)) / 100 * PAGE_HEIGHT_PT;
-  const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+  const build = (shiftUpPt) => `<!doctype html><html><head><meta charset="utf-8"><style>
     @page { size: ${PAGE_WIDTH_PT}pt ${PAGE_HEIGHT_PT}pt; margin: 0; }
     body { margin: 0; font-family: "Noto Sans Thai", sans-serif; -webkit-print-color-adjust: exact; }
-    .mark { position: absolute; left: ${leftPt}pt; top: ${topPt}pt; width: 130pt; color: #2222aa; text-align: center; }
+    .mark { position: absolute; left: ${leftPt}pt; top: ${Math.max(0, topPt - shiftUpPt)}pt; width: 130pt; color: #2222aa; text-align: center; }
     .mark .word { font-size: 20pt; font-weight: 700; margin-bottom: 2pt; }
     .mark img { max-height: 30pt; max-width: 110pt; }
     .mark .name { font-size: 7pt; margin-top: 1pt; }
@@ -124,7 +152,7 @@ export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, p
       <div class="name">${esc(dateThaiLong)}</div>
     </div>
   </body></html>`;
-  return overlayHtmlOnFirstPage(originalBuffer, html);
+  return overlayHtmlOnFirstPage(originalBuffer, build);
 }
 
 // กล่องความเห็น/ลงนามของผู้ตัดสินใจคนสุดท้าย (มักเป็นผู้อำนวยการ) — อ้างอิงรูปแบบตรายางจริงของโรงเรียน
@@ -180,6 +208,7 @@ export async function stampDirectorDecision({ originalBuffer, schoolName, decisi
     .box .cb { display: inline-block; width: 7pt; height: 7pt; border: 0.8pt solid #2222aa; position: relative; vertical-align: -1pt; margin-right: 3.5pt; }
     .box .cb i { position: absolute; left: 2pt; top: -0.5pt; width: 2.4pt; height: 5pt; border-right: 1.2pt solid #2222aa; border-bottom: 1.2pt solid #2222aa; transform: rotate(40deg); }
     .box .fill { display: inline-block; min-width: 54pt; border-bottom: 0.6pt dotted #2222aa; text-align: center; padding: 0 2pt; }
+    .box .gap { display: inline-block; width: 10pt; }
     .box .note { margin: 3pt 0 0; word-break: break-word; }
     .box .sig { text-align: center; margin-top: 4pt; }
     .box .sig img { max-height: 34pt; max-width: 110pt; }
@@ -188,16 +217,18 @@ export async function stampDirectorDecision({ originalBuffer, schoolName, decisi
     <div class="box">
       <div class="title">${titleHtml}</div>
       <div class="opt">${box(marked.has('ทราบ'))} ทราบ</div>
+      <div class="opt">${box(marked.has('อนุญาต'))} อนุญาต <span class="gap"></span>${box(marked.has('ไม่อนุญาต'))} ไม่อนุญาต</div>
+      <div class="opt">${box(marked.has('อนุมัติ'))} อนุมัติ <span class="gap"></span>${box(marked.has('ไม่อนุมัติ'))} ไม่อนุมัติ</div>
       <div class="opt">${box(marked.has('เก็บรวมเรื่อง'))} เก็บรวมเรื่อง</div>
       <div class="opt">${box(marked.has('แจ้งคณะครูทราบ'))} แจ้งคณะครูทราบ</div>
       <div class="opt">${box(marked.has('แจ้งให้ทราบ'))} แจ้งให้ <span class="fill">${esc(notifyTarget || '')}</span> ทราบ</div>
       <div class="opt">${box(marked.has('ดำเนินการ'))} ดำเนินการ</div>
-      <div class="note">ความเห็น ${esc(note || '')}</div>
+      <div class="note">เห็นควรให้ ${esc(note || '')}</div>
       ${signatureDataUrl ? `<div class="sig"><img src="${esc(signatureDataUrl)}" /></div>` : ''}
       <div class="name">(${esc(prefix || '')}${esc(firstName)} ${esc(lastName)})</div>
       ${positionHtml}
       <div class="name">${esc(dateThaiLong)}</div>
     </div>
   </body></html>`;
-  return overlayHtmlOnFirstPage(originalBuffer, html);
+  return overlayHtmlOnFirstPage(originalBuffer, build);
 }

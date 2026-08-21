@@ -29,8 +29,17 @@ const MAX_OCR_BYTES = 20 * 1024 * 1024;
 // ภาพถ่ายตราจริงและจากผู้ใช้โดยตรง) เลือกได้หลายอันพร้อมกัน ไม่ผูกกับปุ่ม workflow ที่กดส่ง (ปุ่มนั้นแค่
 // ปิด/ส่งต่อขั้นตอนเท่านั้น) ผู้ตัดสินใจติ๊กเองว่าอันไหนตรงกับความเห็นจริง
 // fillable: ช่อง "แจ้งให้ .......... ทราบ" มีจุดไข่ปลาให้เติมชื่อผู้ที่ต้องแจ้งเองบนตรายางจริง
+// ถ้อยคำบนตราประทับความเห็นของ ผอ. — รวมของตรายาง 2 แบบที่โรงเรียนใช้จริงเข้าด้วยกัน:
+// แบบเก่ามี ทราบ / อนุญาต-ไม่อนุญาต / อนุมัติ-ไม่อนุมัติ / "เห็นควรให้..."
+// แบบใหม่มี ทราบ / เก็บรวมเรื่อง / แจ้งคณะครูทราบ / แจ้งให้...ทราบ / ดำเนินการ
+// จึงรวมเป็นชุดเดียวที่มีครบทั้งหมด แล้วให้ผู้เซ็นติ๊กเฉพาะอันที่ต้องการ (ติ๊กได้หลายอัน)
+// อนุญาต/ไม่อนุญาต และ อนุมัติ/ไม่อนุมัติ จับคู่อยู่บรรทัดเดียวกันเหมือนตรายางจริง
 const DECISION_MARK_OPTIONS = [
   { value: 'ทราบ', label: 'ทราบ' },
+  { value: 'อนุญาต', label: 'อนุญาต', pairWith: 'ไม่อนุญาต' },
+  { value: 'ไม่อนุญาต', label: 'ไม่อนุญาต', pairedInto: 'อนุญาต' },
+  { value: 'อนุมัติ', label: 'อนุมัติ', pairWith: 'ไม่อนุมัติ' },
+  { value: 'ไม่อนุมัติ', label: 'ไม่อนุมัติ', pairedInto: 'อนุมัติ' },
   { value: 'เก็บรวมเรื่อง', label: 'เก็บรวมเรื่อง' },
   { value: 'แจ้งคณะครูทราบ', label: 'แจ้งคณะครูทราบ' },
   { value: 'แจ้งให้ทราบ', label: 'แจ้งให้ ........ ทราบ', fillable: true },
@@ -569,21 +578,29 @@ router.get('/documents/:id', requirePage((ctx) => {
         <div class="field">
           <label><span class="step-num">3</span> เครื่องหมายบนตราประทับ <span class="text-muted" style="font-weight:400">(ติ๊กได้หลายอัน — เฉพาะอันที่ติ๊กจะขึ้นบนตราใน PDF จริง)</span></label>
           <div class="stack" style="gap:.35rem">
-            ${DECISION_MARK_OPTIONS.map((m) => `
-            <label style="display:flex;align-items:center;gap:.4rem;font-weight:400;cursor:pointer">
-              <input type="checkbox" class="decisionMark" value="${esc(m.value)}" onchange="window.updateDecisionMarksPreview && window.updateDecisionMarksPreview()" />
-              ${m.fillable
+            ${(() => {
+              const tick = (m) => `<input type="checkbox" class="decisionMark" value="${esc(m.value)}" onchange="window.updateDecisionMarksPreview && window.updateDecisionMarksPreview()" />`;
+              const body = (m) => (m.fillable
                 ? `<span>แจ้งให้</span>
                    <input type="text" id="decisionNotify" placeholder="ระบุชื่อ/ฝ่าย" style="max-width:180px"
                           oninput="window.updateDecisionMarksPreview && window.updateDecisionMarksPreview()" />
                    <span>ทราบ</span>`
-                : esc(m.label)}
-            </label>`).join('')}
+                : esc(m.label));
+              // อนุญาต/ไม่อนุญาต และ อนุมัติ/ไม่อนุมัติ วางคู่กันในบรรทัดเดียวเหมือนตรายางจริง —
+              // ตัวที่ถูกจับคู่เข้าไปแล้ว (pairedInto) ไม่ต้องขึ้นเป็นบรรทัดของตัวเองซ้ำอีก
+              return DECISION_MARK_OPTIONS.filter((m) => !m.pairedInto).map((m) => {
+                const pair = m.pairWith && DECISION_MARK_OPTIONS.find((x) => x.value === m.pairWith);
+                return `<label style="display:flex;align-items:center;gap:.4rem;font-weight:400;cursor:pointer">
+                  ${tick(m)}${body(m)}
+                  ${pair ? `<span style="width:.9rem"></span>${tick(pair)}${esc(pair.label)}` : ''}
+                </label>`;
+              }).join('');
+            })()}
           </div>
         </div>
         <div class="field">
           <div class="flex items-center justify-between gap-2" style="flex-wrap:nowrap">
-            <label style="margin-bottom:0"><span class="step-num">4</span> ข้อความบนตราประทับ "ความเห็น..." <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+            <label style="margin-bottom:0"><span class="step-num">4</span> ข้อความบนตราประทับ "เห็นควรให้..." <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
             <button type="button" class="btn btn-outline btn-sm" style="flex:0 0 auto;white-space:nowrap" onclick="window.clearDecisionInputs()">🗑️ ล้างค่า</button>
           </div>
           <textarea id="decisionNote" placeholder="พิมพ์ข้อความที่จะแสดงบนตราประทับในไฟล์ PDF จริง" oninput="window.updateDecisionMarksPreview && window.updateDecisionMarksPreview()"></textarea>
@@ -808,6 +825,8 @@ router.get('/documents/:id', requirePage((ctx) => {
               var notify = (notifyInput && notifyInput.value.trim()) || '';
               el.innerHTML =
                 '<div class="opt">' + cb('ทราบ') + 'ทราบ</div>' +
+                '<div class="opt">' + cb('อนุญาต') + 'อนุญาต <span class="gap"></span>' + cb('ไม่อนุญาต') + 'ไม่อนุญาต</div>' +
+                '<div class="opt">' + cb('อนุมัติ') + 'อนุมัติ <span class="gap"></span>' + cb('ไม่อนุมัติ') + 'ไม่อนุมัติ</div>' +
                 '<div class="opt">' + cb('เก็บรวมเรื่อง') + 'เก็บรวมเรื่อง</div>' +
                 '<div class="opt">' + cb('แจ้งคณะครูทราบ') + 'แจ้งคณะครูทราบ</div>' +
                 '<div class="opt">' + cb('แจ้งให้ทราบ') + 'แจ้งให้ <span class="fill">' +
@@ -815,7 +834,7 @@ router.get('/documents/:id', requirePage((ctx) => {
                 '<div class="opt">' + cb('ดำเนินการ') + 'ดำเนินการ</div>';
               var noteEl = document.getElementById('decisionNotePreview');
               var noteInput = document.getElementById('decisionNote');
-              if (noteEl) noteEl.textContent = 'ความเห็น ' + ((noteInput && noteInput.value.trim()) || '...');
+              if (noteEl) noteEl.textContent = 'เห็นควรให้ ' + ((noteInput && noteInput.value.trim()) || '...');
             };
             // ล้างเครื่องหมาย/ข้อความที่ติ๊ก/พิมพ์ไว้ทั้งหมด เผื่อกดหรือพิมพ์ผิด — ไม่กระทบตำแหน่งที่ลากไว้
             // (window.decisionPos) เพราะเป็นคนละเรื่องกัน
