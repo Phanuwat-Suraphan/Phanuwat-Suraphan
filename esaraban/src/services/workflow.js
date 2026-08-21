@@ -109,9 +109,28 @@ export function currentStep(documentId) {
   `).get(documentId);
 }
 
+// ผู้รับงานต้องเป็นบัญชีที่ยังใช้งานได้จริง — ไม่งั้นเรื่องจะค้างอยู่กับคนที่ล็อกอินเข้ามาทำงานไม่ได้แล้ว
+// (เช่น ครูที่ย้ายออกไปและถูกระงับบัญชี) ไม่มีใครดำเนินการต่อได้ และไม่มีอะไรบอกว่าทำไมเรื่องไม่เดิน
+// ถ้าไม่ตรวจตรงนี้ ค่าที่ไม่มีตัวตนจะไปตกที่ FOREIGN KEY constraint ของ SQLite แล้วเด้งข้อความอังกฤษดิบใส่ผู้ใช้
+function assertAssignableUser(userId) {
+  if (!userId) throw httpError(400, 'กรุณาเลือกผู้รับงาน');
+  const u = db.prepare("SELECT id FROM users WHERE id = ? AND deleted_at IS NULL AND status = 'active'").get(userId);
+  if (!u) throw httpError(400, 'ไม่พบผู้รับงานที่เลือก หรือบัญชีนั้นถูกปิดใช้งานแล้ว — กรุณาเลือกผู้รับคนอื่น');
+}
+
+// ขั้นตอนที่ยังค้างอยู่อาจชี้ไปยังเอกสารที่แอดมินลบทิ้งไปแล้ว (ผู้รับงานเปิดหน้าค้างไว้แล้วเพิ่งมากด) —
+// ถ้าไม่ตรวจ getDocument จะคืน undefined แล้วโค้ดข้างล่างไปอ่าน doc.created_by ต่อ กลายเป็น 500
+// พร้อมข้อความ error ของโปรแกรมโผล่ใส่หน้าครู แทนที่จะบอกตรงๆ ว่าเอกสารถูกลบไปแล้ว
+function documentOfStep(step) {
+  const doc = getDocument(step.document_id);
+  if (!doc) throw httpError(409, 'เอกสารฉบับนี้ถูกลบออกจากระบบไปแล้ว จึงดำเนินการต่อไม่ได้');
+  return doc;
+}
+
 export function assignStep({ documentId, assigneeId, instruction, actorUser }) {
   const doc = getDocument(documentId);
   if (!doc) throw httpError(404, 'ไม่พบเอกสาร');
+  assertAssignableUser(assigneeId);
   // เดิม route ตรวจแค่ว่า "เห็นเอกสารนี้ได้ไหม" ซึ่งกว้างกว่าที่ UI ตั้งใจไว้มาก (ปุ่ม "เสนอ" ขึ้นเฉพาะผู้บันทึก
   // เอกสาร/แอดมิน) ทำให้ใครก็ตามที่แค่เห็นเอกสารในฝ่ายตัวเองยิง API มอบหมายงานให้ใครก็ได้ — คนในสาย workflow
   // ที่ต้องส่งต่อจริงๆ ใช้ปุ่มอนุมัติ/ส่งต่อ (approveAndForward) ซึ่งมี assertOwnsStep คุมอยู่แล้ว คนละทางกัน
@@ -150,7 +169,13 @@ function assertOwnsStep(step, actorUser) {
 export function approveAndForward({ stepId, nextAssigneeId, comment, actorUser }) {
   const step = db.prepare('SELECT * FROM workflow_steps WHERE id = ?').get(stepId);
   assertOwnsStep(step, actorUser);
-  const doc = getDocument(step.document_id);
+  assertAssignableUser(nextAssigneeId);
+  // ส่งต่อให้ตัวเอง/ให้คนที่ถือเรื่องอยู่แล้ว เรื่องจะวนกลับมาที่เดิมโดยไม่คืบหน้า และดูเหมือนระบบทำงานผิด —
+  // ถ้าตั้งใจจะจบเรื่องที่ตัวเอง ต้องกด "รับทราบ/ปิดเรื่อง" ไม่ใช่ "อนุมัติและส่งต่อ"
+  if (nextAssigneeId === actorUser.id || nextAssigneeId === step.assignee_id) {
+    throw httpError(400, 'ส่งต่อให้ตัวเองไม่ได้ — ถ้าต้องการจบเรื่องที่คุณ ให้กด "รับทราบ/ปิดเรื่อง" แทน');
+  }
+  const doc = documentOfStep(step);
 
   db.prepare(`UPDATE workflow_steps SET status = 'approved', instruction = COALESCE(instruction,'') || ?, decided_at = ? WHERE id = ?`)
     .run(comment ? `\n[เกษียณ] ${comment}` : '', nowIso(), stepId);
@@ -175,7 +200,7 @@ export function approveAndForward({ stepId, nextAssigneeId, comment, actorUser }
 export function acknowledgeAndComplete({ stepId, comment, actorUser }) {
   const step = db.prepare('SELECT * FROM workflow_steps WHERE id = ?').get(stepId);
   assertOwnsStep(step, actorUser);
-  const doc = getDocument(step.document_id);
+  const doc = documentOfStep(step);
 
   db.prepare(`UPDATE workflow_steps SET status = 'acknowledged', instruction = COALESCE(instruction,'') || ?, decided_at = ? WHERE id = ?`)
     .run(comment ? `\n[รับทราบ] ${comment}` : '', nowIso(), stepId);
@@ -194,7 +219,7 @@ export function acknowledgeAndComplete({ stepId, comment, actorUser }) {
 export function rejectStep({ stepId, reason, actorUser }) {
   const step = db.prepare('SELECT * FROM workflow_steps WHERE id = ?').get(stepId);
   assertOwnsStep(step, actorUser);
-  const doc = getDocument(step.document_id);
+  const doc = documentOfStep(step);
   if (!reason) throw httpError(400, 'ต้องระบุเหตุผลที่ไม่อนุมัติ');
 
   db.prepare(`UPDATE workflow_steps SET status = 'rejected', instruction = COALESCE(instruction,'') || ?, decided_at = ? WHERE id = ?`)
@@ -211,7 +236,7 @@ export function rejectStep({ stepId, reason, actorUser }) {
 export function returnStep({ stepId, reason, actorUser }) {
   const step = db.prepare('SELECT * FROM workflow_steps WHERE id = ?').get(stepId);
   assertOwnsStep(step, actorUser);
-  const doc = getDocument(step.document_id);
+  const doc = documentOfStep(step);
   if (!reason) throw httpError(400, 'ต้องระบุเหตุผลที่ส่งกลับแก้ไข');
 
   db.prepare(`UPDATE workflow_steps SET status = 'returned', instruction = COALESCE(instruction,'') || ?, decided_at = ? WHERE id = ?`)

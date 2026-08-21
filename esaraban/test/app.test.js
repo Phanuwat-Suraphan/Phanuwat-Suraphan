@@ -18,7 +18,7 @@ const { daysUntil } = await import('../src/render.js');
 const {
   createDocument, getDocument, canUserSeeDocument, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep, voidDocument, archiveDocument,
-  assertStepBelongsToDocument,
+  assertStepBelongsToDocument, forceDeleteDocument,
 } = await import('../src/services/workflow.js');
 const { nextRunningNumber } = await import('../src/numbering.js');
 const { readWorkbook } = await import('../src/services/xlsx.js');
@@ -543,6 +543,63 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
 // ชื่อไฟล์ภาษาไทยเป็นเรื่องปกติที่โรงเรียนไทย แต่หัว HTTP ของ Node รับได้เฉพาะไบต์ Latin-1 —
 // ถ้าเอาชื่อไทยไปต่อใส่ Content-Disposition ตรงๆ Node จะโยน ERR_INVALID_CHAR ตอบ 500 และผู้ใช้
 // โหลดไฟล์ไม่ได้เลย (ทดสอบกับระบบจริงแล้วว่าไฟล์แนบของประกาศชื่อ "ประกาศรับสมัครครู.pdf" ได้ 500)
+describe('workflow: กรณีที่ทำให้เรื่องค้างหรือขึ้น error ของโปรแกรมใส่หน้าผู้ใช้', () => {
+  // เรื่องจะค้างอยู่กับคนที่ล็อกอินเข้ามาทำงานไม่ได้แล้ว และไม่มีอะไรบอกว่าทำไมงานไม่เดินต่อ
+  test('มอบหมายให้บัญชีที่ถูกระงับไม่ได้', () => {
+    const doc = makeDoc({ title: 'ทดสอบมอบหมายให้บัญชีที่ถูกระงับ' });
+    try {
+      db.prepare("UPDATE users SET status = 'suspended' WHERE id = ?").run(teacherUser.id);
+      assert.throws(
+        () => assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser }),
+        /ถูกปิดใช้งาน/,
+      );
+      assert.equal(getDocument(doc.id).status, 'registered', 'เอกสารต้องไม่ถูกเปลี่ยนสถานะเมื่อมอบหมายไม่สำเร็จ');
+    } finally {
+      db.prepare("UPDATE users SET status = 'active' WHERE id = ?").run(teacherUser.id);
+    }
+  });
+
+  // เดิมค่าที่ไม่มีตัวตนไปตกที่ FOREIGN KEY constraint ของ SQLite แล้วเด้ง "FOREIGN KEY constraint failed"
+  // เป็นภาษาอังกฤษดิบใส่หน้าครู
+  test('มอบหมายให้ผู้ใช้ที่ไม่มีตัวตน ได้ข้อความภาษาไทย ไม่ใช่ error ของฐานข้อมูล', () => {
+    const doc = makeDoc({ title: 'ทดสอบมอบหมายให้คนที่ไม่มีจริง' });
+    assert.throws(
+      () => assignStep({ documentId: doc.id, assigneeId: 'ไม่มีคนนี้', actorUser: registrarUser }),
+      /ไม่พบผู้รับงาน/,
+    );
+  });
+
+  // ส่งต่อให้ตัวเองแล้วเรื่องวนกลับมาที่เดิม ดูเหมือนกดแล้วไม่มีอะไรเกิดขึ้น
+  test('ส่งต่อให้ตัวเองไม่ได้ ต้องบอกให้ไปกดรับทราบ/ปิดเรื่องแทน', () => {
+    const doc = makeDoc({ title: 'ทดสอบส่งต่อให้ตัวเอง' });
+    assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    const step = currentStep(doc.id);
+    assert.throws(
+      () => approveAndForward({ stepId: step.id, nextAssigneeId: teacherUser.id, actorUser: teacherUser }),
+      /ส่งต่อให้ตัวเองไม่ได้/,
+    );
+    assert.equal(currentStep(doc.id).id, step.id, 'ขั้นตอนเดิมต้องยังค้างอยู่เหมือนเดิม');
+  });
+
+  // ผู้รับงานเปิดหน้าค้างไว้ ระหว่างนั้นแอดมินลบเอกสาร พอกดปุ่มจะได้ 500 พร้อมข้อความ
+  // "Cannot read properties of undefined (reading 'created_by')" โผล่ใส่หน้าครู
+  test('กดดำเนินการหลังเอกสารถูกลบ ต้องได้ข้อความที่อ่านรู้เรื่อง ไม่ใช่ error ของโปรแกรม', async () => {
+    const doc = makeDoc({ title: 'ทดสอบดำเนินการหลังเอกสารถูกลบ' });
+    assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    const step = currentStep(doc.id);
+    await forceDeleteDocument({ documentId: doc.id, reason: 'ทดสอบ', actorUser: adminUser });
+
+    for (const [ชื่อ, fn] of [
+      ['รับทราบ/ปิดเรื่อง', () => acknowledgeAndComplete({ stepId: step.id, actorUser: teacherUser })],
+      ['อนุมัติและส่งต่อ', () => approveAndForward({ stepId: step.id, nextAssigneeId: adminUser.id, actorUser: teacherUser })],
+      ['ไม่อนุมัติ', () => rejectStep({ stepId: step.id, reason: 'ทดสอบ', actorUser: teacherUser })],
+      ['ส่งกลับแก้ไข', () => returnStep({ stepId: step.id, reason: 'ทดสอบ', actorUser: teacherUser })],
+    ]) {
+      assert.throws(fn, /ถูกลบออกจากระบบไปแล้ว/, `ปุ่ม "${ชื่อ}" ยังไม่ได้จัดการกรณีเอกสารถูกลบ`);
+    }
+  });
+});
+
 describe('เซสชัน: เปลี่ยนรหัสผ่าน/ระงับบัญชี ต้องมีผลกับเครื่องที่เปิดค้างอยู่ทันที', () => {
   const cookieOf = (signed) => `esaraban_sid=${encodeURIComponent(signed)}`;
 
