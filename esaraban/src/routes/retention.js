@@ -91,7 +91,10 @@ router.get('/retention', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage(
 router.get('/retention/batches/:id', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage((ctx) => {
   const batch = getBatch(ctx.params.id);
   if (!batch) return html(ctx, 404, layout({ user: ctx.user, title: 'ไม่พบข้อมูล', path: '/retention', content: '<p>ไม่พบบัญชีทำลายหนังสือนี้</p>' }));
-  const canApprove = ctx.user.roleCodes.some((r) => CAN_APPROVE.includes(r));
+  // ผู้เสนอบัญชีอนุมัติบัญชีของตัวเองไม่ได้ (บังคับฝั่งเซิร์ฟเวอร์ด้วย ดู approveDestructionBatch) —
+  // ซ่อนปุ่มไว้ด้วยเพื่อไม่ให้กดแล้วเจอ error โดยไม่รู้สาเหตุ
+  const isProposer = batch.created_by === ctx.user.id;
+  const canApprove = ctx.user.roleCodes.some((r) => CAN_APPROVE.includes(r)) && !isProposer;
 
   const itemRows = batch.items.map((d) => `
     <tr><td>${esc(d.doc_number_display)}</td><td>${esc(d.title)}</td><td>${statusBadge(d.status)}</td></tr>`).join('');
@@ -111,9 +114,18 @@ router.get('/retention/batches/:id', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(
         </tbody>
       </table>
       ${batch.status === 'pending_approval' && canApprove ? `
-        <div class="chip-row" style="margin-top:1rem">
+        <div class="callout-tip" style="margin-top:1rem">
+          ⚠️ การอนุมัติจะเปลี่ยนสถานะเอกสาร ${batch.items.length} ฉบับเป็น "ทำลายแล้ว" และ<strong>ลบไฟล์แนบออกจากระบบถาวร</strong>
+          กู้คืนไม่ได้ — รายการทะเบียนและเลขที่จะยังคงอยู่เป็นหลักฐานตามระเบียบ
+        </div>
+        <div class="chip-row" style="margin-top:.8rem">
           <button class="btn btn-danger btn-sm" onclick="doDecision('approve')">✅ อนุมัติให้ทำลาย</button>
           <button class="btn btn-outline btn-sm" onclick="doDecision('reject')">❌ ไม่อนุมัติ</button>
+        </div>` : ''}
+      ${batch.status === 'pending_approval' && isProposer ? `
+        <div class="help-text" style="margin-top:1rem">
+          บัญชีนี้คุณเป็นผู้เสนอเอง จึงต้องให้ผู้บริหารท่านอื่นเป็นผู้พิจารณาอนุมัติ
+          (ตามระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ ผู้เสนอกับผู้อนุมัติต้องเป็นคนละคน)
         </div>` : ''}
     </div>
     <div class="card">
@@ -121,11 +133,18 @@ router.get('/retention/batches/:id', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(
       <div class="table-wrap"><table><thead><tr><th>เลขที่</th><th>เรื่อง</th><th>สถานะ</th></tr></thead><tbody>${itemRows}</tbody></table></div>
     </div>
     <script>
-      function doDecision(action){
-        var note = action === 'reject' ? prompt('ระบุเหตุผลที่ไม่อนุมัติ') : (prompt('บันทึกเพิ่มเติม (ถ้ามี) — การอนุมัตินี้จะลบไฟล์แนบออกจากระบบถาวร ยืนยันหรือไม่?') || '');
-        if (action === 'reject' && !note) return;
+      async function doDecision(action){
+        var note = action === 'reject' ? prompt('ระบุเหตุผลที่ไม่อนุมัติ') : (prompt('บันทึกเพิ่มเติม (ถ้ามี) — การอนุมัตินี้จะลบไฟล์แนบออกจากระบบถาวร กู้คืนไม่ได้') || '');
         if (note === null) return;
-        fetch('/retention/batches/${batch.id}/' + action, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ note: note }) })
+        if (action === 'reject' && !note) return;
+        var body = { note: note };
+        if (action === 'approve') {
+          // ยืนยัน PIN ก่อนทำลายเอกสารถาวร เหมือนการลงนามอื่นๆ ในระบบ
+          var pin = await window.askPin('ยืนยัน PIN เพื่ออนุมัติให้ทำลายเอกสาร ${batch.items.length} ฉบับถาวร');
+          if (!pin) return;
+          body.pin = pin;
+        }
+        fetch('/retention/batches/${batch.id}/' + action, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })
           .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
           .then(function(res){ if(!res.ok) throw new Error(res.d.error); location.reload(); })
           .catch(function(e){ toast(e.message, 'danger'); });
@@ -145,6 +164,10 @@ router.post('/retention/batches', requireApi(async (ctx) => {
 
 router.post('/retention/batches/:id/approve', requireApi(async (ctx) => {
   if (!ctx.user.roleCodes.some((r) => CAN_APPROVE.includes(r))) return json(ctx, 403, { error: 'เฉพาะผู้บริหาร/ผู้ดูแลระบบเท่านั้นที่อนุมัติได้' });
+  // ต้องยืนยัน PIN เหมือนการลงนามอื่นๆ — นี่คือการทำลายเอกสารราชการถาวร ลบไฟล์แนบทิ้งจริง กู้คืนไม่ได้
+  // ซึ่งมีผลหนักกว่าการกด "รับทราบ" เอกสารฉบับเดียวที่บังคับ PIN อยู่แล้วมาก เดิมกลับไม่ต้องยืนยันอะไรเลย
+  const { verifyPin } = await import('../auth.js');
+  if (!verifyPin(ctx.user.id, ctx.body.pin)) return json(ctx, 401, { error: 'PIN ไม่ถูกต้อง' });
   await approveDestructionBatch({ batchId: ctx.params.id, actorUser: ctx.user, note: ctx.body.note });
   json(ctx, 200, { ok: true });
 }));

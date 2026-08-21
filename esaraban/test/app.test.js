@@ -11,8 +11,8 @@ const tmpDb = path.join(os.tmpdir(), `esaraban-test-${Date.now()}-${Math.random(
 process.env.DB_PATH = tmpDb;
 process.env.SESSION_SECRET = 'test-secret-not-for-production';
 
-const { db, computeRetentionUntil, beYear, todayInBangkok } = await import('../src/db.js');
-const { login, getSessionUser, revokeOtherSessions } = await import('../src/auth.js');
+const { db, computeRetentionUntil, beYear, todayInBangkok, hashSecret, verifySecret } = await import('../src/db.js');
+const { login, getSessionUser, revokeOtherSessions, verifyPin } = await import('../src/auth.js');
 const { contentDispositionHeader } = await import('../src/router.js');
 const { daysUntil } = await import('../src/render.js');
 const {
@@ -27,6 +27,7 @@ const {
   createLeaveRequest, approveLeaveRequest, rejectLeaveRequest, canSeeLeaveRequest, getLeaveRequest,
 } = await import('../src/services/leave.js');
 const { createDelegation } = await import('../src/services/delegation.js');
+const { createDestructionBatch, approveDestructionBatch } = await import('../src/services/retention.js');
 const zlib = await import('node:zlib');
 
 const seed = db._seed;
@@ -72,6 +73,26 @@ describe('auth: login + rate limiting', () => {
     const blockedEvenCorrect = login('reg001', 'Reg@2569', '127.0.0.1');
     assert.equal(blockedEvenCorrect.ok, false);
     assert.match(blockedEvenCorrect.error, /ล็อกชั่วคราว/);
+  });
+});
+
+// scryptSync โยน ERR_INVALID_ARG_TYPE ถ้าได้ค่าที่ไม่ใช่ข้อความ ทำให้ทุก endpoint ที่ตรวจ PIN/รหัสผ่าน
+// ตอบ 500 พร้อมข้อความภาษาอังกฤษของ Node แทนที่จะเป็น "PIN ไม่ถูกต้อง" — ทดสอบกับระบบจริงแล้วว่า
+// ปุ่มรับทราบเอกสารตอบ 500 จริงเมื่อฝั่งเว็บไม่ได้ส่งช่อง pin มา
+describe('ตรวจรหัสผ่าน/PIN: ค่าที่ไม่ใช่ข้อความต้องตอบว่าไม่ตรง ไม่ใช่ทำให้ระบบพัง', () => {
+  test('undefined / null / ตัวเลข / object ต้องได้ false โดยไม่โยน error', () => {
+    const stored = hashSecret('123456');
+    for (const bad of [undefined, null, 123456, {}, [], true]) {
+      assert.equal(verifySecret(bad, stored), false, `ค่า ${JSON.stringify(bad)} ต้องได้ false`);
+    }
+    assert.equal(verifySecret('123456', stored), true, 'PIN ที่ถูกต้องต้องยังผ่าน');
+    assert.equal(verifySecret('654321', stored), false);
+  });
+
+  test('verifyPin ของผู้ใช้จริง ไม่พังเมื่อไม่ได้ส่ง PIN มา', () => {
+    assert.equal(verifyPin(teacherUser.id, undefined), false);
+    assert.equal(verifyPin(teacherUser.id, 666666), false, 'ตัวเลขต้องไม่ผ่าน (ต้องเป็นข้อความ)');
+    assert.equal(verifyPin(teacherUser.id, '666666'), true);
   });
 });
 
@@ -563,6 +584,52 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
 // ชื่อไฟล์ภาษาไทยเป็นเรื่องปกติที่โรงเรียนไทย แต่หัว HTTP ของ Node รับได้เฉพาะไบต์ Latin-1 —
 // ถ้าเอาชื่อไทยไปต่อใส่ Content-Disposition ตรงๆ Node จะโยน ERR_INVALID_CHAR ตอบ 500 และผู้ใช้
 // โหลดไฟล์ไม่ได้เลย (ทดสอบกับระบบจริงแล้วว่าไฟล์แนบของประกาศชื่อ "ประกาศรับสมัครครู.pdf" ได้ 500)
+// การทำลายหนังสือราชการเป็นการกระทำที่ย้อนกลับไม่ได้ — ลบไฟล์แนบทิ้งจริง จึงต้องคุมเข้มที่สุดในระบบ
+describe('ทำลายหนังสือ: ผู้เสนอกับผู้อนุมัติต้องคนละคน และไฟล์ต้องไม่หายก่อนบันทึกมติ', () => {
+  const directorUser = { id: seed.userIds.director01, roleCodes: ['director'] };
+
+  function batchReadyToApprove(actorUser = registrarUser) {
+    const doc = makeDoc({ title: 'เอกสารครบกำหนดทำลาย' });
+    db.prepare("UPDATE documents SET status = 'completed', retention_until = '2020-01-01' WHERE id = ?").run(doc.id);
+    const batchId = createDestructionBatch({
+      documentIds: [doc.id], committeeNames: 'กรรมการ ก\nกรรมการ ข\nกรรมการ ค',
+      reason: 'ครบอายุการเก็บ', actorUser,
+    });
+    return { docId: doc.id, batchId };
+  }
+
+  // แอดมินอยู่ทั้งกลุ่มผู้เสนอและกลุ่มผู้อนุมัติ เดิมจึงเสนอเองอนุมัติเองได้ (ทดสอบกับระบบจริงแล้วว่าทำได้)
+  // ระเบียบสำนักนายกฯ ว่าด้วยงานสารบรรณกำหนดให้คณะกรรมการเสนอ แล้วหัวหน้าส่วนราชการเป็นผู้พิจารณา
+  test('ผู้เสนอบัญชีอนุมัติบัญชีของตัวเองไม่ได้', async () => {
+    const { batchId, docId } = batchReadyToApprove(adminUser);
+    await assert.rejects(
+      () => approveDestructionBatch({ batchId, actorUser: adminUser, note: 'อนุมัติเอง' }),
+      /อนุมัติบัญชีของตัวเองไม่ได้/,
+    );
+    assert.equal(getDocument(docId).status, 'completed', 'เอกสารต้องยังไม่ถูกทำลาย');
+  });
+
+  test('ผู้บริหารท่านอื่นอนุมัติได้ตามปกติ', async () => {
+    const { batchId, docId } = batchReadyToApprove(registrarUser);
+    await approveDestructionBatch({ batchId, actorUser: directorUser, note: 'เห็นชอบให้ทำลาย' });
+    const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get(docId);
+    assert.equal(doc.status, 'destroyed');
+    // เลขทะเบียนต้องยังอยู่เป็นหลักฐานว่าเคยมีหนังสือฉบับนี้ ไม่ใช่ลบทิ้งทั้งแถว
+    assert.ok(doc.doc_number_display, 'เลขทะเบียนต้องคงอยู่หลังทำลาย');
+  });
+
+  // ไฟล์ที่ลบทิ้งแล้วเรียกคืนไม่ได้ ถ้าลบระหว่าง transaction แล้ว transaction ล้มจน ROLLBACK
+  // ฐานข้อมูลจะกลับไปเหมือนไม่มีอะไรเกิดขึ้น แต่ไฟล์หายไปแล้วจริง กลายเป็นเอกสารที่เปิดไม่ได้โดยไม่มีร่องรอย
+  test('ไฟล์แนบต้องถูกลบหลังบันทึกมติแล้วเท่านั้น ไม่ใช่ระหว่าง transaction', () => {
+    const src = fs.readFileSync(new URL('../src/services/retention.js', import.meta.url), 'utf8');
+    const body = src.match(/export async function approveDestructionBatch[\s\S]*?\n\}/)[0];
+    const commitAt = body.indexOf("db.exec('COMMIT')");
+    const unlinkAt = body.indexOf('fs.unlinkSync');
+    assert.ok(commitAt > 0 && unlinkAt > 0, 'หา COMMIT/unlinkSync ในฟังก์ชันไม่เจอ');
+    assert.ok(unlinkAt > commitAt, 'fs.unlinkSync ต้องอยู่หลัง COMMIT ไม่ใช่ก่อน');
+  });
+});
+
 describe('workflow: กรณีที่ทำให้เรื่องค้างหรือขึ้น error ของโปรแกรมใส่หน้าผู้ใช้', () => {
   // เรื่องจะค้างอยู่กับคนที่ล็อกอินเข้ามาทำงานไม่ได้แล้ว และไม่มีอะไรบอกว่าทำไมงานไม่เดินต่อ
   test('มอบหมายให้บัญชีที่ถูกระงับไม่ได้', () => {

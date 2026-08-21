@@ -81,24 +81,33 @@ export async function approveDestructionBatch({ batchId, actorUser, note }) {
   const batch = getBatch(batchId);
   if (!batch) throw httpError(404, 'ไม่พบบัญชีทำลายหนังสือ');
   if (batch.status !== 'pending_approval') throw httpError(409, 'บัญชีนี้ถูกพิจารณาไปแล้ว');
+  // ตามระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ การทำลายหนังสือต้องผ่านคณะกรรมการทำลายหนังสือ
+  // แล้วเสนอหัวหน้าส่วนราชการพิจารณา — คนเสนอกับคนอนุมัติจึงต้องไม่ใช่คนเดียวกัน ซึ่งเดิมทำได้
+  // เพราะแอดมินอยู่ทั้งกลุ่มผู้เสนอและกลุ่มผู้อนุมัติ (ทดสอบแล้วว่าเสนอเองอนุมัติเองได้จริง)
+  if (batch.created_by === actorUser.id) {
+    throw httpError(403, 'ผู้เสนอบัญชีทำลายหนังสือจะอนุมัติบัญชีของตัวเองไม่ได้ ต้องให้ผู้บริหารท่านอื่นเป็นผู้พิจารณา');
+  }
 
   const now = nowIso();
   const driveFilesToDelete = [];
+  const localFilesToDelete = [];
   db.exec('BEGIN IMMEDIATE');
   try {
     for (const doc of batch.items) {
       db.prepare(`UPDATE documents SET status = 'destroyed', destroyed_at = ?, destroyed_by = ?, updated_at = ? WHERE id = ?`)
         .run(now, actorUser.id, now, doc.id);
-      // ลบไฟล์แนบจริงออก (local disk ทันที, Google Drive หลัง commit — เพราะเป็น network call ไม่ควรถือ DB transaction ค้างไว้)
+      // รวบรวมไฟล์ที่ต้องลบไว้ก่อน แล้วค่อยลบจริงหลัง COMMIT — การลบไฟล์ย้อนกลับไม่ได้ ถ้าลบทิ้งระหว่าง
+      // transaction แล้ว transaction ล้มเหลวจน ROLLBACK ฐานข้อมูลจะกลับไปเป็นเหมือนไม่มีอะไรเกิดขึ้น
+      // แต่ไฟล์แนบหายไปแล้วจริงๆ กลายเป็นเอกสารที่ระบบบอกว่ายังอยู่แต่เปิดไฟล์ไม่ได้ โดยไม่มีร่องรอยว่าทำไม
       // คงรายการทะเบียน/เลขที่ไว้เป็นหลักฐานว่าเคยมีและถูกทำลายแล้วตามระเบียบ (ไม่ใช้เลขซ้ำ)
       const atts = db.prepare('SELECT * FROM attachments WHERE document_id = ?').all(doc.id);
       for (const att of atts) {
-        if (att.storage_provider === 'google_drive' && att.drive_file_id) {
-          driveFilesToDelete.push(att.drive_file_id);
-        } else if (att.filepath) {
-          const filePath = path.join(UPLOAD_DIR, att.filepath);
-          if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        }
+        if (att.storage_provider === 'google_drive' && att.drive_file_id) driveFilesToDelete.push(att.drive_file_id);
+        else if (att.filepath) localFilesToDelete.push(att.filepath);
+        // สำเนาที่ประทับตราแล้วเป็นคนละไฟล์กับต้นฉบับ ต้องลบด้วย ไม่งั้นเอกสารที่ "ทำลายแล้ว"
+        // ยังเหลือฉบับประทับตราค้างอยู่ในเครื่อง ซึ่งขัดกับมติให้ทำลาย
+        if (att.stamped_storage_provider === 'google_drive' && att.stamped_drive_file_id) driveFilesToDelete.push(att.stamped_drive_file_id);
+        else if (att.stamped_filepath) localFilesToDelete.push(att.stamped_filepath);
       }
     }
     db.prepare(`UPDATE destruction_batches SET status = 'approved', decided_by = ?, decision_note = ?, decided_at = ? WHERE id = ?`)
@@ -109,12 +118,21 @@ export async function approveDestructionBatch({ batchId, actorUser, note }) {
     throw e;
   }
 
+  // ถึงตรงนี้มติทำลายถูกบันทึกลงฐานข้อมูลเรียบร้อยแล้ว การลบไฟล์ที่ล้มเหลวจึงไม่ควรทำให้การอนุมัติล้มตาม
+  // แต่ต้องบันทึกไว้ให้แอดมินตามลบเองภายหลัง
+  for (const filepath of localFilesToDelete) {
+    try {
+      const full = path.join(UPLOAD_DIR, filepath);
+      if (fs.existsSync(full)) fs.unlinkSync(full);
+    } catch (e) {
+      audit({ userId: actorUser.id, action: 'destruction_file_delete_failed', tableName: 'attachments', recordId: filepath, detail: { error: e.message } });
+    }
+  }
   if (isGoogleDriveEnabled()) {
     for (const fileId of driveFilesToDelete) {
       try {
         await deleteDriveFile(fileId);
       } catch (e) {
-        // เอกสารถูกอนุมัติทำลายแล้ว (สถานะใน DB เปลี่ยนแล้ว) — ถ้าลบไฟล์บน Drive ไม่สำเร็จ บันทึกไว้เพื่อให้แอดมินลบเองภายหลัง ไม่ทำให้การอนุมัติล้มเหลว
         audit({ userId: actorUser.id, action: 'destruction_drive_delete_failed', tableName: 'attachments', recordId: fileId, detail: { error: e.message } });
       }
     }

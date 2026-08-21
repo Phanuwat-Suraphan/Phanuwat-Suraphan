@@ -63,6 +63,10 @@ export function hashSecret(plain) {
 
 export function verifySecret(plain, stored) {
   if (!stored) return false;
+  // ค่าที่ไม่ใช่ข้อความต้องตอบว่า "ไม่ตรง" ไม่ใช่โยน error — scryptSync จะโยน ERR_INVALID_ARG_TYPE
+  // ถ้าได้ undefined หรือตัวเลข ทำให้ endpoint ที่ตรวจ PIN ตอบ 500 พร้อมข้อความอังกฤษของ Node
+  // แทนที่จะเป็น "PIN ไม่ถูกต้อง" — เกิดได้จริงเมื่อฝั่งเว็บไม่ได้ส่งช่อง pin มา หรือส่งมาเป็นตัวเลข
+  if (typeof plain !== 'string') return false;
   const [salt, hash] = stored.split(':');
   const check = scryptSync(plain, salt, 64).toString('hex');
   if (check.length !== hash.length) return false;
