@@ -27,7 +27,7 @@ const {
   createLeaveRequest, approveLeaveRequest, rejectLeaveRequest, canSeeLeaveRequest, getLeaveRequest,
 } = await import('../src/services/leave.js');
 const { createDelegation } = await import('../src/services/delegation.js');
-const { isBackupEnabled, restoreDatabaseIfMissing, backupNow } = await import('../src/services/dbBackup.js');
+const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, selectBackupsToDelete } = await import('../src/services/dbBackup.js');
 const sqliteModule = await import('node:sqlite');
 const { createDestructionBatch, approveDestructionBatch } = await import('../src/services/retention.js');
 const zlib = await import('node:zlib');
@@ -208,6 +208,24 @@ describe('ACL: secret documents are hidden from unrelated departments', () => {
   test('admin can always see every document regardless of secrecy level', () => {
     const doc = makeDoc({ title: 'เอกสารลับ 2', secretLevel: 'top_secret', departmentId: seed.deptIds.BUDGET });
     assert.equal(canUserSeeDocument({ id: adminUser.id, roleCodes: ['admin'] }, getDocument(doc.id)), true);
+  });
+
+  // ตามที่โรงเรียนขอ: หนังสือราชการทั่วไปเป็นเรื่องที่ครูทุกคนต้องรับรู้อยู่แล้ว การจำกัดตามฝ่ายทำให้
+  // ครูเปิดหนังสือของฝ่ายอื่นไม่ได้ทั้งที่ควรอ่านได้ — ส่วนชั้นความลับยังจำกัดตามเดิม
+  test('ครูทุกคนเปิด/ดาวน์โหลดหนังสือทั่วไปได้ทุกฉบับ แม้เป็นของฝ่ายอื่น', () => {
+    const outsider = { id: seed.userIds.teacher001, roleCodes: ['teacher'], department_id: deptId };
+    for (const secretLevel of ['normal', 'internal']) {
+      const doc = makeDoc({ title: `หนังสือทั่วไป ${secretLevel}`, secretLevel, departmentId: seed.deptIds.BUDGET });
+      assert.equal(canUserSeeDocument(outsider, getDocument(doc.id)), true, `ชั้นความลับ ${secretLevel} ครูต้องเปิดได้`);
+    }
+  });
+
+  test('แต่ชั้นความลับ "ลับ"/"ลับมาก" ยังจำกัดเหมือนเดิม (ไม่งั้นช่องชั้นความลับจะไม่มีความหมาย)', () => {
+    const outsider = { id: seed.userIds.teacher001, roleCodes: ['teacher'], department_id: deptId };
+    for (const secretLevel of ['secret', 'top_secret']) {
+      const doc = makeDoc({ title: `หนังสือลับ ${secretLevel}`, secretLevel, departmentId: seed.deptIds.BUDGET });
+      assert.equal(canUserSeeDocument(outsider, getDocument(doc.id)), false, `ชั้นความลับ ${secretLevel} ต้องยังปิดอยู่`);
+    }
   });
 });
 
@@ -974,6 +992,73 @@ describe('สำรองฐานข้อมูล: สำเนาต้อ�
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  // สำรองทุก 5 นาที ถ้าเก็บแบบ "N ชุดล่าสุด" อย่างเดียวจะย้อนหลังได้แค่ราวชั่วโมงเดียว —
+  // ไม่พอเลยกับกรณีที่เพิ่งมารู้ตัววันรุ่งขึ้นว่าลบผิด/แก้ผิด แล้วอยากได้ข้อมูลของเมื่อวานคืน
+  describe('เก็บสำเนาย้อนหลังวันละชุด', () => {
+    // จำลองสำเนาทุก 5 นาที ตลอด N วัน เรียงใหม่สุดก่อน (ตามที่ Google Drive คืนมา)
+    function fakeBackups(days, perDay = 12) {
+      const files = [];
+      for (let d = 0; d < days; d++) {
+        const day = new Date(Date.UTC(2026, 7, 21) - d * 86400000).toISOString().slice(0, 10);
+        for (let i = 0; i < perDay; i++) {
+          const hh = String(23 - Math.floor(i / 2)).padStart(2, '0');
+          const mm = i % 2 ? '30' : '00';
+          files.push({ id: `${day}-${hh}${mm}`, name: `esaraban-${day}-${hh}${mm}.db` });
+        }
+      }
+      return files;
+    }
+
+    test('เก็บชุดล่าสุดไว้หลายชุด และเก็บวันละ 1 ชุดย้อนหลังตามที่ตั้งไว้', () => {
+      const files = fakeBackups(10);
+      const kept = files.filter((f) => !selectBackupsToDelete(files, { keepRecent: 6, keepDailyDays: 7 }).includes(f));
+      const days = [...new Set(kept.map((f) => f.name.slice(9, 19)))];
+      assert.equal(days.length, 7, `ต้องเหลือ 7 วัน แต่เหลือ ${days.length}: ${days.join(', ')}`);
+      // 6 ชุดล่าสุดของวันปัจจุบัน + วันละ 1 ชุดของอีก 6 วันที่เหลือ
+      assert.equal(kept.length, 12, `จำนวนชุดที่เก็บไม่ตรง: ${kept.map((f) => f.name).join(', ')}`);
+      assert.ok(kept.includes(files[0]), 'ชุดล่าสุดต้องถูกเก็บเสมอ');
+    });
+
+    test('ชุดที่เก็บไว้ของแต่ละวัน ต้องเป็นชุดสุดท้ายของวันนั้น (ข้อมูลครบที่สุด)', () => {
+      const files = fakeBackups(5);
+      const toDelete = new Set(selectBackupsToDelete(files, { keepRecent: 1, keepDailyDays: 5 }).map((f) => f.id));
+      for (const day of ['2026-08-20', '2026-08-19', '2026-08-18']) {
+        const ofDay = files.filter((f) => f.name.includes(day));
+        const keptOfDay = ofDay.filter((f) => !toDelete.has(f.id));
+        assert.equal(keptOfDay.length, 1, `วัน ${day} ต้องเหลือชุดเดียว`);
+        assert.equal(keptOfDay[0].id, ofDay[0].id, `วัน ${day} ต้องเก็บชุดล่าสุดของวันนั้น ไม่ใช่ชุดแรกของวัน`);
+      }
+    });
+
+    test('เก่ากว่าที่ตั้งไว้ถูกลบทิ้ง แต่ไม่ลบเกินจำนวนวันที่ขอเก็บ', () => {
+      const files = fakeBackups(100);
+      const toDelete = selectBackupsToDelete(files, { keepRecent: 12, keepDailyDays: 30 });
+      const keptDays = new Set(files.filter((f) => !toDelete.includes(f)).map((f) => f.name.slice(9, 19)));
+      assert.equal(keptDays.size, 30);
+      assert.ok(keptDays.has('2026-08-21'), 'วันล่าสุดต้องอยู่');
+      assert.ok(!keptDays.has('2026-05-14'), 'วันที่เก่าเกินกว่าที่ขอเก็บต้องถูกลบ');
+    });
+
+    test('ไฟล์ที่อ่านวันไม่ออกเลย ต้องไม่ถูกลบทิ้ง', () => {
+      const files = [
+        { id: 'new', name: 'esaraban-2026-08-21-1200.db' },
+        { id: 'unknown', name: 'esaraban-สำรองมือ.db' }, // ไม่มีวันในชื่อ และไม่มี createdTime ให้เทียบ
+      ];
+      const toDelete = selectBackupsToDelete(files, { keepRecent: 1, keepDailyDays: 1 });
+      assert.deepEqual(toDelete, [], 'ถ้าไม่แน่ใจว่าเป็นสำเนาของวันไหน ต้องเก็บไว้ก่อน ไม่ลบเสี่ยงๆ');
+    });
+
+    test('ชื่อไฟล์รูปแบบเดิม (ISO เต็ม) ยังจัดกลุ่มตามวันได้ตามปกติ', () => {
+      const files = [
+        { id: 'a', name: 'esaraban-2026-08-21T10-00-00-000Z.db' },
+        { id: 'b', name: 'esaraban-2026-08-21T09-00-00-000Z.db' },
+        { id: 'c', name: 'esaraban-2026-08-20T09-00-00-000Z.db' },
+      ];
+      const toDelete = selectBackupsToDelete(files, { keepRecent: 1, keepDailyDays: 2 });
+      assert.deepEqual(toDelete.map((f) => f.id), ['b'], 'ต้องเหลือชุดล่าสุดของแต่ละวัน');
+    });
   });
 
   test('ไม่เขียนทับฐานข้อมูลที่มีอยู่แล้ว (เครื่องที่ดิสก์ไม่หายต้องไม่โดนกู้คืนทับ)', async () => {

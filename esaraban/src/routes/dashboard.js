@@ -3,6 +3,7 @@ import { layout, esc, fmtDate, statusBadge, priorityBadge, illustratedEmptyState
 import { requirePage } from '../middleware.js';
 import { db, todayInBangkok } from '../db.js';
 import { canUserSeeDocument } from '../services/workflow.js';
+import { getBackupStatus } from '../services/dbBackup.js';
 
 // รวมงานที่มอบหมายให้ตรงๆ + งานที่มีคนมอบหมายให้เรารักษาการแทน (ยัง active วันนี้) เข้าเป็นเงื่อนไขเดียว —
 // ใช้ซ้ำได้ทั้งตัวนับ KPI, การ์ด "งานของฉัน" ในแดชบอร์ด, และหน้า /tasks
@@ -90,8 +91,28 @@ router.get('/', requirePage((ctx) => {
     </div>`;
   }
 
+  // แถบเตือนเมื่อการสำรองข้อมูลขึ้น Google Drive มีปัญหา — บนโฮสต์ที่ดิสก์ถูกล้างทุกครั้งที่ deploy
+  // การสำรองคือสิ่งเดียวที่กันทะเบียนหนังสือทั้งเล่มหาย ถ้ามันพังต้องรู้ทันที ไม่ใช่ไปรู้ตอนข้อมูลหายแล้ว
+  // (เคสจริงที่ต้องกัน: token ของ Google หมดอายุ แล้วการสำรองหยุดเงียบๆ โดยมีแค่บรรทัดใน log)
+  // แสดงเฉพาะแอดมิน/ธุรการ เพราะเป็นกลุ่มที่แก้ไขได้จริง — ครูทั่วไปเห็นแล้วทำอะไรไม่ได้ มีแต่ตกใจเปล่า
+  const canFixBackup = user.roleCodes.some((r) => ['admin', 'registrar'].includes(r));
+  const backup = canFixBackup ? getBackupStatus() : null;
+  const backupAlert = backup && backup.state === 'warn' ? `
+    <div class="alert alert-danger">
+      <strong>⚠️ ข้อมูลกำลังไม่ถูกสำรองขึ้น Google Drive</strong><br/>
+      ${backup.lastOkAt
+        ? `สำรองสำเร็จครั้งล่าสุดเมื่อ ${esc(fmtDate(new Date(backup.lastOkAt).toISOString()))}`
+        : 'ยังสำรองไม่สำเร็จเลยสักครั้งตั้งแต่เปิดระบบ'}
+      ${backup.lastError ? `<br/><span class="text-muted">สาเหตุ: ${esc(backup.lastError.message)}</span>` : ''}
+      <div style="margin-top:.5rem">
+        ถ้าเซิร์ฟเวอร์ถูก deploy ใหม่ตอนนี้ <strong>ข้อมูลที่บันทึกไว้จะหายทั้งหมด</strong> —
+        กรุณาไปที่ <a href="/admin/google-drive">เชื่อมต่อ Google Drive</a> เพื่อเชื่อมต่อบัญชีใหม่
+      </div>
+    </div>` : '';
+
   const greeting = timeGreeting();
   const content = `
+    ${backupAlert}
     ${ctx.query.warn ? `<div class="alert alert-warning">⚠️ ${esc(ctx.query.warn)}</div>` : ''}
     <div id="installHint" class="card" hidden style="border-color:var(--primary)">
       <div class="card-header">

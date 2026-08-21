@@ -87,11 +87,13 @@ export function canUserSeeDocument(user, doc) {
     const grant = db.prepare(`SELECT 1 FROM document_access_grants WHERE document_id = ? AND (user_id = ? OR department_id = ?)`).get(doc.id, user.id, user.department_id);
     return !!grant;
   }
-  if (doc.department_id === user.department_id) return true;
-  if (doc.created_by === user.id) return true;
-  const wasAssignee = db.prepare(`SELECT 1 FROM workflow_steps WHERE document_id = ? AND assignee_id = ?`).get(doc.id, user.id);
-  if (wasAssignee) return true;
-  return hasActiveDelegateStep(doc.id, user.id);
+  // หนังสือทั่วไป (ชั้นความลับ "ปกติ"/"ภายใน") — บุคลากรทุกคนที่ล็อกอินแล้วเปิดอ่านและดาวน์โหลด PDF ได้
+  // ตามที่โรงเรียนขอ: หนังสือราชการส่วนใหญ่เป็นเรื่องที่ครูทุกคนต้องรับรู้อยู่แล้ว (ประกาศ ระเบียบ
+  // กำหนดการ) การจำกัดตามฝ่ายทำให้ครูเปิดหนังสือของฝ่ายอื่นไม่ได้ทั้งที่ควรอ่านได้
+  //
+  // ชั้นความลับ "ลับ"/"ลับมาก" ยังถูกจำกัดตามเดิม (เงื่อนไขด้านบน) — เป็นคนละเรื่องกัน และเป็นเหตุผล
+  // ที่มีช่องชั้นความลับให้เลือกตั้งแต่แรก ถ้าเปิดให้ทุกคนเห็นหมดรวมชั้นความลับด้วย ช่องนั้นจะไม่มีความหมาย
+  return true;
 }
 
 export function getWorkflowSteps(documentId) {
