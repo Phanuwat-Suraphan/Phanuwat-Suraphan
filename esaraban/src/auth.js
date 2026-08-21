@@ -66,6 +66,18 @@ export function logout(sessionId, userId, ip, userAgent) {
   audit({ userId, action: 'logout', ip, detail: { userAgent } });
 }
 
+/**
+ * ตัดเซสชันอื่นๆ ของผู้ใช้คนนี้ทิ้งทั้งหมด เหลือไว้แต่เครื่องที่กำลังใช้อยู่
+ *
+ * เหตุผลที่ต้องมี: คนเปลี่ยนรหัสผ่านเพราะสงสัยว่ารหัสรั่ว (เผลอเปิดค้างที่เครื่องส่วนกลาง มีคนเห็นตอนพิมพ์)
+ * ถ้าไม่ตัดเซสชันเดิม คนที่ถือคุกกี้อยู่ยังใช้งานต่อได้อีกถึง 8 ชั่วโมงตามอายุเซสชัน ทั้งที่รหัสผ่านเปลี่ยนไปแล้ว
+ * — เท่ากับการเปลี่ยนรหัสผ่านไม่ได้แก้ปัญหาที่ตั้งใจจะแก้เลย (ทดสอบกับระบบจริงแล้วว่าเซสชันเดิมยังเปิดหน้าได้)
+ */
+export function revokeOtherSessions(userId, keepSessionId) {
+  const result = db.prepare('DELETE FROM sessions WHERE user_id = ? AND id != ?').run(userId, keepSessionId || '');
+  return Number(result.changes || 0);
+}
+
 export function getSessionUser(cookieHeader) {
   const raw = parseCookie(cookieHeader, SESSION_COOKIE);
   const sessionId = unsign(raw);
@@ -76,7 +88,9 @@ export function getSessionUser(cookieHeader) {
     db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
     return null;
   }
-  const user = db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(session.user_id);
+  // ต้องเช็ค status ด้วย ไม่ใช่แค่ deleted_at — บัญชีที่ถูกระงับ (เช่น ครูที่ย้ายออกไปแล้ว) ต้องใช้งาน
+  // ไม่ได้ทันที ไม่ใช่ใช้ต่อได้จนกว่าเซสชันจะหมดอายุเอง (login() กันไว้แล้ว แต่เซสชันที่เปิดค้างอยู่รอดมาได้)
+  const user = db.prepare("SELECT * FROM users WHERE id = ? AND deleted_at IS NULL AND status = 'active'").get(session.user_id);
   if (!user) return null;
   const roles = getUserRoles(user.id);
   return { ...user, roles, roleCodes: roles.map((r) => r.name), sessionId };

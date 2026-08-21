@@ -2,6 +2,7 @@ import { router, html, json } from '../router.js';
 import { layout, esc, fmtDate, avatarContent, parseUserAgent } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, nowIso, hashSecret, verifySecret, audit } from '../db.js';
+import { revokeOtherSessions } from '../auth.js';
 
 // อวตารอิโมจิให้เลือก (UX Bible Part 21 §8) — คัดเฉพาะที่เหมาะกับบุคลากรโรงเรียน
 const AVATAR_EMOJIS = ['👩‍🏫', '👨‍🏫', '🧑‍🏫', '👩‍💼', '👨‍💼', '🧑‍💼', '🎓', '📚', '🦉', '🐱', '🐶', '🦊', '🐰', '🐢', '🐼', '🌿', '⭐', '😊'];
@@ -166,7 +167,7 @@ router.get('/profile', requirePage((ctx) => {
             var newPassword = document.getElementById('newPassword').value;
             fetch('/profile/password', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({currentPassword, newPassword})})
               .then(r => r.json().then(d => ({ok:r.ok,d})))
-              .then(({ok,d}) => { if(!ok) throw new Error(d.error); toast('เปลี่ยนรหัสผ่านสำเร็จ','success'); e.target.reset(); })
+              .then(({ok,d}) => { if(!ok) throw new Error(d.error); toast(d.message || 'เปลี่ยนรหัสผ่านสำเร็จ','success'); e.target.reset(); })
               .catch(e => toast(e.message, 'danger'));
           });
           document.getElementById('pinForm').addEventListener('submit', function(e){
@@ -250,8 +251,16 @@ router.post('/profile/password', requireApi(async (ctx) => {
   const row = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(ctx.user.id);
   if (!verifySecret(currentPassword, row.password_hash)) return json(ctx, 401, { error: 'รหัสผ่านปัจจุบันไม่ถูกต้อง' });
   db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').run(hashSecret(newPassword), nowIso(), ctx.user.id);
-  audit({ userId: ctx.user.id, action: 'password_changed', tableName: 'users', recordId: ctx.user.id });
-  json(ctx, 200, { ok: true });
+  // เตะเครื่องอื่นที่ยังล็อกอินค้างอยู่ออกทั้งหมด (เหลือเครื่องนี้ไว้) — คนเปลี่ยนรหัสผ่านเพราะกลัวรหัสรั่ว
+  // ถ้าเซสชันเดิมยังใช้ได้ต่ออีก 8 ชั่วโมง การเปลี่ยนรหัสก็ไม่ได้ช่วยอะไร
+  const revoked = revokeOtherSessions(ctx.user.id, ctx.user.sessionId);
+  audit({ userId: ctx.user.id, action: 'password_changed', tableName: 'users', recordId: ctx.user.id, detail: { revokedSessions: revoked } });
+  json(ctx, 200, {
+    ok: true,
+    message: revoked > 0
+      ? `เปลี่ยนรหัสผ่านเรียบร้อย และออกจากระบบให้แล้วในอีก ${revoked} เครื่องที่ยังเปิดค้างอยู่`
+      : 'เปลี่ยนรหัสผ่านเรียบร้อยแล้ว',
+  });
 }));
 
 const MAX_SIGNATURE_BYTES = 1024 * 1024; // 1MB

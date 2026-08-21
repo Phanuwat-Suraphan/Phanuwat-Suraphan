@@ -12,7 +12,7 @@ process.env.DB_PATH = tmpDb;
 process.env.SESSION_SECRET = 'test-secret-not-for-production';
 
 const { db, computeRetentionUntil, beYear, todayInBangkok } = await import('../src/db.js');
-const { login } = await import('../src/auth.js');
+const { login, getSessionUser, revokeOtherSessions } = await import('../src/auth.js');
 const { contentDispositionHeader } = await import('../src/router.js');
 const { daysUntil } = await import('../src/render.js');
 const {
@@ -543,6 +543,45 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
 // ชื่อไฟล์ภาษาไทยเป็นเรื่องปกติที่โรงเรียนไทย แต่หัว HTTP ของ Node รับได้เฉพาะไบต์ Latin-1 —
 // ถ้าเอาชื่อไทยไปต่อใส่ Content-Disposition ตรงๆ Node จะโยน ERR_INVALID_CHAR ตอบ 500 และผู้ใช้
 // โหลดไฟล์ไม่ได้เลย (ทดสอบกับระบบจริงแล้วว่าไฟล์แนบของประกาศชื่อ "ประกาศรับสมัครครู.pdf" ได้ 500)
+describe('เซสชัน: เปลี่ยนรหัสผ่าน/ระงับบัญชี ต้องมีผลกับเครื่องที่เปิดค้างอยู่ทันที', () => {
+  const cookieOf = (signed) => `esaraban_sid=${encodeURIComponent(signed)}`;
+
+  function twoSessions(code, pass) {
+    const a = login(code, pass, '127.0.0.1', 'เครื่อง ก');
+    const b = login(code, pass, '127.0.0.1', 'เครื่อง ข');
+    assert.ok(a.ok && b.ok, 'ต้องล็อกอินได้ทั้งสองเครื่องก่อน');
+    return [a, b];
+  }
+
+  // คนเปลี่ยนรหัสผ่านเพราะกลัวรหัสรั่ว ถ้าเซสชันเดิมยังใช้ได้ต่ออีก 8 ชั่วโมงตามอายุคุกกี้
+  // การเปลี่ยนรหัสก็ไม่ได้แก้ปัญหาที่ตั้งใจจะแก้ (ทดสอบกับระบบจริงแล้วว่าเซสชันเดิมยังเปิดหน้าได้จริง)
+  test('เปลี่ยนรหัสผ่านแล้ว เครื่องอื่นถูกเตะออก แต่เครื่องที่กำลังใช้อยู่ยังอยู่', () => {
+    const [other, current] = twoSessions('vicedir01', 'Vice@2569');
+    assert.ok(getSessionUser(cookieOf(other.cookie)), 'ก่อนเปลี่ยนรหัส เครื่องอื่นต้องยังใช้ได้');
+
+    const me = getSessionUser(cookieOf(current.cookie));
+    const revoked = revokeOtherSessions(me.id, me.sessionId);
+
+    assert.ok(revoked >= 1, 'ต้องตัดเซสชันอื่นออกอย่างน้อยหนึ่งเครื่อง');
+    assert.equal(getSessionUser(cookieOf(other.cookie)), null, 'เครื่องอื่นต้องใช้ไม่ได้แล้ว');
+    assert.ok(getSessionUser(cookieOf(current.cookie)), 'เครื่องที่กำลังใช้อยู่ต้องไม่ถูกเตะออกไปด้วย');
+  });
+
+  // ครูที่ย้ายออกไปแล้ว/ถูกระงับบัญชี ต้องใช้งานไม่ได้ทันที ไม่ใช่ใช้ต่อได้จนเซสชันหมดอายุเอง
+  // login() กันไว้อยู่แล้ว แต่เซสชันที่เปิดค้างอยู่ก่อนหน้านั้นรอดมาได้
+  test('บัญชีที่ถูกระงับ ใช้เซสชันเดิมต่อไม่ได้', () => {
+    const s = login('head_acad', 'Head@2569', '127.0.0.1', 'เครื่องเดิม');
+    assert.ok(s.ok, 'ต้องล็อกอินได้ก่อน');
+    assert.ok(getSessionUser(cookieOf(s.cookie)), 'ตอนบัญชียังปกติต้องใช้ได้');
+    try {
+      db.prepare("UPDATE users SET status = 'suspended' WHERE employee_code = 'head_acad'").run();
+      assert.equal(getSessionUser(cookieOf(s.cookie)), null, 'บัญชีถูกระงับแล้วต้องใช้เซสชันเดิมต่อไม่ได้');
+    } finally {
+      db.prepare("UPDATE users SET status = 'active' WHERE employee_code = 'head_acad'").run();
+    }
+  });
+});
+
 describe('ดาวน์โหลดไฟล์: ชื่อไฟล์ภาษาไทยต้องไม่ทำให้หัว HTTP พัง', () => {
   test('contentDispositionHeader ให้ค่าที่ใส่ในหัว HTTP ได้จริง', () => {
     const header = contentDispositionHeader('ประกาศรับสมัครครู.pdf');
