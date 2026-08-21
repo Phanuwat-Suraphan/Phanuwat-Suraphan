@@ -79,8 +79,10 @@ router.get('/daily-summary', requirePage((ctx) => {
                 var v = document.getElementById('summaryDate').value;
                 var out = document.getElementById('summaryDateThai');
                 if (!v) { out.textContent = ''; return; }
-                out.textContent = 'วันที่เลือกไว้: ' + new Date(v + 'T00:00:00')
-                  .toLocaleDateString('th-TH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+                // อ่านเป็นวันที่ตามปฏิทินตรงๆ (parse เป็น UTC แล้ว format เป็น UTC) ไม่ให้โซนเวลา
+                // ของเครื่องผู้ใช้ทำให้วันเลื่อนไปหนึ่งวัน
+                out.textContent = 'วันที่เลือกไว้: ' + new Date(v + 'T00:00:00Z')
+                  .toLocaleDateString('th-TH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
               }
               echoThaiDate();
             </script>

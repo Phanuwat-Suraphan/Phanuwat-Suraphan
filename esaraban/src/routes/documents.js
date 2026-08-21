@@ -1,5 +1,5 @@
 import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, priorityBadge, secretBadge, statusBadge, emptyState, LABELS } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, stampDateThai, stampTimeThai, priorityBadge, secretBadge, statusBadge, emptyState, LABELS } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, nowIso, audit, RETENTION_LABEL } from '../db.js';
 import {
@@ -792,8 +792,8 @@ router.get('/documents/:id', requirePage((ctx) => {
             var STAMP_HTML = '<div class="doc-stamp"' + (STAMP_CAN_EDIT ? ' id="docStamp" style="cursor:move;left:' : ' style="left:') + STAMP_X + '%;top:' + STAMP_Y + '%">' +
               '<div class="stamp-title">${esc(SCHOOL_NAME)}</div>' +
               '<div>เลขรับ......${esc(doc.doc_number_display)}......</div>' +
-              '<div>วันที่......${new Date(doc.created_at).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' })}......</div>' +
-              '<div>เวลา......${new Date(doc.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}......</div>' +
+              '<div>วันที่......${stampDateThai(new Date(doc.created_at))}......</div>' +
+              '<div>เวลา......${stampTimeThai(new Date(doc.created_at))}......</div>' +
             '</div>';
             // เครื่องหมาย "ทราบ" + ลายเซ็นของผู้ใช้คนปัจจุบัน (ถ้ามีลายเซ็นบันทึกไว้ในโปรไฟล์) — ลากวาง
             // ตำแหน่งเองได้ก่อนกดปุ่มอนุมัติ/รับทราบ/ไม่อนุมัติ ตำแหน่งจะถูกส่งไปพร้อมคำขอนั้นเลย ไม่บันทึก
@@ -903,7 +903,7 @@ router.get('/documents/:id', requirePage((ctx) => {
               // เว้นว่างได้ถ้าไม่ต้องการระบุ (จะแสดงเป็นบรรทัดว่างบนตราให้เขียนเติมเองทีหลังได้)
               var num = prompt('เลขรับที่จะแสดงบนตราประทับ (แก้ไขได้ถ้าต้องการ)', ${JSON.stringify(doc.doc_number_display)});
               if (num === null) return;
-              var defaultTime = ${JSON.stringify(new Date(doc.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }))};
+              var defaultTime = ${JSON.stringify(stampTimeThai(new Date(doc.created_at)))};
               var time = prompt('เวลาที่จะแสดงบนตราประทับ (เว้นว่างได้ถ้าไม่ต้องการระบุเวลา)', defaultTime);
               if (time === null) return;
               if (!confirm('ยืนยันประทับตรา "ลงรับ" ลงในไฟล์ PDF จริง ณ ตำแหน่งที่ลากไว้ล่าสุด?\\nระบบจะสร้างไฟล์ใหม่ที่มีตราประทับ โดยเก็บไฟล์ต้นฉบับที่ไม่มีตราไว้เหมือนเดิม')) return;
@@ -1218,7 +1218,7 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser,
       prefix: actorUser.prefix,
       firstName: actorUser.first_name,
       lastName: actorUser.last_name,
-      dateThaiLong: new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }),
+      dateThaiLong: stampDateThai(),
       xPercent: markX ?? 8,
       yPercent: markY ?? markStackYPercent(documentId, stepId),
       actingForLabel: actingForLabel(stepId, actorUser),
@@ -1260,7 +1260,7 @@ async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser
       position: actorUser.position,
       titleMode,
       actingForLabel: titleMode === 'acting_director' ? forLabel : null,
-      dateThaiLong: new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }),
+      dateThaiLong: stampDateThai(),
       xPercent: decisionX,
       yPercent: decisionY ?? decisionBoxStackYPercent(documentId, stepId, assigneeId),
     });
@@ -1289,12 +1289,12 @@ router.post('/documents/:id/attachments/:attId/apply-stamp', requireApi(async (c
   // เลขรับ/เวลาที่จะแสดงบนตรา แก้ไขได้จากที่ธุรการพิมพ์ตอนกดยืนยัน (ดู applyStamp ฝั่งเว็บ) — เลขรับถ้าเว้น
   // ว่างไว้ใช้เลขที่เอกสารตามปกติ ส่วนเวลาเว้นว่างได้จริง (แสดงเป็นบรรทัดว่างบนตราให้เขียนเติมเองทีหลังได้)
   const docNumberDisplay = (typeof ctx.body.docNumberOverride === 'string' && ctx.body.docNumberOverride.trim()) || doc.doc_number_display;
-  const timeStr = typeof ctx.body.timeOverride === 'string' ? ctx.body.timeOverride.trim() : now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+  const timeStr = typeof ctx.body.timeOverride === 'string' ? ctx.body.timeOverride.trim() : stampTimeThai(now);
   const stampedBuffer = await stampPdf({
     originalBuffer,
     schoolName: SCHOOL_NAME,
     docNumberDisplay,
-    dateThaiLong: now.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }),
+    dateThaiLong: stampDateThai(now),
     timeStr,
     xPercent: doc.stamp_x,
     yPercent: doc.stamp_y,

@@ -10,10 +10,25 @@ export function esc(str) {
     .replace(/'/g, '&#39;');
 }
 
+// เวลาทุกจุดที่แสดงให้ผู้ใช้เห็นต้องระบุ timeZone ตรงๆ ห้ามพึ่งเวลาของเครื่องเซิร์ฟเวอร์ — เครื่องบนคลาวด์
+// (ทั้ง Render และ Oracle Cloud) ตั้งเป็น UTC มาจากโรงงาน ถ้าไม่ระบุ เวลาที่แสดงจะช้ากว่าความจริง
+// 7 ชั่วโมงทั้งระบบ รวมถึง "เวลา" ที่ประทับลงตรารับในไฟล์ PDF ของเอกสารราชการด้วย
+// (บ่ายสามครึ่งจะถูกประทับเป็น 08:30 บนหนังสือจริง)
+export const SCHOOL_TZ = 'Asia/Bangkok';
+
+// ค่าที่เป็น "วันที่ล้วน" (YYYY-MM-DD เช่น วันครบกำหนด) ไม่ใช่จุดเวลา — ต้องอ่านเป็นวันที่ตามปฏิทินตรงๆ
+// ไม่ผ่านการแปลงโซนเวลา ไม่งั้นวันจะเลื่อนไปหนึ่งวันบนเครื่องที่ตั้งโซนเวลาต่างจากไทย
+function parseForDisplay(iso) {
+  const dateOnly = typeof iso === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(iso);
+  const d = new Date(dateOnly ? `${iso}T00:00:00Z` : iso);
+  return { d, tz: dateOnly ? 'UTC' : SCHOOL_TZ, ok: !Number.isNaN(d.getTime()) };
+}
+
 export function fmtDate(iso) {
   if (!iso) return '-';
-  const d = new Date(iso);
-  return d.toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' });
+  const { d, tz, ok } = parseForDisplay(iso);
+  if (!ok) return esc(iso);
+  return d.toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short', timeZone: tz });
 }
 
 // รูปแบบ "วัน เดือน ปี" ตามระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ พ.ศ. 2526 ภาคผนวก 2 —
@@ -21,8 +36,9 @@ export function fmtDate(iso) {
 // + ปี พ.ศ. ไม่ย่อเดือน ไม่มีเวลา) ใช้เฉพาะบล็อกลงนามที่ต้องเป็นทางการ ส่วนอื่นยังใช้ fmtDate ตามเดิม
 export function fmtThaiDateLong(iso) {
   if (!iso) return '-';
-  const d = new Date(iso);
-  return d.toLocaleString('th-TH', { day: 'numeric', month: 'long', year: 'numeric' });
+  const { d, tz, ok } = parseForDisplay(iso);
+  if (!ok) return esc(iso);
+  return d.toLocaleDateString('th-TH', { day: 'numeric', month: 'long', year: 'numeric', timeZone: tz });
 }
 
 // วันที่แบบสั้นอ่านง่าย "25 ส.ค. 2569" — ใช้กับตารางและหน้ารายละเอียดทั่วไป ที่ต้องการเห็นวันเร็วๆ
@@ -30,9 +46,21 @@ export function fmtThaiDateLong(iso) {
 //  อ่านแล้วต้องแปลงในหัวเองทุกครั้ง หน้าอื่นๆ ในระบบก็แสดงเป็น พ.ศ. อยู่แล้ว จะสับสนกันเอง)
 export function fmtThaiDateShort(iso) {
   if (!iso) return '-';
-  const d = new Date(iso.length === 10 ? `${iso}T00:00:00` : iso);
-  if (Number.isNaN(d.getTime())) return esc(iso);
-  return d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' });
+  const { d, tz, ok } = parseForDisplay(iso);
+  if (!ok) return esc(iso);
+  return d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric', timeZone: tz });
+}
+
+// วันที่/เวลาที่จะประทับลงตราในไฟล์ PDF จริง — ต้องเป็นเวลาไทยเสมอ เพราะเป็นเวลาที่ปรากฏบนหนังสือราชการ
+export function stampDateThai(date = new Date()) {
+  return date.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric', timeZone: SCHOOL_TZ });
+}
+export function stampTimeThai(date = new Date()) {
+  return date.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: SCHOOL_TZ });
+}
+// ชั่วโมงปัจจุบันตามเวลาไทย (0-23) — ใช้เลือกคำทักทายให้ตรงกับเวลาจริงของโรงเรียน
+export function bangkokHour(date = new Date()) {
+  return Number(date.toLocaleString('en-GB', { hour: '2-digit', hour12: false, timeZone: SCHOOL_TZ }));
 }
 
 // จำนวนวันจากวันนี้ถึงวันครบกำหนด — ติดลบแปลว่าเลยกำหนดมาแล้ว

@@ -58,6 +58,13 @@ sudo netfilter-persistent save
 of the same iptables and won't conflict as long as you `ufw allow 'Nginx Full'` there too. Both
 layers — Security List and host firewall — must allow the traffic.)
 
+## 3.5 Note on the Ampere (Arm) shape
+
+The A1 shape is arm64, not x86. Everything the app needs is packaged for arm64 on Ubuntu 24.04 —
+Node.js 22 from NodeSource, `tesseract-ocr`, `poppler-utils`, `chromium`, `qpdf` — so `DEPLOY.md`
+works unchanged. Nothing else in the app is architecture-specific: it has no npm dependencies and
+therefore no native modules to compile.
+
 ## 4. Continue with the generic guide
 
 From here on it's identical to a regular VPS — follow **`DEPLOY.md` from step 2 onward**
@@ -81,3 +88,24 @@ your IP — no signup needed:
 Use that as the `server_name` in `nginx.conf` and the `-d` value for `certbot --nginx`. It
 resolves to your server automatically, so Let's Encrypt's validation works normally. Swap in a
 real subdomain later without changing anything else.
+
+## ย้ายมาจาก Render
+
+ถ้าเคยรันบน Render มาก่อน โดยปกติ**ไม่มีอะไรต้องย้าย** — Render แผนฟรีไม่มีดิสก์ถาวร ฐานข้อมูลกับไฟล์แนบ
+จะถูกล้างทุกครั้งที่ deploy ใหม่หรือเซิร์ฟเวอร์หลับแล้วตื่น ของที่ยังอยู่จึงมีแค่ที่เพิ่งใส่เข้าไปหลัง deploy
+ครั้งล่าสุดเท่านั้น ตั้งต้นใหม่บนเครื่องนี้ได้เลย
+
+ถ้ามีข้อมูลค้างอยู่บน Render ที่ยังอยากเก็บ ให้ดาวน์โหลดออกมาก่อน **redeploy ครั้งถัดไป** (หลังจากนั้นจะหาย)
+โดยเปิด Shell ของ service บน Render แล้วคัดลอก `data/esaraban.db` กับโฟลเดอร์ `uploads/` ออกมา
+จากนั้นบนเครื่อง Oracle:
+
+```bash
+sudo systemctl stop esaraban
+sudo -u esaraban cp esaraban.db /opt/esaraban/data/esaraban.db
+sudo -u esaraban cp -r uploads/. /opt/esaraban/uploads/
+sudo systemctl start esaraban
+```
+
+โครงสร้างฐานข้อมูลอัปเกรดตัวเองตอนเริ่มระบบ (ดู `migrate()` ใน `src/db.js`) ไฟล์จากเวอร์ชันเก่าจึงใช้ต่อได้เลย
+
+หลังย้ายเสร็จ **ปิด service บน Render ทิ้ง** เพื่อไม่ให้มีสองระบบที่ข้อมูลคนละชุดเปิดอยู่พร้อมกัน แล้วครูเข้าผิดที่

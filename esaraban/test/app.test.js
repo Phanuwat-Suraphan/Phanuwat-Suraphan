@@ -14,7 +14,7 @@ process.env.SESSION_SECRET = 'test-secret-not-for-production';
 const { db, computeRetentionUntil, beYear, todayInBangkok, hashSecret, verifySecret } = await import('../src/db.js');
 const { login, getSessionUser, revokeOtherSessions, verifyPin } = await import('../src/auth.js');
 const { contentDispositionHeader } = await import('../src/router.js');
-const { daysUntil } = await import('../src/render.js');
+const { daysUntil, fmtDate, fmtThaiDateShort, fmtThaiDateLong, stampDateThai, stampTimeThai, bangkokHour } = await import('../src/render.js');
 const {
   createDocument, getDocument, canUserSeeDocument, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep, voidDocument, archiveDocument,
@@ -819,6 +819,53 @@ describe('เวลา: "วันนี้" ต้องคิดตามเ�
     } finally {
       globalThis.Date = RealDate;
     }
+  });
+
+  // เครื่องบนคลาวด์ (ทั้ง Render และ Oracle Cloud) ตั้งเป็น UTC มาจากโรงงาน ถ้า format วันเวลาโดยไม่ระบุ
+  // timeZone เวลาที่ผู้ใช้เห็นจะช้ากว่าความจริง 7 ชั่วโมงทั้งระบบ — รวมถึง "เวลา" ที่ประทับลงตรารับ
+  // ในไฟล์ PDF ของหนังสือราชการ (บ่ายสามครึ่งกลายเป็น 08:30 บนเอกสารจริง)
+  test('เวลาที่แสดงและที่ประทับลงเอกสาร เป็นเวลาไทยเสมอ ไม่ขึ้นกับโซนเวลาเครื่อง', () => {
+    const bangkokAfternoon = new Date('2026-08-21T15:30:00+07:00');
+    assert.match(fmtDate(bangkokAfternoon.toISOString()), /15:30/, 'เวลาที่แสดงต้องเป็นเวลาไทย');
+    assert.equal(stampTimeThai(bangkokAfternoon), '15:30', 'เวลาบนตราประทับต้องเป็นเวลาไทย');
+    assert.match(stampDateThai(bangkokAfternoon), /21/, 'วันที่บนตราประทับต้องเป็นวันไทย');
+    assert.equal(bangkokHour(bangkokAfternoon), 15, 'คำทักทายต้องอิงชั่วโมงตามเวลาไทย');
+
+    // ช่วงหัวค่ำของไทยยังเป็น "วันเดิม" ทั้งที่ UTC ข้ามไปวันใหม่แล้ว
+    const lateEvening = new Date('2026-08-21T23:30:00+07:00');
+    assert.equal(lateEvening.toISOString().slice(0, 10), '2026-08-21');
+    assert.equal(bangkokHour(lateEvening), 23);
+    // และเช้ามืดของไทยยังเป็นวันใหม่แล้ว ทั้งที่ UTC ยังเป็นเมื่อวาน
+    const earlyMorning = new Date('2026-08-22T06:00:00+07:00');
+    assert.equal(earlyMorning.toISOString().slice(0, 10), '2026-08-21', 'ยืนยันว่า UTC ยังเป็นเมื่อวานจริง');
+    assert.match(fmtThaiDateShort(earlyMorning.toISOString()), /22/, 'ต้องแสดงเป็นวันที่ 22 ตามเวลาไทย');
+  });
+
+  // ค่าที่เป็น "วันที่ล้วน" เช่น วันครบกำหนด ไม่ใช่จุดเวลา ห้ามถูกแปลงโซนเวลาจนวันเลื่อน
+  test('วันที่ล้วน (YYYY-MM-DD) แสดงตรงตามที่บันทึกไว้เสมอ ไม่เลื่อนวัน', () => {
+    assert.match(fmtThaiDateShort('2026-08-25'), /25/);
+    assert.match(fmtThaiDateLong('2026-01-01'), /1 มกราคม/);
+    assert.match(fmtThaiDateLong('2026-12-31'), /31 ธันวาคม/);
+  });
+
+  test('ไม่มีที่ไหน format วันเวลาโดยไม่ระบุ timeZone (นอกจาก helper กลางใน render.js)', () => {
+    const offenders = [];
+    const walk = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) { walk(full); continue; }
+        // render.js เป็นที่รวม helper และระบุ timeZone ไว้ในตัวแล้ว
+        if (!e.name.endsWith('.js') || e.name === 'render.js') continue;
+        fs.readFileSync(full, 'utf8').split('\n').forEach((line) => {
+          // สคริปต์ที่รันในเบราว์เซอร์ผู้ใช้ใช้เวลาเครื่องผู้ใช้ได้ตามปกติ (ครูอยู่ไทยอยู่แล้ว)
+          if (/toLocale(String|DateString|TimeString)\(/.test(line) && !line.includes('timeZone') && !line.includes('en-CA')) {
+            offenders.push(`${e.name}: ${line.trim().slice(0, 90)}`);
+          }
+        });
+      }
+    };
+    walk(new URL('../src/', import.meta.url).pathname);
+    assert.deepEqual(offenders, [], `format วันเวลาโดยไม่ระบุโซนเวลา:\n  ${offenders.join('\n  ')}`);
   });
 
   test('ไม่มีที่ไหนใช้ date(\'now\') ของ SQLite อีก (นั่นคือ UTC เสมอ แก้ด้วย TZ ไม่ได้)', () => {

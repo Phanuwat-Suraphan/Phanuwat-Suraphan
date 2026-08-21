@@ -1,5 +1,5 @@
 import { router, html } from '../router.js';
-import { layout, esc, fmtDate, statusBadge, priorityBadge, illustratedEmptyState, daysUntil, dueCell } from '../render.js';
+import { layout, esc, fmtDate, statusBadge, priorityBadge, illustratedEmptyState, daysUntil, dueCell, bangkokHour } from '../render.js';
 import { requirePage } from '../middleware.js';
 import { db, todayInBangkok } from '../db.js';
 import { canUserSeeDocument } from '../services/workflow.js';
@@ -24,10 +24,10 @@ function kpi(value, label, emoji, tone, href) {
     : `<div class="kpi-card">${inner}</div>`;
 }
 
-// ทักทายตามช่วงเวลา (UX Bible Part 21 §1) — ใช้เวลาของเซิร์ฟเวอร์ตรงๆ ไม่ผูก timezone ผู้ใช้
-// เพราะโรงเรียนเดียว ผู้ใช้ทั้งหมดอยู่โซนเวลาเดียวกับเซิร์ฟเวอร์อยู่แล้ว
+// ทักทายตามช่วงเวลา — ต้องใช้เวลาไทย ไม่ใช่เวลาเครื่องเซิร์ฟเวอร์ (ซึ่งเป็น UTC บนคลาวด์)
+// ไม่งั้นตอน 8 โมงเช้าที่โรงเรียนจะขึ้นว่า 'ทำงานดึกแล้วนะครับ'
 function timeGreeting() {
-  const hour = new Date().getHours();
+  const hour = bangkokHour();
   if (hour >= 5 && hour < 12) return { text: 'สวัสดีตอนเช้าครับ', emoji: '☀️' };
   if (hour >= 12 && hour < 17) return { text: 'สวัสดีตอนบ่ายครับ', emoji: '🌤️' };
   if (hour >= 17 && hour < 20) return { text: 'สวัสดีตอนเย็นครับ', emoji: '🌇' };
@@ -37,8 +37,10 @@ function timeGreeting() {
 router.get('/', requirePage((ctx) => {
   const user = ctx.user;
   const scope = { me: user.id, today: todayInBangkok() };
-  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-  const todayIso = todayStart.toISOString();
+  // เที่ยงคืนของ "วันนี้" ตามเวลาไทย แปลงเป็นจุดเวลา UTC เพื่อเทียบกับ created_at ที่เก็บเป็น ISO —
+  // ถ้าใช้เที่ยงคืนของเครื่องเซิร์ฟเวอร์ (UTC) ตัวเลข "วันนี้" จะเริ่มนับตอน 7 โมงเช้าเวลาไทย
+  // หนังสือที่ลงทะเบียนก่อน 7 โมงจะไม่ถูกนับ ส่วนของเมื่อวานตอนเย็นกลับถูกนับรวมเข้ามาแทน
+  const todayIso = new Date(`${todayInBangkok()}T00:00:00+07:00`).toISOString();
 
   const inToday = db.prepare(`SELECT COUNT(*) c FROM documents WHERE direction='incoming' AND created_at >= ? AND deleted_at IS NULL`).get(todayIso).c;
   const outToday = db.prepare(`SELECT COUNT(*) c FROM documents WHERE direction='outgoing' AND created_at >= ? AND deleted_at IS NULL`).get(todayIso).c;

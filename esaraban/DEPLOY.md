@@ -106,7 +106,6 @@ Your site is now live at `https://esaraban.yourschool.ac.th`.
 ## 6. Backups
 
 ```bash
-sudo cp /opt/esaraban/deploy/backup.sh /opt/esaraban/deploy/backup.sh
 chmod +x /opt/esaraban/deploy/backup.sh
 crontab -e
 # add: 0 0 * * * /opt/esaraban/deploy/backup.sh >> /var/log/esaraban-backup.log 2>&1
@@ -124,14 +123,16 @@ This is still the MVP described in `README.md` — do these before treating it a
       create real ones via `/admin/users`)
 - [ ] Set a real `SESSION_SECRET` (step 4) — never ship the code's dev default
 - [ ] Confirm firewall only exposes 80/443/22 (`sudo ufw status`)
-- [ ] Add login rate-limiting (Part 3 of the spec calls for 5 attempts / 15 min lockout — not
-      yet implemented; fail2ban on the Nginx access log is a stopgap, but an app-level limiter
-      is the real fix)
 - [ ] Add a virus scanner (ClamAV) in front of the upload path — not yet implemented
 - [ ] Test the restore path once (`sqlite3 data/esaraban.db ".restore backup.db"`) before you
       need it for real
 
 ## Updating after a git push
+
+The `--exclude` flags are the important part: `data/` (the register itself) and `uploads/` (the
+attached PDFs) live on the server's own disk and are **never** touched by an update. This is the
+whole difference from a free PaaS tier like Render, where every deploy resets the filesystem and
+takes the database and every uploaded document with it.
 
 ```bash
 su - esaraban
@@ -139,3 +140,13 @@ cd /tmp/repo && git pull
 sudo rsync -a --exclude=data --exclude=uploads /tmp/repo/esaraban/ /opt/esaraban/
 sudo systemctl restart esaraban
 ```
+
+Take a backup before an update that includes a schema migration, so there is a known-good copy
+to go back to: `/opt/esaraban/deploy/backup.sh`.
+
+## Server timezone
+
+Nothing to configure. The app never reads the machine's timezone — every date and time it shows,
+counts by, or stamps into a PDF is computed as Asia/Bangkok explicitly, and the test suite runs
+green under `TZ=UTC`, `TZ=Asia/Bangkok`, and deliberately wrong zones. Cloud images almost always
+default to UTC; leaving it that way is fine.
