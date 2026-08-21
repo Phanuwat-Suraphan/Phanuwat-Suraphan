@@ -1,3 +1,5 @@
+import { todayInBangkok } from './db.js';
+
 export function esc(str) {
   if (str === null || str === undefined) return '';
   return String(str)
@@ -36,7 +38,9 @@ export function fmtThaiDateShort(iso) {
 // จำนวนวันจากวันนี้ถึงวันครบกำหนด — ติดลบแปลว่าเลยกำหนดมาแล้ว
 export function daysUntil(dateStr) {
   if (!dateStr) return null;
-  const today = new Date(); today.setHours(0, 0, 0, 0);
+  // นับจาก "วันนี้ตามเวลาไทย" ไม่ใช่เวลาเครื่องเซิร์ฟเวอร์ (UTC) ไม่งั้นช่วงเช้ามืดของไทยจะบอกว่า
+  // เลยกำหนดไปแล้ว 1 วัน ทั้งที่ยังเป็นวันครบกำหนดพอดี — และตัวเลขจะไม่ตรงกับหน้าอื่นที่นับจาก SQL
+  const today = new Date(`${todayInBangkok()}T00:00:00`);
   const target = new Date(`${String(dateStr).slice(0, 10)}T00:00:00`);
   if (Number.isNaN(target.getTime())) return null;
   return Math.round((target - today) / 86400000);

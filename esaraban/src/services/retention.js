@@ -1,4 +1,4 @@
-import { db, uuid, nowIso, audit } from '../db.js';
+import { db, uuid, nowIso, audit, todayInBangkok } from '../db.js';
 import { isGoogleDriveEnabled, deleteFile as deleteDriveFile } from './googleDrive.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,13 +16,13 @@ export function listEligibleForDestruction() {
     SELECT d.*, dt.name as type_name, dep.name as dept_name FROM documents d
     JOIN document_types dt ON dt.id = d.doc_type_id JOIN departments dep ON dep.id = d.department_id
     WHERE d.deleted_at IS NULL AND d.status IN ('completed', 'archived', 'voided')
-      AND d.retention_until IS NOT NULL AND d.retention_until <= date('now')
+      AND d.retention_until IS NOT NULL AND d.retention_until <= :today
       AND NOT EXISTS (
         SELECT 1 FROM destruction_batch_items bi JOIN destruction_batches b ON b.id = bi.batch_id
         WHERE bi.document_id = d.id AND b.status = 'pending_approval'
       )
     ORDER BY d.retention_until ASC
-  `).all();
+  `).all({ today: todayInBangkok() });
 }
 
 export function listBatches() {

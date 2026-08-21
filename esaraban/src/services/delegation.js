@@ -1,14 +1,10 @@
-import { db, uuid, nowIso, audit } from '../db.js';
+import { db, uuid, nowIso, audit, todayInBangkok } from '../db.js';
 import { fmtThaiDateShort } from '../render.js';
 import { notifyUser } from './notify.js';
 
 // httpError คัดลอกไว้ในไฟล์นี้เอง (ไม่ import จาก workflow.js) — เหตุผลเดียวกับ googleDrive.js/ocr.js/pdfStamp.js
 export function httpError(statusCode, message) {
   return Object.assign(new Error(message), { statusCode });
-}
-
-function todayIso() {
-  return new Date().toISOString().slice(0, 10);
 }
 
 export function createDelegation({ delegatorId, delegateId, startDate, endDate, reason, leaveRequestId, createdBy }) {
@@ -37,7 +33,7 @@ export function createDelegation({ delegatorId, delegateId, startDate, endDate, 
 // คืนแถวการมอบหมายที่ยัง active สำหรับ delegatorId ณ วันที่ dateStr (ค่าเริ่มต้นคือวันนี้) — ถ้ามีมากกว่า
 // หนึ่งรายการซ้อนช่วงกัน ใช้รายการที่สร้างล่าสุด (ผู้ดูแล/ผู้มอบหมายแก้ไขล่าสุดควรมีผลเหนือกว่า)
 export function getActiveDelegateFor(delegatorId, dateStr) {
-  const d = dateStr || todayIso();
+  const d = dateStr || todayInBangkok();
   return db.prepare(`
     SELECT ud.*, u.first_name as delegate_first, u.last_name as delegate_last, u.prefix as delegate_prefix
     FROM user_delegations ud JOIN users u ON u.id = ud.delegate_id

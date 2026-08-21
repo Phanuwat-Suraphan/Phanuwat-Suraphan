@@ -18,6 +18,17 @@ export function nowIso() {
   return new Date().toISOString();
 }
 
+// "วันนี้" ต้องคิดตามเวลาประเทศไทยเสมอ ไม่ใช่เวลาของเครื่องเซิร์ฟเวอร์ — เครื่องบน Render รันเป็น UTC
+// ซึ่งช้ากว่าไทย 7 ชั่วโมง ดังนั้นช่วง 00:00-07:00 น. ตามเวลาไทย ทั้ง new Date() ของ JS และ date('now')
+// ของ SQLite จะยังคืนค่าเป็น "เมื่อวาน" อยู่ ผลคือ:
+//   - การมอบหมายรักษาการแทนที่เริ่ม "วันนี้" ยังไม่มีผลจนถึง 7 โมงเช้า
+//   - การมอบหมายที่หมดอายุเมื่อวาน ยังมีผลต่อไปจนถึง 7 โมงเช้าของวันถัดไป (ผู้รักษาการยังเซ็นแทนได้)
+//   - หนังสือที่เลยกำหนดเมื่อวาน ยังไม่ถูกนับว่าเกินกำหนด
+// ทุกที่ที่ต้องใช้ "วันนี้" ให้เรียกฟังก์ชันนี้แล้วส่งค่าเข้า SQL เป็นพารามิเตอร์ ห้ามใช้ date('now') ตรงๆ
+export function todayInBangkok() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' }); // en-CA ให้รูปแบบ YYYY-MM-DD
+}
+
 // Buddhist Era year (matches the school's numbering convention, e.g. 2569)
 export function beYear(date = new Date()) {
   return date.getFullYear() + 543;

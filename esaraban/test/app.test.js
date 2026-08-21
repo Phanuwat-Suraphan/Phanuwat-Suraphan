@@ -11,8 +11,9 @@ const tmpDb = path.join(os.tmpdir(), `esaraban-test-${Date.now()}-${Math.random(
 process.env.DB_PATH = tmpDb;
 process.env.SESSION_SECRET = 'test-secret-not-for-production';
 
-const { db, computeRetentionUntil, beYear } = await import('../src/db.js');
+const { db, computeRetentionUntil, beYear, todayInBangkok } = await import('../src/db.js');
 const { login } = await import('../src/auth.js');
+const { daysUntil } = await import('../src/render.js');
 const {
   createDocument, getDocument, canUserSeeDocument, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep, voidDocument, archiveDocument,
@@ -21,7 +22,9 @@ const {
 const { nextRunningNumber } = await import('../src/numbering.js');
 const { readWorkbook } = await import('../src/services/xlsx.js');
 const { parseUploadedWorkbook, looksLikeHeader } = await import('../src/services/dailySummaryParse.js');
-const { createLeaveRequest } = await import('../src/services/leave.js');
+const {
+  createLeaveRequest, approveLeaveRequest, rejectLeaveRequest, canSeeLeaveRequest, getLeaveRequest,
+} = await import('../src/services/leave.js');
 const { createDelegation } = await import('../src/services/delegation.js');
 const zlib = await import('node:zlib');
 
@@ -530,6 +533,103 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
       .run('https://evil.example.com/phish', `/leave/${leaveId}`);
     const after = (await openPage('/notifications', director)).body;
     assert.ok(!after.includes('evil.example.com'), 'ลิงก์ออกนอกระบบไม่ถูกกรองทิ้ง');
+  });
+});
+
+// เซิร์ฟเวอร์บน Render รันเป็น UTC ซึ่งช้ากว่าไทย 7 ชั่วโมง ช่วง 00:00-07:00 น. ตามเวลาไทยจึงยังเป็น
+// "เมื่อวาน" ในสายตาของทั้ง new Date() และ date('now') ของ SQLite — บั๊กนี้มองไม่เห็นเลยถ้าทดสอบตอน
+// กลางวัน จึงต้องมีเทสต์ที่จำลองเวลานั้นตรงๆ ไม่ใช่รอให้ไปเจอเองหน้างานตอนเช้ามืด
+describe('เวลา: "วันนี้" ต้องคิดตามเวลาไทยเสมอ ไม่ใช่เวลาเครื่องเซิร์ฟเวอร์', () => {
+  test('ตอนเช้ามืดของไทย ยังต้องได้วันที่ของวันนั้น ไม่ใช่เมื่อวาน', () => {
+    const RealDate = Date;
+    // 06:00 น. วันที่ 21 ส.ค. ที่กรุงเทพ = 23:00 UTC ของวันที่ 20 ส.ค.
+    const frozen = new RealDate('2026-08-21T06:00:00+07:00');
+    globalThis.Date = class extends RealDate {
+      constructor(...args) { return args.length ? new RealDate(...args) : new RealDate(frozen); }
+      static now() { return frozen.getTime(); }
+    };
+    try {
+      assert.equal(frozen.toISOString().slice(0, 10), '2026-08-20', 'ยืนยันว่าเวลานี้ UTC ยังเป็นเมื่อวานจริง');
+      assert.equal(todayInBangkok(), '2026-08-21', 'todayInBangkok ต้องคืนวันที่ตามเวลาไทย');
+      // หนังสือที่ครบกำหนดวันนั้นพอดี ต้องขึ้นว่า "ครบกำหนดวันนี้" ไม่ใช่ "เลยกำหนด 1 วัน"
+      assert.equal(daysUntil('2026-08-21'), 0);
+      assert.equal(daysUntil('2026-08-20'), -1);
+    } finally {
+      globalThis.Date = RealDate;
+    }
+  });
+
+  test('ไม่มีที่ไหนใช้ date(\'now\') ของ SQLite อีก (นั่นคือ UTC เสมอ แก้ด้วย TZ ไม่ได้)', () => {
+    const srcDir = new URL('../src/', import.meta.url).pathname;
+    const offenders = [];
+    const walk = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) { walk(full); continue; }
+        if (!e.name.endsWith('.js')) continue;
+        // db.js อธิบายเรื่องนี้ไว้ในคอมเมนต์ จึงมีคำนี้ปรากฏได้
+        if (e.name === 'db.js') continue;
+        for (const line of fs.readFileSync(full, 'utf8').split('\n')) {
+          if (line.includes("date('now')")) offenders.push(`${e.name}: ${line.trim().slice(0, 80)}`);
+        }
+      }
+    };
+    walk(srcDir);
+    assert.deepEqual(offenders, [], `ยังมีการใช้ date('now'):\n  ${offenders.join('\n  ')}`);
+  });
+});
+
+describe('ลา/ไปราชการ: สิทธิ์ต้องบังคับฝั่งเซิร์ฟเวอร์ ไม่ใช่แค่ซ่อนตัวเลือกในหน้าเว็บ', () => {
+  const directorUser = { id: seed.userIds.director01, roleCodes: ['director'] };
+
+  function newLeave(overrides = {}) {
+    return createLeaveRequest({
+      requesterId: teacherUser.id, leaveType: 'personal', startDate: '2026-10-01', endDate: '2026-10-02',
+      reason: 'ธุระส่วนตัว', approverId: directorUser.id, ...overrides,
+    });
+  }
+
+  // หน้าเว็บตัดตัวเองออกจากรายการผู้อนุมัติอยู่แล้ว แต่ก่อนหน้านี้เซิร์ฟเวอร์ไม่ได้ตรวจซ้ำ — ยิงคำขอตรง
+  // เข้ามาโดยใส่ id ตัวเองเป็นผู้อนุมัติ แล้วกดอนุมัติใบลาตัวเองได้จริง (ทดสอบกับระบบที่รันอยู่แล้วผ่าน)
+  test('ตั้งตัวเองเป็นผู้อนุมัติไม่ได้', () => {
+    assert.throws(() => newLeave({ approverId: teacherUser.id }), /เลือกตัวเองเป็นผู้อนุมัติ/);
+  });
+
+  test('ต่อให้ใบลาเก่าตั้งผู้อนุมัติเป็นตัวเองไว้ ก็ยังกดอนุมัติเองไม่ได้', () => {
+    const { id } = newLeave();
+    // จำลองใบลาที่ค้างมาจากก่อนแก้บั๊ก (ผู้ขอ = ผู้อนุมัติ)
+    db.prepare('UPDATE leave_requests SET approver_id = ? WHERE id = ?').run(teacherUser.id, id);
+    assert.throws(() => approveLeaveRequest({ id, note: 'อนุมัติเอง', actorUser: teacherUser }), /พิจารณาคำขอของตัวเองไม่ได้/);
+    assert.throws(() => rejectLeaveRequest({ id, note: 'ไม่อนุมัติเอง', actorUser: teacherUser }), /พิจารณาคำขอของตัวเองไม่ได้/);
+    assert.equal(getLeaveRequest(id).status, 'pending');
+  });
+
+  test('แอดมินก็พิจารณาใบลาของตัวเองไม่ได้', () => {
+    const { id } = newLeave({ requesterId: adminUser.id, approverId: directorUser.id });
+    assert.throws(() => approveLeaveRequest({ id, actorUser: adminUser }), /พิจารณาคำขอของตัวเองไม่ได้/);
+  });
+
+  // เหตุผลการลามีข้อมูลส่วนตัว (อาการป่วย) และมีเบอร์ติดต่อ — เดิมหน้า /leave/:id ไม่ตรวจสิทธิ์เลย
+  // ใครล็อกอินได้ก็เปิดดูใบลาของทุกคนได้ ถ้ารู้ id
+  test('คนนอกเรื่องเปิดดูใบลาของคนอื่นไม่ได้ แต่ผู้เกี่ยวข้องดูได้', () => {
+    const { id } = newLeave({ delegateId: registrarUser.id });
+    const req = getLeaveRequest(id);
+    assert.equal(canSeeLeaveRequest(req, teacherUser), true, 'ผู้ขอต้องดูได้');
+    assert.equal(canSeeLeaveRequest(req, directorUser), true, 'ผู้อนุมัติต้องดูได้');
+    assert.equal(canSeeLeaveRequest(req, registrarUser), true, 'ผู้รักษาการแทนที่ถูกระบุต้องดูได้');
+    assert.equal(canSeeLeaveRequest(req, adminUser), true, 'แอดมินต้องดูได้');
+    // ใช้ผู้ใช้จริงที่มีอยู่ในระบบ ไม่ใช่ id สมมติ — และจงใจเลือกรองผู้อำนวยการ เพื่อยืนยันว่าแม้เป็น
+    // ผู้บริหารก็ยังไม่เห็นเหตุผลการลาของครู ถ้าไม่ได้เป็นผู้อนุมัติหรือผู้รักษาการแทนของใบนั้น
+    const viceId = seed.userIds.vicedir01;
+    assert.ok(viceId, 'ไม่พบผู้ใช้ vicedir01 ในข้อมูลตั้งต้น');
+    assert.equal(canSeeLeaveRequest(req, { id: viceId, roleCodes: ['vice_director'] }), false, 'คนนอกเรื่องต้องดูไม่ได้');
+  });
+
+  // ค่ามั่วต้องได้ข้อความภาษาไทยที่อ่านรู้เรื่อง ไม่ใช่ "FOREIGN KEY constraint failed" จาก SQLite
+  // และในฐานข้อมูลที่อัปเกรดมา คอลัมน์ delegate_id ไม่มี FK ค่ามั่วจะผ่านเข้ามาแล้วไปพังตอนอนุมัติ
+  test('ผู้อนุมัติ/ผู้รักษาการแทนที่ไม่มีตัวตน ถูกปฏิเสธพร้อมข้อความภาษาไทย', () => {
+    assert.throws(() => newLeave({ approverId: 'ไม่มีคนนี้' }), /ไม่พบผู้อนุมัติ/);
+    assert.throws(() => newLeave({ delegateId: 'ไม่มีคนนี้' }), /ไม่พบผู้รักษาการแทน/);
   });
 });
 

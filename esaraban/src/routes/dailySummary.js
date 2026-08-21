@@ -3,17 +3,11 @@
 import { router, html, json, redirect } from '../router.js';
 import { layout, esc, fmtThaiDateLong, illustratedEmptyState } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
-import { db, uuid, nowIso, audit } from '../db.js';
+import { db, uuid, nowIso, audit, todayInBangkok } from '../db.js';
 import { httpError } from '../services/workflow.js';
 import { parseUploadedWorkbook, COLUMNS, MAX_ITEM_ROWS } from '../services/dailySummaryParse.js';
 
 const MAX_XLSX_BYTES = 5 * 1024 * 1024;
-
-// วันที่ "วันนี้" ตามเวลาไทย ไม่ใช่ UTC — เซิร์ฟเวอร์รันเป็น UTC ถ้าใช้ new Date().toISOString() ตรงๆ
-// ช่วง 00:00-07:00 น. ตามเวลาไทยจะได้วันที่ของเมื่อวาน แล้วสรุปงานจะไปลงผิดวันโดยไม่มีใครทันสังเกต
-function todayInBangkok() {
-  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' }); // en-CA ให้รูปแบบ YYYY-MM-DD
-}
 
 function saveSummary({ summaryDate, filename, items, sources, userId }) {
   const id = uuid();

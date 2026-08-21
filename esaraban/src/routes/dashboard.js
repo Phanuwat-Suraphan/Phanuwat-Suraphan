@@ -1,14 +1,14 @@
 import { router, html } from '../router.js';
 import { layout, esc, fmtDate, statusBadge, priorityBadge, illustratedEmptyState, daysUntil, dueCell } from '../render.js';
 import { requirePage } from '../middleware.js';
-import { db } from '../db.js';
+import { db, todayInBangkok } from '../db.js';
 import { canUserSeeDocument } from '../services/workflow.js';
 
 // รวมงานที่มอบหมายให้ตรงๆ + งานที่มีคนมอบหมายให้เรารักษาการแทน (ยัง active วันนี้) เข้าเป็นเงื่อนไขเดียว —
 // ใช้ซ้ำได้ทั้งตัวนับ KPI, การ์ด "งานของฉัน" ในแดชบอร์ด, และหน้า /tasks
-const MY_OR_DELEGATED_STEP_SQL = `(ws.assignee_id = ? OR ws.assignee_id IN (
+const MY_OR_DELEGATED_STEP_SQL = `(ws.assignee_id = :me OR ws.assignee_id IN (
   SELECT delegator_id FROM user_delegations
-  WHERE delegate_id = ? AND cancelled_at IS NULL AND start_date <= date('now') AND end_date >= date('now')
+  WHERE delegate_id = :me AND cancelled_at IS NULL AND start_date <= :today AND end_date >= :today
 ))`;
 
 // สีวงกลมไอคอนแต่ละใบสื่อความหมาย: primary=เข้า, secret=ออก(สีต่างให้แยกจากเข้าง่ายๆ), warning=รอดำเนินการ,
@@ -36,20 +36,21 @@ function timeGreeting() {
 
 router.get('/', requirePage((ctx) => {
   const user = ctx.user;
+  const scope = { me: user.id, today: todayInBangkok() };
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
   const todayIso = todayStart.toISOString();
 
   const inToday = db.prepare(`SELECT COUNT(*) c FROM documents WHERE direction='incoming' AND created_at >= ? AND deleted_at IS NULL`).get(todayIso).c;
   const outToday = db.prepare(`SELECT COUNT(*) c FROM documents WHERE direction='outgoing' AND created_at >= ? AND deleted_at IS NULL`).get(todayIso).c;
-  const myTasks = db.prepare(`SELECT COUNT(*) c FROM workflow_steps ws WHERE ${MY_OR_DELEGATED_STEP_SQL} AND status = 'waiting'`).get(user.id, user.id).c;
-  const overdue = db.prepare(`SELECT COUNT(*) c FROM documents WHERE due_date IS NOT NULL AND due_date < date('now') AND status NOT IN ('completed','archived','voided','rejected') AND deleted_at IS NULL`).get().c;
+  const myTasks = db.prepare(`SELECT COUNT(*) c FROM workflow_steps ws WHERE ${MY_OR_DELEGATED_STEP_SQL} AND status = 'waiting'`).get(scope).c;
+  const overdue = db.prepare(`SELECT COUNT(*) c FROM documents WHERE due_date IS NOT NULL AND due_date < :today AND status NOT IN ('completed','archived','voided','rejected') AND deleted_at IS NULL`).get({ today: todayInBangkok() }).c;
   const completedToday = db.prepare(`SELECT COUNT(*) c FROM documents WHERE status='completed' AND updated_at >= ? AND deleted_at IS NULL`).get(todayIso).c;
 
   const myPending = db.prepare(`
-    SELECT d.*, dt.name as type_name, ws.id as step_id, (ws.assignee_id != ?) as is_delegated FROM workflow_steps ws
+    SELECT d.*, dt.name as type_name, ws.id as step_id, (ws.assignee_id != :me) as is_delegated FROM workflow_steps ws
     JOIN documents d ON d.id = ws.document_id JOIN document_types dt ON dt.id = d.doc_type_id
     WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' ORDER BY d.priority DESC, ws.created_at ASC LIMIT 8
-  `).all(user.id, user.id, user.id);
+  `).all(scope);
 
   const recent = db.prepare(`
     SELECT d.*, dt.name as type_name FROM documents d JOIN document_types dt ON dt.id = d.doc_type_id
@@ -171,11 +172,11 @@ router.get('/', requirePage((ctx) => {
 
 router.get('/tasks', requirePage((ctx) => {
   const rawRows = db.prepare(`
-    SELECT d.*, dt.name as type_name, ws.id as step_id, ws.created_at as assigned_at, (ws.assignee_id != ?) as is_delegated
+    SELECT d.*, dt.name as type_name, ws.id as step_id, ws.created_at as assigned_at, (ws.assignee_id != :me) as is_delegated
     FROM workflow_steps ws
     JOIN documents d ON d.id = ws.document_id JOIN document_types dt ON dt.id = d.doc_type_id
     WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' ORDER BY d.priority DESC, ws.created_at ASC
-  `).all(ctx.user.id, ctx.user.id, ctx.user.id);
+  `).all({ me: ctx.user.id, today: todayInBangkok() });
 
   // กรองชั้นความลับด้วยเสมอ เหมือนหน้าอื่นๆ — ปกติคนที่ถูกมอบหมายก็เห็นอยู่แล้ว แต่ถ้าชั้นความลับของ
   // เอกสารถูกยกระดับขึ้นทีหลัง แถวเก่าต้องหายไปจากหน้านี้ด้วย ไม่ใช่ยังโชว์ชื่อเรื่องค้างไว้

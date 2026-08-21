@@ -31,6 +31,15 @@ function countDays(startDate, endDate) {
   return Math.floor(diffMs / 86_400_000) + 1;
 }
 
+// ผู้ใช้ที่ยังใช้งานอยู่จริงเท่านั้น — ถ้าไม่ตรวจ ค่าที่ส่งมาจะไปตกที่ FOREIGN KEY constraint ของ SQLite
+// แล้วเด้งข้อความภาษาอังกฤษดิบๆ ใส่หน้าครู และในฐานข้อมูลที่อัปเกรดมาจากรุ่นเก่า คอลัมน์ delegate_id
+// ถูกเพิ่มด้วย ALTER TABLE ซึ่งไม่มี FK ติดมาด้วย ค่ามั่วจึงบันทึกผ่านได้ แล้วไปพังตอน "อนุมัติ" แทน
+// (คือใบลาถูกอนุมัติและแจ้งเตือนไปแล้ว แต่การมอบหมายรักษาการแทนไม่เกิดขึ้น) จึงต้องตรวจในโค้ดเอง
+function assertActiveUser(userId, what) {
+  const u = db.prepare("SELECT id FROM users WHERE id = ? AND deleted_at IS NULL AND status = 'active'").get(userId);
+  if (!u) throw httpError(400, `ไม่พบ${what}ที่เลือก หรือบัญชีนั้นถูกปิดใช้งานแล้ว`);
+}
+
 export function createLeaveRequest({ requesterId, leaveType, startDate, endDate, reason, destination, contactInfo, approverId, delegateId }) {
   if (!LEAVE_TYPE_LABEL[leaveType]) throw httpError(400, 'ประเภทการลาไม่ถูกต้อง');
   if (!startDate || !endDate) throw httpError(400, 'กรุณาระบุวันที่เริ่มและวันที่สิ้นสุด');
@@ -40,6 +49,11 @@ export function createLeaveRequest({ requesterId, leaveType, startDate, endDate,
   if (!approverId) throw httpError(400, 'กรุณาเลือกผู้อนุมัติ');
   if (leaveType === 'official_travel' && !destination?.trim()) throw httpError(400, 'กรุณาระบุสถานที่ไปราชการ');
   if (delegateId === requesterId) throw httpError(400, 'มอบหมายให้ตัวเองรักษาการแทนไม่ได้');
+  // หน้าเว็บตัดตัวเองออกจากรายการผู้อนุมัติอยู่แล้ว แต่ห้ามพึ่งแค่นั้น — คนที่ยิงคำขอตรงเข้ามาเองจะตั้ง
+  // ตัวเองเป็นผู้อนุมัติแล้วกดอนุมัติใบลาตัวเองได้ (ทดสอบแล้วว่าเคยทำได้จริง)
+  if (approverId === requesterId) throw httpError(400, 'เลือกตัวเองเป็นผู้อนุมัติ/อนุญาตไม่ได้');
+  assertActiveUser(approverId, 'ผู้อนุมัติ/อนุญาต');
+  if (delegateId) assertActiveUser(delegateId, 'ผู้รักษาการแทน');
 
   const id = uuid();
   const now = nowIso();
@@ -92,9 +106,25 @@ export function listPendingApprovals(approverId) {
 function assertPendingAndOwnedByApprover(req, actorUser) {
   if (!req) throw httpError(404, 'ไม่พบคำขอนี้');
   if (req.status !== 'pending') throw httpError(409, 'คำขอนี้ถูกพิจารณาไปแล้ว');
+  // ห้ามพิจารณาคำขอของตัวเองเด็ดขาด ไม่ว่าจะเป็นผู้อนุมัติที่ระบุไว้หรือเป็นแอดมินก็ตาม — กันทั้ง
+  // ใบลาที่ตั้งตัวเองเป็นผู้อนุมัติไว้ก่อนหน้านี้ และกรณีแอดมินยื่นใบลาเองแล้วกดอนุมัติเอง
+  if (req.requester_id === actorUser.id) throw httpError(403, 'พิจารณาคำขอของตัวเองไม่ได้ ต้องให้ผู้อื่นเป็นผู้พิจารณา');
   if (req.approver_id !== actorUser.id && !actorUser.roleCodes.includes('admin')) {
     throw httpError(403, 'คุณไม่มีสิทธิ์พิจารณาคำขอนี้');
   }
+}
+
+/**
+ * ใครเปิดดูคำขอลาใบนี้ได้บ้าง — เหตุผลการลามีข้อมูลส่วนตัว (เช่น อาการป่วย) และมีเบอร์ติดต่อ
+ * จึงจำกัดเฉพาะผู้เกี่ยวข้องโดยตรง: ผู้ขอ, ผู้อนุมัติ, ผู้ที่ถูกระบุให้รักษาการแทน และแอดมิน
+ * (ผู้บริหารเห็นได้อยู่แล้วเมื่อเป็นผู้อนุมัติ ซึ่งเป็นกรณีปกติของโรงเรียน)
+ */
+export function canSeeLeaveRequest(req, user) {
+  if (!req || !user) return false;
+  return req.requester_id === user.id
+    || req.approver_id === user.id
+    || req.delegate_id === user.id
+    || user.roleCodes.includes('admin');
 }
 
 export function approveLeaveRequest({ id, note, actorUser }) {

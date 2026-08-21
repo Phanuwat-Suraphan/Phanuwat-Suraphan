@@ -1,7 +1,7 @@
 import { router, html, json } from '../router.js';
 import { layout, esc, fmtThaiDateShort } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
-import { db } from '../db.js';
+import { db, todayInBangkok } from '../db.js';
 import { createDelegation, listMyDelegations, cancelDelegation } from '../services/delegation.js';
 
 function listUserOptions(excludeId) {
@@ -14,13 +14,9 @@ function listUserOptions(excludeId) {
     .map((u) => `<option value="${u.id}">${esc(u.prefix || '')}${esc(u.first_name)} ${esc(u.last_name)} — ${esc(u.role_names || u.position || '')}</option>`).join('');
 }
 
-function todayIso() {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function statusOf(d) {
   if (d.cancelled_at) return { text: 'ยกเลิกแล้ว', cls: 'badge-muted' };
-  const today = todayIso();
+  const today = todayInBangkok();
   if (d.end_date < today) return { text: 'สิ้นสุดแล้ว', cls: 'badge-muted' };
   if (d.start_date > today) return { text: 'ยังไม่เริ่ม', cls: 'badge-info' };
   return { text: 'กำลังรักษาการ', cls: 'badge-success' };

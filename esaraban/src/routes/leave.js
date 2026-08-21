@@ -4,7 +4,7 @@ import { requirePage, requireApi } from '../middleware.js';
 import { db } from '../db.js';
 import {
   LEAVE_TYPE_LABEL, decisionVerb, createLeaveRequest, getLeaveRequest, listMyLeaveRequests, listPendingApprovals,
-  approveLeaveRequest, rejectLeaveRequest, cancelLeaveRequest,
+  approveLeaveRequest, rejectLeaveRequest, cancelLeaveRequest, canSeeLeaveRequest,
 } from '../services/leave.js';
 
 const STATUS_BADGE = { pending: 'badge-warning', approved: 'badge-success', rejected: 'badge-danger', cancelled: 'badge-muted' };
@@ -135,8 +135,12 @@ router.get('/leave/new', requirePage((ctx) => {
 
 router.get('/leave/:id', requirePage((ctx) => {
   const req = getLeaveRequest(ctx.params.id);
-  if (!req) return html(ctx, 404, layout({ user: ctx.user, title: 'ไม่พบข้อมูล', path: '/leave', content: '<p>ไม่พบคำขอนี้</p>' }));
-  const canDecide = req.status === 'pending' && (req.approver_id === ctx.user.id || ctx.user.roleCodes.includes('admin'));
+  // ตอบ 404 เหมือนกันทั้งกรณีไม่มีจริงและกรณีไม่มีสิทธิ์ดู เพื่อไม่ให้เดาได้ว่าใครลาอยู่บ้าง
+  if (!req || !canSeeLeaveRequest(req, ctx.user)) {
+    return html(ctx, 404, layout({ user: ctx.user, title: 'ไม่พบข้อมูล', path: '/leave', content: '<p>ไม่พบคำขอนี้</p>' }));
+  }
+  const canDecide = req.status === 'pending' && req.requester_id !== ctx.user.id
+    && (req.approver_id === ctx.user.id || ctx.user.roleCodes.includes('admin'));
   const canCancel = req.status === 'pending' && req.requester_id === ctx.user.id;
 
   const content = `

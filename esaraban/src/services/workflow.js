@@ -1,4 +1,4 @@
-import { db, uuid, nowIso, beYear, audit, computeRetentionUntil } from '../db.js';
+import { db, uuid, nowIso, beYear, audit, computeRetentionUntil, todayInBangkok } from '../db.js';
 import { nextRunningNumber } from '../numbering.js';
 import { notifyUser } from './notify.js';
 import { deleteFile as deleteDriveFile, isGoogleDriveEnabled } from './googleDrive.js';
@@ -71,8 +71,8 @@ function hasActiveDelegateStep(documentId, userId) {
   return !!db.prepare(`
     SELECT 1 FROM workflow_steps ws JOIN user_delegations ud ON ud.delegator_id = ws.assignee_id
     WHERE ws.document_id = ? AND ws.status = 'waiting' AND ud.delegate_id = ? AND ud.cancelled_at IS NULL
-      AND ud.start_date <= date('now') AND ud.end_date >= date('now')
-  `).get(documentId, userId);
+      AND ud.start_date <= ? AND ud.end_date >= ?
+  `).get(documentId, userId, todayInBangkok(), todayInBangkok());
 }
 
 export function canUserSeeDocument(user, doc) {
