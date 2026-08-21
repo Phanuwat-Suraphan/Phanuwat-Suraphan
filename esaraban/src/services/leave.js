@@ -1,4 +1,5 @@
 import { db, uuid, nowIso, audit } from '../db.js';
+import { fmtThaiDateShort } from '../render.js';
 import { notifyUser } from './notify.js';
 import { createDelegation } from './delegation.js';
 
@@ -50,8 +51,9 @@ export function createLeaveRequest({ requesterId, leaveType, startDate, endDate,
   const requester = db.prepare('SELECT * FROM users WHERE id = ?').get(requesterId);
   notifyUser({
     userId: approverId,
+    linkUrl: `/leave/${id}`,
     title: `คำขอ${LEAVE_TYPE_LABEL[leaveType]}ใหม่รอ${decisionVerb(leaveType)}`,
-    message: `${requester.prefix || ''}${requester.first_name} ${requester.last_name} — ${startDate} ถึง ${endDate} (${daysCount} วัน)`,
+    message: `${requester.prefix || ''}${requester.first_name} ${requester.last_name} — ${fmtThaiDateShort(startDate)} ถึง ${fmtThaiDateShort(endDate)} (${daysCount} วัน)`,
     priority: 'info',
   });
   audit({ userId: requesterId, action: 'leave_request_created', tableName: 'leave_requests', recordId: id, detail: { leaveType, startDate, endDate, daysCount } });
@@ -100,7 +102,7 @@ export function approveLeaveRequest({ id, note, actorUser }) {
   assertPendingAndOwnedByApprover(req, actorUser);
   db.prepare(`UPDATE leave_requests SET status = 'approved', decision_note = ?, decided_at = ?, updated_at = ? WHERE id = ?`)
     .run(note?.trim() || null, nowIso(), nowIso(), id);
-  notifyUser({ userId: req.requester_id, title: `คำขอ${LEAVE_TYPE_LABEL[req.leave_type]}ได้รับการ${decisionVerb(req.leave_type)}`, message: `${req.start_date} ถึง ${req.end_date}`, priority: 'success' });
+  notifyUser({ userId: req.requester_id, linkUrl: `/leave/${id}`, title: `คำขอ${LEAVE_TYPE_LABEL[req.leave_type]}ได้รับการ${decisionVerb(req.leave_type)}`, message: `${fmtThaiDateShort(req.start_date)} ถึง ${fmtThaiDateShort(req.end_date)}`, priority: 'success' });
   audit({ userId: actorUser.id, action: 'leave_request_approved', tableName: 'leave_requests', recordId: id });
 
   // ถ้าผู้ขอระบุผู้รักษาการแทนไว้ตอนยื่นคำขอ ให้สร้างการมอบหมายอัตโนมัติทันทีที่อนุมัติ — ผูกช่วงวันที่
@@ -119,7 +121,7 @@ export function rejectLeaveRequest({ id, note, actorUser }) {
   if (!note?.trim()) throw httpError(400, `กรุณาระบุเหตุผลที่ไม่${decisionVerb(req.leave_type)}`);
   db.prepare(`UPDATE leave_requests SET status = 'rejected', decision_note = ?, decided_at = ?, updated_at = ? WHERE id = ?`)
     .run(note.trim(), nowIso(), nowIso(), id);
-  notifyUser({ userId: req.requester_id, title: `คำขอ${LEAVE_TYPE_LABEL[req.leave_type]}ไม่ได้รับการ${decisionVerb(req.leave_type)}`, message: note.trim(), priority: 'warning' });
+  notifyUser({ userId: req.requester_id, linkUrl: `/leave/${id}`, title: `คำขอ${LEAVE_TYPE_LABEL[req.leave_type]}ไม่ได้รับการ${decisionVerb(req.leave_type)}`, message: note.trim(), priority: 'warning' });
   audit({ userId: actorUser.id, action: 'leave_request_rejected', tableName: 'leave_requests', recordId: id, detail: { note } });
 }
 

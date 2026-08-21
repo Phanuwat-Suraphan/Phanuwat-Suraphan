@@ -1,5 +1,5 @@
 import { router, html, json } from '../router.js';
-import { layout, esc } from '../render.js';
+import { layout, esc, fmtThaiDateShort } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db } from '../db.js';
 import { createDelegation, listMyDelegations, cancelDelegation } from '../services/delegation.js';
@@ -36,7 +36,7 @@ router.get('/delegations', requirePage((ctx) => {
     return `<tr>
       <td>${esc(d.delegator_prefix || '')}${esc(d.delegator_first)} ${esc(d.delegator_last)}</td>
       <td>${esc(d.delegate_prefix || '')}${esc(d.delegate_first)} ${esc(d.delegate_last)}</td>
-      <td>${esc(d.start_date)} — ${esc(d.end_date)}</td>
+      <td>${esc(fmtThaiDateShort(d.start_date))} — ${esc(fmtThaiDateShort(d.end_date))}</td>
       <td>${esc(d.reason || '-')}</td>
       <td><span class="badge ${st.cls}">${st.text}</span></td>
       <td>${showCancel && !d.cancelled_at ? `<button type="button" class="btn btn-sm btn-outline" onclick="cancelDelegation('${d.id}')">ยกเลิก</button>` : ''}</td>

@@ -21,6 +21,8 @@ const {
 const { nextRunningNumber } = await import('../src/numbering.js');
 const { readWorkbook } = await import('../src/services/xlsx.js');
 const { parseUploadedWorkbook, looksLikeHeader } = await import('../src/services/dailySummaryParse.js');
+const { createLeaveRequest } = await import('../src/services/leave.js');
+const { createDelegation } = await import('../src/services/delegation.js');
 const zlib = await import('node:zlib');
 
 const seed = db._seed;
@@ -470,6 +472,65 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
       assert.deepEqual(broken, [], `หน้าที่เปิดไม่ได้:\n  ${broken.join('\n  ')}`);
     });
   }
+
+  // ทั้งระบบใช้ปีพุทธศักราชและชื่อเดือนไทย ถ้าที่ไหนลืมแปลง วันที่ดิบจากฐานข้อมูล (2026-08-25) จะโผล่มา
+  // ให้ครูอ่านเอง ซึ่งเป็น ค.ศ. และเรียงคนละแบบ — เคยหลุดมาแล้วทั้งหน้ารายละเอียดเอกสาร หน้าลา
+  // หน้ามอบหมายรักษาการแทน และหน้าอายุการเก็บ เพราะไม่มีอะไรคอยจับ
+  test('ไม่มีวันที่ดิบแบบ 2026-08-25 หลุดออกมาให้ผู้ใช้เห็น', async () => {
+    // ต้องสร้างข้อมูลที่มีวันที่ในทุกโมดูลที่แสดงวันที่ก่อน ไม่งั้นหน้าที่ยังไม่มีรายการจะผ่านไปเฉยๆ
+    // ทั้งที่ไม่ได้ตรวจอะไรเลย (ลองแล้ว: ใส่บั๊กกลับเข้าหน้า /leave แต่เทสต์ยังเขียว เพราะไม่มีใบลาสักใบ)
+    const doc = makeDoc({ title: 'เอกสารตรวจรูปแบบวันที่', dueDate: '2026-08-25' });
+    assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, instruction: 'เพื่อพิจารณา', actorUser: registrarUser });
+    createLeaveRequest({
+      requesterId: teacherUser.id, leaveType: 'sick', startDate: '2026-08-24', endDate: '2026-08-26',
+      reason: 'ไม่สบาย', approverId: seed.userIds.director01,
+    });
+    createDelegation({
+      delegatorId: seed.userIds.director01, delegateId: teacherUser.id,
+      startDate: '2026-08-24', endDate: '2026-08-26', reason: 'ผอ. ไปราชการ', createdBy: seed.userIds.director01,
+    });
+
+    // Audit Log แสดง detail ดิบของแต่ละเหตุการณ์ตามที่บันทึกไว้ เพื่อใช้สอบทานย้อนหลัง — ตรงนั้น
+    // ต้องเป็นค่าดิบจริงๆ ไม่ใช่ค่าที่จัดรูปแบบใหม่ ไม่งั้นหลักฐานไม่ตรงกับที่เก็บ
+    const RAW_OK = new Set(['/admin/audit']);
+    const offenders = [];
+    for (const code of ['admin', 'director01', 'reg001']) {
+      const user = userAs(code);
+      for (const pathname of pages.filter((p) => !RAW_OK.has(p))) {
+        const res = await openPage(pathname, user);
+        // ตรวจเฉพาะหน้าเว็บ — /health (JSON) และ /reports/export.csv (เปิดใน Excel) ต้องเป็น ISO
+        // ตามรูปแบบที่เครื่องอ่าน ไม่ใช่ พ.ศ. ที่คนอ่าน
+        if (!String(res.headers['Content-Type'] || '').includes('text/html')) continue;
+        // ตัด <script>/<style> และค่าใน attribute ออกก่อน — <input type="date" value="2026-08-25">
+        // ต้องเป็นรูปแบบ ISO จริงๆ ตามสเปกของ HTML ไม่ใช่ของที่ผู้ใช้อ่าน
+        const visible = res.body
+          .replace(/<script[\s\S]*?<\/script>/g, '')
+          .replace(/<style[\s\S]*?<\/style>/g, '')
+          .replace(/<[^>]*>/g, '');
+        const hit = visible.match(/\d{4}-\d{2}-\d{2}/);
+        if (hit) offenders.push(`${pathname} (${code}) -> "${hit[0]}"`);
+      }
+    }
+    assert.deepEqual(offenders, [], `พบวันที่ดิบในหน้าเว็บ:\n  ${offenders.join('\n  ')}`);
+  });
+
+  // การแจ้งเตือนเรื่องลา/รักษาการแทน เดิมกดต่อไม่ได้เลย เพราะตารางแจ้งเตือนผูกได้แค่ document_id
+  // ต้องไปหาเองในเมนู — ตอนนี้เก็บ link_url ไว้ ปุ่ม "เปิด" จึงขึ้นได้ทุกประเภท
+  test('การแจ้งเตือนที่ไม่ใช่เอกสารต้องมีปุ่ม "เปิด" และต้องไม่ยอมให้ลิงก์ออกนอกระบบ', async () => {
+    const director = userAs('director01');
+    const { id: leaveId } = createLeaveRequest({
+      requesterId: teacherUser.id, leaveType: 'vacation', startDate: '2026-09-01', endDate: '2026-09-03',
+      reason: 'ลาพักผ่อนประจำปี', approverId: director.id,
+    });
+    const body = (await openPage('/notifications', director)).body;
+    assert.ok(body.includes(`href="/leave/${leaveId}"`), 'ไม่พบปุ่มเปิดที่ลิงก์ไปหน้าใบลา');
+
+    // ถ้าวันหลังมี link_url ที่มาจากค่าของผู้ใช้ ต้องไม่กลายเป็นทางพาผู้ใช้ออกไปเว็บอื่น
+    db.prepare('UPDATE notifications SET link_url = ? WHERE link_url = ?')
+      .run('https://evil.example.com/phish', `/leave/${leaveId}`);
+    const after = (await openPage('/notifications', director)).body;
+    assert.ok(!after.includes('evil.example.com'), 'ลิงก์ออกนอกระบบไม่ถูกกรองทิ้ง');
+  });
 });
 
 test('cleanup: remove the throwaway test database file', () => {

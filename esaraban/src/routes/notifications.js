@@ -21,7 +21,12 @@ router.get('/notifications', requirePage((ctx) => {
             <div class="text-muted" style="font-size:.75rem">${fmtDate(n.created_at)}</div>
           </div>
           <div class="chip-row">
-            ${n.document_id ? `<a class="btn btn-sm btn-outline" href="/documents/${n.document_id}">เปิด</a>` : ''}
+            ${
+              // link_url ต้องเป็น path ภายในระบบเท่านั้น — ค่านี้มาจากโค้ดฝั่งเซิร์ฟเวอร์อยู่แล้ว แต่กันไว้
+              // ไม่ให้กลายเป็นทางเปิด redirect ออกนอกเว็บถ้าวันหลังมีใครส่งค่าจากผู้ใช้เข้ามา
+              n.document_id ? `<a class="btn btn-sm btn-outline" href="/documents/${n.document_id}">เปิด</a>`
+                : /^\/[A-Za-z0-9/_-]*$/.test(n.link_url || '') ? `<a class="btn btn-sm btn-outline" href="${esc(n.link_url)}">เปิด</a>` : ''
+            }
             ${!n.is_read ? `<button class="btn btn-sm btn-outline" onclick="fetch('/notifications/${n.id}/read',{method:'POST'}).then(()=>location.reload())">อ่านแล้ว</button>` : ''}
           </div>
         </div>`).join('') : emptyState('🔕', 'ไม่มีการแจ้งเตือน')}

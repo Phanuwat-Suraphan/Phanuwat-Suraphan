@@ -288,6 +288,7 @@ export function migrate() {
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id),
     document_id TEXT REFERENCES documents(id),
+    link_url TEXT, -- ปลายทางของปุ่ม "เปิด" สำหรับเรื่องที่ไม่ใช่เอกสาร (ใบลา, การมอบหมายรักษาการแทน)
     title TEXT NOT NULL,
     message TEXT NOT NULL,
     priority TEXT NOT NULL DEFAULT 'info', -- info|success|warning|urgent|critical
@@ -388,6 +389,13 @@ export function migrate() {
   const leaveCols = db.prepare("PRAGMA table_info(leave_requests)").all().map((c) => c.name);
   if (!leaveCols.includes('delegate_id')) {
     db.exec('ALTER TABLE leave_requests ADD COLUMN delegate_id TEXT');
+  }
+  // เดิมการแจ้งเตือนลิงก์ได้เฉพาะเอกสาร (document_id) เท่านั้น เรื่องลา/ไปราชการและการมอบหมาย
+  // รักษาการแทนจึงเป็นข้อความเปล่าๆ ที่กดต่อไม่ได้ ต้องไปหาเองในเมนู — เก็บ path ปลายทางไว้ตรงๆ
+  // เพื่อให้ทุกการแจ้งเตือนมีปุ่ม "เปิด" ได้เหมือนกันหมด
+  const notificationCols = db.prepare("PRAGMA table_info(notifications)").all().map((c) => c.name);
+  if (!notificationCols.includes('link_url')) {
+    db.exec('ALTER TABLE notifications ADD COLUMN link_url TEXT');
   }
 }
 

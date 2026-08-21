@@ -1,5 +1,5 @@
 import { router, html, json } from '../router.js';
-import { layout, esc, fmtDate } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateShort, fmtThaiDateLong } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db } from '../db.js';
 import {
@@ -33,7 +33,7 @@ router.get('/leave', requirePage((ctx) => {
     <tr onclick="location.href='/leave/${r.id}'" style="cursor:pointer">
       <td>${esc(LEAVE_TYPE_LABEL[r.leave_type])}</td>
       ${showRequester ? `<td>${esc(r.requester_prefix || '')}${esc(r.requester_first)} ${esc(r.requester_last)}</td>` : ''}
-      <td>${esc(r.start_date)} — ${esc(r.end_date)}</td>
+      <td>${esc(fmtThaiDateShort(r.start_date))} — ${esc(fmtThaiDateShort(r.end_date))}</td>
       <td>${r.days_count} วัน</td>
       <td>${leaveStatusBadge(r.status, r.leave_type)}</td>
       <td class="text-muted">${fmtDate(r.created_at)}</td>
@@ -142,12 +142,12 @@ router.get('/leave/:id', requirePage((ctx) => {
   const content = `
     <h2>${esc(LEAVE_TYPE_LABEL[req.leave_type])}</h2>
     <div class="card">
-      <table>
+      <table class="table-plain">
         <tbody>
           <tr><td class="text-muted">สถานะ</td><td>${leaveStatusBadge(req.status, req.leave_type)}</td></tr>
           <tr><td class="text-muted">ผู้ขอ</td><td>${esc(req.requester_prefix || '')}${esc(req.requester_first)} ${esc(req.requester_last)}</td></tr>
           <tr><td class="text-muted">ผู้${esc(decisionVerb(req.leave_type))}</td><td>${esc(req.approver_first)} ${esc(req.approver_last)}</td></tr>
-          <tr><td class="text-muted">ช่วงวันที่</td><td>${esc(req.start_date)} — ${esc(req.end_date)} (${req.days_count} วัน)</td></tr>
+          <tr><td class="text-muted">ช่วงวันที่</td><td>${esc(fmtThaiDateLong(req.start_date))} — ${esc(fmtThaiDateLong(req.end_date))} (${req.days_count} วัน)</td></tr>
           ${req.destination ? `<tr><td class="text-muted">สถานที่</td><td>${esc(req.destination)}</td></tr>` : ''}
           <tr><td class="text-muted">เหตุผล</td><td>${esc(req.reason)}</td></tr>
           ${req.contact_info ? `<tr><td class="text-muted">ติดต่อระหว่างลา</td><td>${esc(req.contact_info)}</td></tr>` : ''}

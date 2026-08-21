@@ -538,7 +538,7 @@ router.get('/documents/:id', requirePage((ctx) => {
       <h3>ดำเนินการ (ขั้นที่ ${step.step_order} — มอบหมายให้คุณ)</h3>
       ${isDelegateForStep ? `<div class="alert alert-warning" style="margin-bottom:.8rem">
         🪪 คุณกำลังดำเนินการแทน <strong>${esc(stepAssignee?.prefix || '')}${esc(stepAssignee?.first_name)} ${esc(stepAssignee?.last_name)}</strong>
-        ในฐานะผู้รักษาการแทน (${esc(delegationForStep.start_date)} — ${esc(delegationForStep.end_date)}${delegationForStep.reason ? ' · ' + esc(delegationForStep.reason) : ''})
+        ในฐานะผู้รักษาการแทน (${esc(fmtThaiDateShort(delegationForStep.start_date))} — ${esc(fmtThaiDateShort(delegationForStep.end_date))}${delegationForStep.reason ? ' · ' + esc(delegationForStep.reason) : ''})
       </div>` : ''}
       <div class="stack">
         <div>

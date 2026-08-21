@@ -162,7 +162,7 @@ router.get('/admin/google-drive', requireRole('admin')(requirePage((ctx) => {
   const content = `
     <h2>🗂️ เชื่อมต่อ Google Drive</h2>
     <div class="card">
-      <table>
+      <table class="table-plain">
         <tbody>
           <tr><td class="text-muted">STORAGE_PROVIDER</td><td>${enabled ? '<span class="badge badge-success">google_drive (เปิดใช้งาน)</span>' : '<span class="badge badge-muted">local (ยังไม่เปิดใช้ Google Drive)</span>'}</td></tr>
           <tr><td class="text-muted">GOOGLE_OAUTH_CLIENT_ID / SECRET</td><td>${clientConfigured ? '<span class="badge badge-success">ตั้งค่าแล้ว</span>' : '<span class="badge badge-danger">ยังไม่ได้ตั้งค่า</span>'}</td></tr>

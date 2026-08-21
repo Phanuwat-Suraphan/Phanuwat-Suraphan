@@ -30,7 +30,7 @@ router.get('/profile', requirePage((ctx) => {
             ${ctx.user.avatar_emoji ? `<button type="button" class="avatar-pick" onclick="pickAvatar(null)" title="กลับไปใช้ตัวอักษรย่อชื่อ">↺</button>` : ''}
           </div>
         </div>
-        <table>
+        <table class="table-plain">
           <tr><td class="text-muted">รหัสพนักงาน</td><td>${esc(ctx.user.employee_code)}</td></tr>
           <tr><td class="text-muted">ฝ่าย</td><td>${esc(dept?.name || '-')}</td></tr>
           <tr><td class="text-muted">บทบาท</td><td>${ctx.user.roles.map((r) => `<span class="badge badge-info">${esc(r.name_th)}</span>`).join(' ')}</td></tr>

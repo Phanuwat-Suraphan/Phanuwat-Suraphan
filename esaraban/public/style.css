@@ -343,7 +343,11 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); o
 
 /* ---------- Table ---------- */
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
-table { width: 100%; border-collapse: collapse; font-size: .92rem; min-width: 640px; }
+/* min-width อยู่ที่ตารางใน .table-wrap เท่านั้น เพราะ .table-wrap มี overflow-x ให้เลื่อนได้
+   ถ้าตั้งไว้ที่ table ทุกตัว ตารางที่ไม่ได้อยู่ใน .table-wrap (เช่น ตารางข้อมูลส่วนตัวในหน้าโปรไฟล์)
+   จะดันการ์ดจนล้นออกนอกจอ — เจอจริงที่หน้า /profile และ /reports ตอนวัดความกว้างหน้าเว็บ */
+table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+.table-wrap table { min-width: 640px; }
 th, td { text-align: left; padding: .65rem .8rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
 thead th { background: var(--surface-2); color: var(--text-muted); font-size: .8rem; letter-spacing: .01em; }
 tbody tr:hover { background: var(--surface-2); }
@@ -433,6 +437,9 @@ tbody tr:last-child td { border-bottom: none; }
 .gap-1 { gap: .4rem; }
 .gap-2 { gap: .75rem; }
 .grid-2 { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+/* ช่องของ grid มีค่าเริ่มต้น min-width:auto ทำให้ย่อเล็กกว่าเนื้อหาไม่ได้ — ตารางกว้างข้างในจึงดัน
+   ทั้ง grid ให้ล้นจอ แทนที่จะปล่อยให้ .table-wrap เลื่อนซ้ายขวาเองตามที่ตั้งใจไว้ */
+.grid-2 > * { min-width: 0; }
 @media (min-width: 900px) { .grid-2 { grid-template-columns: 2fr 1fr; } }
 .stack { display: flex; flex-direction: column; gap: .6rem; }
 /* aspect-ratio ตรงกับ A4 (595x842pt) เป๊ะ แทนการตั้ง height ตายตัวแบบเดิม (70vh) — ตอนใช้
@@ -654,4 +661,7 @@ th.wrap, td.wrap { white-space: normal; min-width: 13rem; }
 /* ตารางแนวตั้งแบบ "ป้ายกำกับ + ค่า" (เช่น กล่องรายละเอียดเอกสาร) ต้องตัดบรรทัดได้ — ค่าอย่าง
    "ปกติ (อย่างน้อย 10 ปี) (ครบกำหนด 31 ธันวาคม 2579)" ยาวเกินความกว้างจอมือถือ ถ้า nowrap จะล้นออกนอกการ์ด */
 .table-plain td { white-space: normal; }
-.table-plain td:first-child { white-space: nowrap; width: 1%; }
+.table-plain td:first-child { width: 1%; }
+/* บนจอแคบ ป้ายกำกับต้องตัดบรรทัดได้ด้วย ไม่งั้นป้ายยาวๆ อย่าง GOOGLE_OAUTH_CLIENT_ID / SECRET
+   จะดันตารางจนล้นออกนอกจอมือถือ — บนจอกว้างค่อยบังคับให้อยู่บรรทัดเดียวเพื่อความเป็นระเบียบ */
+@media (min-width: 640px) { .table-plain td:first-child { white-space: nowrap; } }

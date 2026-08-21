@@ -1,5 +1,5 @@
 import { router, html, json } from '../router.js';
-import { layout, esc, fmtDate, statusBadge } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateShort, statusBadge } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { RETENTION_LABEL } from '../db.js';
 import {
@@ -22,7 +22,7 @@ router.get('/retention', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage(
       <td>${esc(d.doc_number_display)}</td>
       <td>${esc(d.title)}</td>
       <td>${esc(d.dept_name)}</td>
-      <td class="text-muted">${esc(d.retention_until)}</td>
+      <td class="text-muted">${esc(fmtThaiDateShort(d.retention_until))}</td>
     </tr>`).join('');
 
   const batchRows = batches.map((b) => {
@@ -101,7 +101,7 @@ router.get('/retention/batches/:id', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(
   const content = `
     <h2>บัญชีขอทำลายหนังสือ #${esc(batch.id.slice(0, 8))}</h2>
     <div class="card">
-      <table>
+      <table class="table-plain">
         <tbody>
           <tr><td class="text-muted">สถานะ</td><td><strong>${statusLabel}</strong></td></tr>
           <tr><td class="text-muted">ผู้เสนอ</td><td>${esc(batch.creator_first)} ${esc(batch.creator_last)} — ${fmtDate(batch.created_at)}</td></tr>

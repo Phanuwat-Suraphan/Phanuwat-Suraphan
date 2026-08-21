@@ -1,4 +1,5 @@
 import { db, uuid, nowIso, audit } from '../db.js';
+import { fmtThaiDateShort } from '../render.js';
 import { notifyUser } from './notify.js';
 
 // httpError คัดลอกไว้ในไฟล์นี้เอง (ไม่ import จาก workflow.js) — เหตุผลเดียวกับ googleDrive.js/ocr.js/pdfStamp.js
@@ -24,8 +25,9 @@ export function createDelegation({ delegatorId, delegateId, startDate, endDate, 
 
   notifyUser({
     userId: delegateId,
+    linkUrl: '/delegations',
     title: 'คุณได้รับมอบหมายให้รักษาการแทน',
-    message: `ตั้งแต่ ${startDate} ถึง ${endDate}${reason ? ' — ' + reason : ''}`,
+    message: `ตั้งแต่ ${fmtThaiDateShort(startDate)} ถึง ${fmtThaiDateShort(endDate)}${reason ? ' — ' + reason : ''}`,
     priority: 'info',
   });
   audit({ userId: createdBy, action: 'delegation_created', tableName: 'user_delegations', recordId: id, detail: { delegatorId, delegateId, startDate, endDate, leaveRequestId } });
