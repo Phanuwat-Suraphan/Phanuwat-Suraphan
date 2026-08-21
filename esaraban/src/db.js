@@ -30,8 +30,12 @@ export function todayInBangkok() {
 }
 
 // Buddhist Era year (matches the school's numbering convention, e.g. 2569)
-export function beYear(date = new Date()) {
-  return date.getFullYear() + 543;
+// ปีพุทธศักราชของเลขทะเบียนหนังสือ — ต้องคิดจากวันที่ตามเวลาไทย ไม่ใช่เวลาเครื่องเซิร์ฟเวอร์ (UTC)
+// ไม่งั้นหนังสือที่ลงทะเบียนช่วงเช้ามืดของวันที่ 1 มกราคม จะได้เลขของปีที่แล้ว แล้วไปชนกับเลขที่ออกไป
+// เมื่อปีก่อนพอดี ซึ่งเป็นความผิดพลาดที่แก้ย้อนหลังยากมากในทะเบียนหนังสือ
+export function beYear(date) {
+  const iso = date ? new Date(date).toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' }) : todayInBangkok();
+  return Number(iso.slice(0, 4)) + 543;
 }
 
 // ระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ หมวด 3: อายุการเก็บหนังสือ
@@ -143,6 +147,16 @@ export function migrate() {
   );
 
   -- atomic running-number counters, scoped by year+department+type+direction
+  -- ตัวนับเลขทะเบียนหนังสือ: ชุดเดียวทั้งโรงเรียนต่อปี แยกแค่หนังสือเข้า/ออก ตรงตามทะเบียนหนังสือรับ-ส่ง
+  -- ที่โรงเรียนใช้จริง (ดูเหตุผลเต็มใน src/numbering.js) — ตาราง document_counters เดิมนับแยกตามฝ่าย
+  -- และประเภทหนังสือ ทำให้หนังสือคนละฝ่ายได้เลขซ้ำกัน จึงเลิกใช้แล้ว แต่เก็บไว้เป็นร่องรอยของข้อมูลเดิม
+  CREATE TABLE IF NOT EXISTS document_number_counters (
+    year_be INTEGER NOT NULL,
+    direction TEXT NOT NULL, -- incoming | outgoing
+    running_number INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (year_be, direction)
+  );
+
   CREATE TABLE IF NOT EXISTS document_counters (
     year_be INTEGER NOT NULL,
     department_id TEXT NOT NULL,
@@ -407,6 +421,19 @@ export function migrate() {
   const notificationCols = db.prepare("PRAGMA table_info(notifications)").all().map((c) => c.name);
   if (!notificationCols.includes('link_url')) {
     db.exec('ALTER TABLE notifications ADD COLUMN link_url TEXT');
+  }
+
+  // ย้ายจากตัวนับเลขทะเบียนแบบแยกรายฝ่าย มาเป็นชุดเดียวทั้งโรงเรียนต่อปี (ดู src/numbering.js)
+  // ต้องตั้งค่าเริ่มต้นจาก "เลขสูงสุดที่เคยออกไปแล้วจริง" ในแต่ละปี/ทิศทาง ไม่ใช่เริ่มนับ 1 ใหม่ ไม่งั้น
+  // ฐานข้อมูลที่ใช้งานอยู่แล้วจะออกเลขทับหนังสือที่ลงทะเบียนไปแล้ว — นับรวมเอกสารที่ถูกลบ (deleted_at)
+  // ด้วย เพราะเลขที่ออกไปแล้วต้องไม่ถูกนำกลับมาใช้ซ้ำตามหลักงานสารบรรณ
+  const hasNewCounter = db.prepare("SELECT COUNT(*) c FROM document_number_counters").get().c;
+  if (!hasNewCounter) {
+    const seeds = db.prepare(`
+      SELECT year_be, direction, MAX(running_number) AS m FROM documents GROUP BY year_be, direction
+    `).all();
+    const ins = db.prepare('INSERT INTO document_number_counters (year_be, direction, running_number) VALUES (?, ?, ?)');
+    for (const s of seeds) ins.run(s.year_be, s.direction, s.m);
   }
 }
 

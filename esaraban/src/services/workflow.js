@@ -25,7 +25,7 @@ export function createDocument({ direction, title, subject, docTypeId, departmen
   let duplicateDocNumberWarning = null;
   db.exec('BEGIN IMMEDIATE');
   try {
-    const { runningNumber, yearBe, display: autoDisplay } = nextRunningNumber({ departmentId, docTypeId, direction });
+    const { runningNumber, yearBe, display: autoDisplay } = nextRunningNumber({ direction });
     const display = customDocNumber || autoDisplay;
     if (customDocNumber) {
       const dup = db.prepare('SELECT doc_number_display FROM documents WHERE doc_number_display = ? AND deleted_at IS NULL').get(customDocNumber);

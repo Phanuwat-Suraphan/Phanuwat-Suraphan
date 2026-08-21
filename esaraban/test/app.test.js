@@ -75,25 +75,45 @@ describe('auth: login + rate limiting', () => {
   });
 });
 
-describe('numbering: atomic, sequential, gap-free', () => {
-  test('running numbers increment sequentially within the same year/department/type/direction', () => {
+describe('เลขทะเบียนหนังสือ: เรียงต่อเนื่อง ไม่ซ้ำ ไม่ข้าม', () => {
+  test('เลขเดินหน้าทีละหนึ่งเสมอ', () => {
     const year = beYear();
-    const a = nextRunningNumber({ departmentId: deptId, docTypeId: typeId, direction: 'incoming', year });
-    const b = nextRunningNumber({ departmentId: deptId, docTypeId: typeId, direction: 'incoming', year });
+    const a = nextRunningNumber({ direction: 'incoming', year });
+    const b = nextRunningNumber({ direction: 'incoming', year });
     assert.equal(b.runningNumber, a.runningNumber + 1);
   });
 
-  test('incoming and outgoing counters are independent', () => {
+  test('หนังสือเข้ากับหนังสือออกนับแยกเล่มกัน', () => {
     const year = beYear();
-    const inNum = nextRunningNumber({ departmentId: deptId, docTypeId: typeId, direction: 'incoming', year });
-    const outNum = nextRunningNumber({ departmentId: deptId, docTypeId: typeId, direction: 'outgoing', year });
-    // both start counting from 1 independently — an outgoing number should not be shifted by incoming activity
-    assert.ok(outNum.runningNumber <= inNum.runningNumber);
+    const before = nextRunningNumber({ direction: 'outgoing', year }).runningNumber;
+    nextRunningNumber({ direction: 'incoming', year });
+    nextRunningNumber({ direction: 'incoming', year });
+    // ออกเลขหนังสือเข้าไป 2 ฉบับ ต้องไม่ดันเลขหนังสือออกให้กระโดดตาม
+    assert.equal(nextRunningNumber({ direction: 'outgoing', year }).runningNumber, before + 1);
   });
 
-  test('created documents get the display format 0000/YYYY', () => {
+  // ทะเบียนหนังสือรับของโรงเรียนเป็นเล่มเดียว เลขที่ต้องอ้างอิงได้ตัวเดียวไม่กำกวม — เดิมนับแยกรายฝ่าย
+  // แต่เลขที่แสดงไม่มีรหัสฝ่าย ทำให้หนังสือของฝ่ายบริหารทั่วไปกับฝ่ายงบประมาณได้ "0001/2569" ทั้งคู่
+  test('หนังสือคนละฝ่ายต้องไม่ได้เลขทะเบียนซ้ำกัน', () => {
+    const deptCodes = db.prepare('SELECT id FROM departments ORDER BY code').all().map((d) => d.id);
+    assert.ok(deptCodes.length >= 3, 'ต้องมีหลายฝ่ายจึงจะทดสอบเรื่องนี้ได้');
+    const numbers = deptCodes.map((departmentId, i) =>
+      makeDoc({ title: `ทดสอบเลขซ้ำข้ามฝ่าย ${i}`, departmentId }).docNumberDisplay);
+    assert.equal(new Set(numbers).size, numbers.length, `เลขทะเบียนซ้ำกัน: ${numbers.join(', ')}`);
+  });
+
+  test('เลขที่แสดงอยู่ในรูปแบบ 0000/2569', () => {
     const doc = makeDoc({ title: 'ตรวจสอบเลขที่เอกสาร' });
     assert.match(doc.docNumberDisplay, /^\d{4}\/\d{4}$/);
+  });
+
+  // ฐานข้อมูลที่ใช้งานมาก่อนหน้านี้มีหนังสือลงทะเบียนไปแล้ว ตัวนับชุดใหม่ต้องเริ่มนับต่อจากเลขสูงสุด
+  // ที่เคยออกไป ไม่ใช่ย้อนกลับไปเริ่มที่ 1 แล้วออกเลขทับหนังสือเก่า
+  test('ตัวนับชุดใหม่เริ่มต่อจากเลขสูงสุดที่เคยออกไปแล้ว ไม่ออกเลขซ้ำของเดิม', () => {
+    const year = beYear() + 90; // ปีที่ยังไม่มีตัวนับ ใช้จำลองฐานข้อมูลที่เพิ่งอัปเกรดมา
+    const doc = makeDoc({ title: 'หนังสือเก่าที่ลงทะเบียนไว้ก่อนแล้ว' });
+    db.prepare('UPDATE documents SET year_be = ?, running_number = 47 WHERE id = ?').run(year, doc.id);
+    assert.equal(nextRunningNumber({ direction: 'incoming', year }).runningNumber, 48);
   });
 });
 
@@ -711,6 +731,24 @@ describe('เวลา: "วันนี้" ต้องคิดตามเ�
       // หนังสือที่ครบกำหนดวันนั้นพอดี ต้องขึ้นว่า "ครบกำหนดวันนี้" ไม่ใช่ "เลยกำหนด 1 วัน"
       assert.equal(daysUntil('2026-08-21'), 0);
       assert.equal(daysUntil('2026-08-20'), -1);
+    } finally {
+      globalThis.Date = RealDate;
+    }
+  });
+
+  // เลขทะเบียนหนังสือผูกกับปี พ.ศ. ถ้าคิดปีจากเวลาเซิร์ฟเวอร์ หนังสือที่ลงทะเบียนเช้ามืดวันที่ 1 มกราคม
+  // จะได้เลขของปีที่แล้ว ไปชนกับเลขที่ออกไปเมื่อปีก่อนพอดี ซึ่งแก้ย้อนหลังในทะเบียนหนังสือยากมาก
+  test('ปี พ.ศ. ของเลขทะเบียน คิดตามเวลาไทย แม้เป็นเช้ามืดวันปีใหม่', () => {
+    const RealDate = Date;
+    // 01:00 น. วันที่ 1 ม.ค. 2027 ที่กรุงเทพ = 18:00 UTC ของวันที่ 31 ธ.ค. 2026
+    const frozen = new RealDate('2027-01-01T01:00:00+07:00');
+    globalThis.Date = class extends RealDate {
+      constructor(...args) { return args.length ? new RealDate(...args) : new RealDate(frozen); }
+      static now() { return frozen.getTime(); }
+    };
+    try {
+      assert.equal(frozen.getUTCFullYear(), 2026, 'ยืนยันว่าเวลานี้ UTC ยังเป็นปีที่แล้วจริง');
+      assert.equal(beYear(), 2570, 'ต้องได้ปี พ.ศ. ใหม่ (2027 + 543) ไม่ใช่ 2569');
     } finally {
       globalThis.Date = RealDate;
     }
