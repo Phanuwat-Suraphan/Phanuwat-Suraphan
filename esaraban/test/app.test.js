@@ -27,6 +27,8 @@ const {
   createLeaveRequest, approveLeaveRequest, rejectLeaveRequest, canSeeLeaveRequest, getLeaveRequest,
 } = await import('../src/services/leave.js');
 const { createDelegation } = await import('../src/services/delegation.js');
+const { isBackupEnabled, restoreDatabaseIfMissing, backupNow } = await import('../src/services/dbBackup.js');
+const sqliteModule = await import('node:sqlite');
 const { createDestructionBatch, approveDestructionBatch } = await import('../src/services/retention.js');
 const zlib = await import('node:zlib');
 
@@ -939,6 +941,74 @@ describe('ลา/ไปราชการ: สิทธิ์ต้องบั�
   test('ผู้อนุมัติ/ผู้รักษาการแทนที่ไม่มีตัวตน ถูกปฏิเสธพร้อมข้อความภาษาไทย', () => {
     assert.throws(() => newLeave({ approverId: 'ไม่มีคนนี้' }), /ไม่พบผู้อนุมัติ/);
     assert.throws(() => newLeave({ delegateId: 'ไม่มีคนนี้' }), /ไม่พบผู้รักษาการแทน/);
+  });
+});
+
+// โฮสต์ฟรีทุกเจ้าใช้ดิสก์ชั่วคราว ฐานข้อมูลจึงหายทุกครั้งที่ deploy — ระบบสำรองขึ้น Google Drive
+// คือสิ่งเดียวที่กันทะเบียนหนังสือทั้งเล่มหาย ถ้าสำเนาที่สร้างขึ้นมาใช้กู้คืนไม่ได้จริง จะไม่มีใครรู้
+// จนถึงวันที่ต้องใช้มันจริงๆ
+describe('สำรองฐานข้อมูล: สำเนาต้องกู้คืนได้จริงและครบถ้วน', () => {
+  test('VACUUM INTO ได้ไฟล์ฐานข้อมูลที่เปิดอ่านได้และข้อมูลครบ แม้เปิดโหมด WAL อยู่', () => {
+    // ห้ามคัดลอกไฟล์ .db ตรงๆ เพราะโหมด WAL เก็บข้อมูลที่เพิ่งเขียนไว้ในไฟล์ -wal แยกต่างหาก
+    const doc = makeDoc({ title: 'เอกสารที่ต้องอยู่ในสำเนาสำรอง' });
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esaraban-backup-test-'));
+    const snapPath = path.join(tmpDir, 'snapshot.db');
+    try {
+      db.exec(`VACUUM INTO '${snapPath}'`);
+      assert.ok(fs.existsSync(snapPath), 'ต้องได้ไฟล์สำเนาออกมา');
+
+      // เปิดสำเนาเป็นฐานข้อมูลอิสระ แล้วต้องอ่านเอกสารที่เพิ่งสร้างเจอ
+      const { DatabaseSync } = sqliteModule;
+      const copy = new DatabaseSync(snapPath);
+      try {
+        const row = copy.prepare('SELECT title, doc_number_display FROM documents WHERE id = ?').get(doc.id);
+        assert.ok(row, 'เอกสารที่เพิ่งบันทึกต้องอยู่ในสำเนา ไม่ใช่ค้างอยู่ในไฟล์ WAL');
+        assert.equal(row.title, 'เอกสารที่ต้องอยู่ในสำเนาสำรอง');
+        assert.equal(row.doc_number_display, doc.docNumberDisplay);
+        // ตัวนับเลขทะเบียนต้องติดไปด้วย ไม่งั้นกู้คืนแล้วจะออกเลขซ้ำของเดิม
+        assert.ok(copy.prepare('SELECT COUNT(*) c FROM document_number_counters').get().c > 0);
+        assert.ok(copy.prepare('SELECT COUNT(*) c FROM users').get().c > 0);
+      } finally {
+        copy.close();
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('ไม่เขียนทับฐานข้อมูลที่มีอยู่แล้ว (เครื่องที่ดิสก์ไม่หายต้องไม่โดนกู้คืนทับ)', async () => {
+    const before = { STORAGE_PROVIDER: process.env.STORAGE_PROVIDER, GOOGLE_OAUTH_REFRESH_TOKEN: process.env.GOOGLE_OAUTH_REFRESH_TOKEN };
+    try {
+      process.env.STORAGE_PROVIDER = 'google_drive';
+      process.env.GOOGLE_OAUTH_REFRESH_TOKEN = 'สมมติว่าเชื่อมต่อแล้ว';
+      assert.equal(isBackupEnabled(), true, 'ต้องถือว่าเปิดใช้การสำรองแล้ว');
+      // ไฟล์ฐานข้อมูลของเทสต์นี้มีอยู่จริง จึงต้องคืน false ทันทีโดยไม่แตะเครือข่ายเลย
+      assert.equal(await restoreDatabaseIfMissing(), false);
+      assert.ok(fs.existsSync(tmpDb), 'ไฟล์ฐานข้อมูลเดิมต้องยังอยู่');
+    } finally {
+      if (before.STORAGE_PROVIDER === undefined) delete process.env.STORAGE_PROVIDER;
+      else process.env.STORAGE_PROVIDER = before.STORAGE_PROVIDER;
+      if (before.GOOGLE_OAUTH_REFRESH_TOKEN === undefined) delete process.env.GOOGLE_OAUTH_REFRESH_TOKEN;
+      else process.env.GOOGLE_OAUTH_REFRESH_TOKEN = before.GOOGLE_OAUTH_REFRESH_TOKEN;
+    }
+  });
+
+  test('ยังไม่ได้เชื่อมต่อ Drive ต้องไม่พังและไม่ทำอะไรเลย', async () => {
+    assert.equal(isBackupEnabled(), false);
+    assert.equal(await restoreDatabaseIfMissing(), false);
+    assert.equal(await backupNow('ทดสอบ'), false);
+  });
+
+  // server.js ต้องกู้คืนก่อนโหลด db.js เสมอ — ถ้าเผลอเปลี่ยนกลับไปเป็น import ปกติ ESM จะยกขึ้นไป
+  // เปิดฐานข้อมูลก่อน แล้วสำเนาที่กู้มาจะไม่มีผล กลายเป็นเริ่มจากศูนย์ทุกครั้งโดยไม่มีอะไรฟ้อง
+  test('server.js กู้คืนฐานข้อมูลก่อนเปิดฐานข้อมูลเสมอ', () => {
+    const src = fs.readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(src, /^import \{[^}]*\} from '\.\/src\/db\.js';/m,
+      "server.js ต้องไม่ import db.js แบบปกติ (ESM จะเปิดฐานข้อมูลก่อนกู้คืน) — ให้ใช้ await import()");
+    const restoreAt = src.indexOf('restoreDatabaseIfMissing()');
+    const dbAt = src.indexOf("await import('./src/db.js')");
+    assert.ok(restoreAt > 0 && dbAt > 0, 'หาบรรทัดกู้คืน/โหลด db.js ไม่เจอ');
+    assert.ok(restoreAt < dbAt, 'ต้องกู้คืนก่อนโหลด db.js');
   });
 });
 

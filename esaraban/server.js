@@ -2,10 +2,18 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getSessionUser, parseCookie } from './src/auth.js';
-import { db } from './src/db.js';
-import { router } from './src/router.js';
-import './src/routes/index.js'; // registers all routes onto `router`
+import { restoreDatabaseIfMissing, startAutoBackup } from './src/services/dbBackup.js';
+
+// ต้องกู้ฐานข้อมูลคืนจาก Google Drive ให้เสร็จ "ก่อน" โหลด src/db.js เพราะ db.js เปิดไฟล์ฐานข้อมูล
+// ทันทีที่ถูก import — และ ESM ยก import ทั้งหมดขึ้นไปทำก่อนโค้ดบรรทัดแรกเสมอ ถ้า import ตามปกติ
+// ระบบจะสร้างฐานข้อมูลเปล่าขึ้นมาก่อน แล้วสำเนาที่กู้มาทีหลังก็ไม่มีผล จึงต้องใช้ dynamic import
+// ตรงนี้เท่านั้น (ดูเหตุผลเต็มของการสำรองขึ้น Drive ใน src/services/dbBackup.js)
+await restoreDatabaseIfMissing();
+
+const { getSessionUser } = await import('./src/auth.js');
+const { db } = await import('./src/db.js');
+const { router } = await import('./src/router.js');
+await import('./src/routes/index.js'); // registers all routes onto `router`
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -127,4 +135,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`e-Saraban prototype listening on http://0.0.0.0:${PORT}`);
+  startAutoBackup();
 });

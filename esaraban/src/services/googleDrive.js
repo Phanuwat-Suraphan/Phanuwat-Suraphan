@@ -92,6 +92,21 @@ export async function ensureCategoryFolder({ yearBe, typeName }) {
   return findOrCreateFolder(typeName, yearFolder);
 }
 
+// โฟลเดอร์เก็บสำเนาฐานข้อมูล — แยกจากโฟลเดอร์ไฟล์แนบ เพื่อให้ธุรการไม่เผลอเปิด/ลบปนกับหนังสือ
+export async function ensureBackupFolder() {
+  const root = await findOrCreateFolder(ROOT_FOLDER_NAME, 'root');
+  return findOrCreateFolder('สำเนาฐานข้อมูล (ห้ามลบ)', root);
+}
+
+// รายชื่อไฟล์ในโฟลเดอร์ เรียงใหม่สุดก่อน — ใช้หาสำเนาฐานข้อมูลล่าสุดตอนกู้คืน และหาไฟล์เก่าที่ต้องลบทิ้ง
+export async function listFilesInFolder(folderId, { limit = 100 } = {}) {
+  const q = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
+  const res = await driveFetch(`${API_BASE}?q=${q}&fields=files(id,name,createdTime,size)&orderBy=createdTime desc&pageSize=${limit}&spaces=drive`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw httpError(502, `อ่านรายการไฟล์บน Google Drive ไม่สำเร็จ: ${data.error?.message || res.statusText}`);
+  return data.files || [];
+}
+
 // อัปโหลดไฟล์ด้วย resumable upload (รองรับไฟล์ได้ถึง 10MB ตามเพดานของระบบอย่างน่าเชื่อถือ)
 export async function uploadFile({ buffer, filename, mimeType, folderId }) {
   const token = await getAccessToken();
