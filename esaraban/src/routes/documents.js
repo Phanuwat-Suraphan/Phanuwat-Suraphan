@@ -1,4 +1,4 @@
-import { router, html, json, redirect } from '../router.js';
+import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
 import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, priorityBadge, secretBadge, statusBadge, emptyState, LABELS } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, nowIso, audit, RETENTION_LABEL } from '../db.js';
@@ -1301,13 +1301,6 @@ router.post('/documents/:id/comment', requireApi(async (ctx) => {
   json(ctx, 200, { ok: true });
 }));
 
-// Node's raw HTTP headers only accept Latin-1 bytes — a Thai filename (the norm here) throws
-// "Invalid character in header content" if put straight into Content-Disposition. RFC 5987's
-// filename* carries the real UTF-8 name; filename= keeps an ASCII-only fallback for old clients.
-function contentDispositionHeader(filename) {
-  const asciiFallback = filename.replace(/[^\x20-\x7E]/g, '').replace(/"/g, '') || 'document.pdf';
-  return `inline; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
-}
 
 // ---------------- file serving (ACL-checked, not static — proxied even for Google Drive so ACL always applies) ----------------
 // ภาพหน้าแรกของ PDF (พื้นหลังกล่องลากตำแหน่งตราประทับ) — ดู renderPdfFirstPageImage สำหรับเหตุผลที่ใช้ภาพ

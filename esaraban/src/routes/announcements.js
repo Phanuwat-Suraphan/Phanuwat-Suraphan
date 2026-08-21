@@ -1,4 +1,4 @@
-import { router, html, json } from '../router.js';
+import { router, html, json, contentDispositionHeader } from '../router.js';
 import { layout, esc, fmtDate, emptyState } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { db, uuid, nowIso, beYear, audit } from '../db.js';
@@ -158,13 +158,13 @@ router.get('/announcement-files/:id', requirePage(async (ctx) => {
       return html(ctx, err.statusCode || 502, `<h1>เกิดข้อผิดพลาด</h1><p>${esc(err.message)}</p>`);
     }
     if (!stream) return html(ctx, 404, '<h1>ไม่พบไฟล์บน Google Drive</h1>');
-    ctx.res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${ann.file_name.replace(/"/g, '')}"`, 'X-Content-Type-Options': 'nosniff' });
+    ctx.res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': contentDispositionHeader(ann.file_name, 'announcement.pdf'), 'X-Content-Type-Options': 'nosniff' });
     Readable.fromWeb(stream).pipe(ctx.res);
     return;
   }
 
   const filePath = path.join(UPLOAD_DIR, ann.file_path);
   if (!fs.existsSync(filePath)) return html(ctx, 404, '<h1>ไม่พบไฟล์</h1>');
-  ctx.res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${ann.file_name.replace(/"/g, '')}"`, 'X-Content-Type-Options': 'nosniff' });
+  ctx.res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': contentDispositionHeader(ann.file_name, 'announcement.pdf'), 'X-Content-Type-Options': 'nosniff' });
   fs.createReadStream(filePath).pipe(ctx.res);
 }));

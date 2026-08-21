@@ -13,6 +13,7 @@ process.env.SESSION_SECRET = 'test-secret-not-for-production';
 
 const { db, computeRetentionUntil, beYear, todayInBangkok } = await import('../src/db.js');
 const { login } = await import('../src/auth.js');
+const { contentDispositionHeader } = await import('../src/router.js');
 const { daysUntil } = await import('../src/render.js');
 const {
   createDocument, getDocument, canUserSeeDocument, currentStep,
@@ -539,6 +540,66 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
 // เซิร์ฟเวอร์บน Render รันเป็น UTC ซึ่งช้ากว่าไทย 7 ชั่วโมง ช่วง 00:00-07:00 น. ตามเวลาไทยจึงยังเป็น
 // "เมื่อวาน" ในสายตาของทั้ง new Date() และ date('now') ของ SQLite — บั๊กนี้มองไม่เห็นเลยถ้าทดสอบตอน
 // กลางวัน จึงต้องมีเทสต์ที่จำลองเวลานั้นตรงๆ ไม่ใช่รอให้ไปเจอเองหน้างานตอนเช้ามืด
+// ชื่อไฟล์ภาษาไทยเป็นเรื่องปกติที่โรงเรียนไทย แต่หัว HTTP ของ Node รับได้เฉพาะไบต์ Latin-1 —
+// ถ้าเอาชื่อไทยไปต่อใส่ Content-Disposition ตรงๆ Node จะโยน ERR_INVALID_CHAR ตอบ 500 และผู้ใช้
+// โหลดไฟล์ไม่ได้เลย (ทดสอบกับระบบจริงแล้วว่าไฟล์แนบของประกาศชื่อ "ประกาศรับสมัครครู.pdf" ได้ 500)
+describe('ดาวน์โหลดไฟล์: ชื่อไฟล์ภาษาไทยต้องไม่ทำให้หัว HTTP พัง', () => {
+  test('contentDispositionHeader ให้ค่าที่ใส่ในหัว HTTP ได้จริง', () => {
+    const header = contentDispositionHeader('ประกาศรับสมัครครู.pdf');
+    // ถ้ามีไบต์นอก Latin-1 หลงเหลือ Node จะปฏิเสธตอน writeHead
+    assert.ok(!/[^\x00-\xFF]/.test(header), `ยังมีอักขระที่ใส่ในหัว HTTP ไม่ได้: ${header}`);
+    assert.match(header, /filename\*=UTF-8''/, 'ต้องแนบชื่อจริงแบบ UTF-8 มาด้วย');
+    assert.ok(header.includes(encodeURIComponent('ประกาศรับสมัครครู.pdf')), 'ชื่อไฟล์จริงต้องอยู่ในหัว');
+  });
+
+  test('ชื่อไทยล้วนต้องได้ชื่อสำรองที่ใช้ได้จริง ไม่ใช่เหลือแค่ ".pdf"', () => {
+    // ตัดอักขระไทยออกจาก "ประกาศ.pdf" จะเหลือ ".pdf" ซึ่งบนเครื่องผู้ใช้กลายเป็นไฟล์ซ่อนไม่มีชื่อ
+    const header = contentDispositionHeader('ประกาศ.pdf', 'announcement.pdf');
+    assert.match(header, /filename="announcement\.pdf"/, `ควรถอยไปใช้ชื่อสำรอง แต่ได้: ${header}`);
+    // ชื่อที่มีตัวอักษร ASCII ปนอยู่ ต้องเก็บส่วนนั้นไว้ ไม่ใช่ทิ้งไปใช้ชื่อสำรองทั้งหมด
+    assert.match(contentDispositionHeader('รายงาน-PA-2569.pdf'), /filename="-PA-2569\.pdf"/);
+  });
+
+  test('Node ยอมรับหัวนี้จริง ไม่ใช่แค่ผ่าน regex', async () => {
+    const http = await import('node:http');
+    const header = contentDispositionHeader('ประกาศรับสมัครครู.pdf');
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Disposition': header });
+      res.end('ok');
+    });
+    await new Promise((r) => server.listen(0, r));
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.address().port}/`);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('content-disposition'), header);
+    } finally {
+      server.close();
+    }
+  });
+
+  // ทุกเส้นทางที่ส่งไฟล์ต้องใช้ helper ตัวเดียวกัน — บั๊กนี้เกิดเพราะหน้าประกาศประกอบหัวนี้เองแยกจาก
+  // หน้าเอกสาร แล้วลืมเรื่องภาษาไทยไป
+  test('ไม่มีเส้นทางไหนประกอบ Content-Disposition เองอีก', () => {
+    const offenders = [];
+    const walk = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) { walk(full); continue; }
+        if (!e.name.endsWith('.js') || e.name === 'router.js') continue;
+        fs.readFileSync(full, 'utf8').split('\n').forEach((line) => {
+          // ยอมให้เขียนตรงๆ ได้เฉพาะกรณีชื่อไฟล์เป็นค่าคงที่ ASCII ที่เราตั้งเอง (เช่น รายงาน CSV)
+          if (line.includes('Content-Disposition') && !line.includes('contentDispositionHeader')
+              && !/filename="[\x20-\x7E]*"'?\s*\}?\s*\);?\s*$/.test(line.trim())) {
+            offenders.push(`${e.name}: ${line.trim().slice(0, 90)}`);
+          }
+        });
+      }
+    };
+    walk(new URL('../src/', import.meta.url).pathname);
+    assert.deepEqual(offenders, [], `ประกอบหัวเอง เสี่ยงพังกับชื่อไฟล์ภาษาไทย:\n  ${offenders.join('\n  ')}`);
+  });
+});
+
 describe('เวลา: "วันนี้" ต้องคิดตามเวลาไทยเสมอ ไม่ใช่เวลาเครื่องเซิร์ฟเวอร์', () => {
   test('ตอนเช้ามืดของไทย ยังต้องได้วันที่ของวันนั้น ไม่ใช่เมื่อวาน', () => {
     const RealDate = Date;
