@@ -75,6 +75,43 @@ function hasActiveDelegateStep(documentId, userId) {
   `).get(documentId, userId, todayInBangkok(), todayInBangkok());
 }
 
+/**
+ * เงื่อนไข SQL ที่ให้ผลตรงกับ canUserSeeDocument ทุกประการ — ใช้กรองตั้งแต่ในฐานข้อมูล
+ *
+ * ทำไมต้องมีทั้งสองแบบ: canUserSeeDocument ตรวจทีละฉบับ ใช้ได้ดีตอนเปิดหน้าเอกสารเดียว แต่หน้ารายการ
+ * ต้องนับจำนวนทั้งหมดและแบ่งหน้าให้ถูก ถ้าดึงมาก่อนแล้วค่อยกรองทีหลังด้วย JS จะได้ LIMIT ที่ผิด
+ * (ดึงมา 200 กรองเหลือ 183 แล้วบอกผู้ใช้ว่า "ทั้งหมด 183 ฉบับ" ทั้งที่มีจริง 639) และเลื่อนหน้าไม่ได้
+ *
+ * ตัวนี้ "ต้องตรงกันเป๊ะ" กับ canUserSeeDocument เสมอ ถ้าหลวมกว่าคือเปิดเผยหนังสือลับ ถ้าแคบกว่าคือ
+ * ซ่อนหนังสือที่ควรเห็น — มีเทสต์เทียบผลของทั้งสองแบบกับทุกฉบับ x ทุกบทบาทไว้กันตรงนี้เลื่อนจากกัน
+ * ผู้เรียกยังควรเรียก canUserSeeDocument ซ้ำตอนเปิดเอกสารรายฉบับตามเดิม (กันไว้สองชั้น)
+ *
+ * คืน { sql, params } — sql ใช้ต่อท้าย WHERE ได้เลย โดยตารางเอกสารต้องใช้ชื่อย่อว่า d
+ */
+export function visibleDocumentsSqlFilter(user) {
+  if (user.roleCodes.includes('admin') || user.roleCodes.includes('director')) {
+    return { sql: '1=1', params: {} };
+  }
+  const today = todayInBangkok();
+  return {
+    sql: `(
+      d.secret_level NOT IN ('secret', 'top_secret')
+      OR d.created_by = :vis_me
+      OR EXISTS (SELECT 1 FROM workflow_steps ws WHERE ws.document_id = d.id AND ws.assignee_id = :vis_me)
+      OR EXISTS (
+        SELECT 1 FROM workflow_steps ws2 JOIN user_delegations ud ON ud.delegator_id = ws2.assignee_id
+        WHERE ws2.document_id = d.id AND ws2.status = 'waiting' AND ud.delegate_id = :vis_me
+          AND ud.cancelled_at IS NULL AND ud.start_date <= :vis_today AND ud.end_date >= :vis_today
+      )
+      OR EXISTS (
+        SELECT 1 FROM document_access_grants g
+        WHERE g.document_id = d.id AND (g.user_id = :vis_me OR g.department_id = :vis_dept)
+      )
+    )`,
+    params: { vis_me: user.id, vis_today: today, vis_dept: user.department_id ?? null },
+  };
+}
+
 export function canUserSeeDocument(user, doc) {
   if (!doc) return false;
   if (user.roleCodes.includes('admin') || user.roleCodes.includes('director')) return true;

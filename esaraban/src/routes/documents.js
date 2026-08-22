@@ -1,9 +1,9 @@
 import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, stampDateThai, stampTimeThai, priorityBadge, secretBadge, statusBadge, emptyState, LABELS } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, stampDateThai, stampTimeThai, priorityBadge, secretBadge, statusBadge, emptyState, fmtCount, LABELS } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, nowIso, audit, RETENTION_LABEL } from '../db.js';
 import {
-  createDocument, getDocument, canUserSeeDocument, getWorkflowSteps, currentStep,
+  createDocument, getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
   voidDocument, archiveDocument, forceDeleteDocument, httpError, assertStepBelongsToDocument,
 } from '../services/workflow.js';
@@ -74,20 +74,38 @@ function listUserOptions(excludeId) {
 }
 
 // ---------------- list ----------------
+// จำนวนต่อหน้าของทะเบียนหนังสือ — 50 พอดีกับการกวาดสายตาหาเลขที่ในหน้าเดียว และโหลดเร็วบนมือถือ
+const PAGE_SIZE = 50;
+
 router.get('/documents', requirePage((ctx) => {
   const direction = ctx.query.direction === 'outgoing' ? 'outgoing' : 'incoming';
   const q = (ctx.query.q || '').trim();
   const statusFilter = ctx.query.status || '';
 
-  let sql = `SELECT d.*, dt.name as type_name, dep.name as dept_name FROM documents d
-    JOIN document_types dt ON dt.id = d.doc_type_id JOIN departments dep ON dep.id = d.department_id
-    WHERE d.direction = ? AND d.deleted_at IS NULL`;
-  const params = [direction];
-  if (statusFilter) { sql += ' AND d.status = ?'; params.push(statusFilter); }
-  if (q) { sql += ' AND (d.title LIKE ? OR d.doc_number_display LIKE ? OR d.subject LIKE ? OR d.correspondent_name LIKE ?)'; const like = `%${q}%`; params.push(like, like, like, like); }
-  sql += ' ORDER BY d.created_at DESC LIMIT 200';
+  // กรองสิทธิ์ตั้งแต่ในฐานข้อมูล ไม่ใช่ดึงมาแล้วค่อยกรองด้วย JS — ไม่งั้น LIMIT จะนับรวมฉบับที่ผู้ใช้
+  // ไม่มีสิทธิ์เห็นไปด้วย แล้วจำนวนที่แสดงกับการแบ่งหน้าจะผิดทั้งคู่ (ดู visibleDocumentsSqlFilter)
+  const visible = visibleDocumentsSqlFilter(ctx.user);
+  const where = ['d.direction = :direction', 'd.deleted_at IS NULL', visible.sql];
+  const params = { direction, ...visible.params };
+  if (statusFilter) { where.push('d.status = :status'); params.status = statusFilter; }
+  if (q) {
+    where.push('(d.title LIKE :like OR d.doc_number_display LIKE :like OR d.subject LIKE :like OR d.correspondent_name LIKE :like)');
+    params.like = `%${q}%`;
+  }
+  const whereSql = where.join(' AND ');
 
-  const rows = db.prepare(sql).all(...params).filter((d) => canUserSeeDocument(ctx.user, d));
+  const total = db.prepare(`SELECT COUNT(*) as c FROM documents d WHERE ${whereSql}`).get(params).c;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const page = Math.min(totalPages, Math.max(1, Math.floor(Number(ctx.query.page) || 1)));
+  const offset = (page - 1) * PAGE_SIZE;
+
+  // ยังเรียก canUserSeeDocument ซ้ำอีกชั้น เผื่อเงื่อนไข SQL กับตัวตรวจรายฉบับเลื่อนจากกันในอนาคต
+  // (มีเทสต์เทียบผลของทั้งสองไว้แล้ว แต่การเปิดเผยหนังสือลับเป็นความผิดพลาดที่ยอมเสี่ยงไม่ได้)
+  const rows = db.prepare(`
+    SELECT d.*, dt.name as type_name, dep.name as dept_name FROM documents d
+    JOIN document_types dt ON dt.id = d.doc_type_id JOIN departments dep ON dep.id = d.department_id
+    WHERE ${whereSql} ORDER BY d.created_at DESC LIMIT ${PAGE_SIZE} OFFSET ${offset}
+  `).all(params).filter((d) => canUserSeeDocument(ctx.user, d));
 
   // เรื่องที่ยังไม่ปิดถือว่ายัง "นับเวลาอยู่" — เรื่องที่ปิดแล้วไม่ต้องขึ้นเตือนว่าเลยกำหนดอีก
   const stillOpen = (d) => !['completed', 'archived', 'voided', 'destroyed', 'rejected'].includes(d.status);
@@ -107,12 +125,31 @@ router.get('/documents', requirePage((ctx) => {
     </tr>`;
   }).join('');
 
+  // แถบเลื่อนหน้า — ทะเบียนหนังสือของโรงเรียนหนึ่งปีมีหลายร้อยถึงหลักพันฉบับ ถ้าไม่มีตรงนี้ ฉบับที่เก่ากว่า
+  // หน้าแรกจะเปิดดูไม่ได้เลยนอกจากจะรู้คำค้นล่วงหน้า ซึ่งขัดกับการใช้งานทะเบียนที่ต้องไล่ดูย้อนหลังได้
+  const pageLink = (n) => {
+    const qs = new URLSearchParams({ direction });
+    if (q) qs.set('q', q);
+    if (statusFilter) qs.set('status', statusFilter);
+    if (n > 1) qs.set('page', String(n));
+    return `/documents?${qs.toString()}`;
+  };
+  const pager = totalPages > 1 ? `
+    <div class="flex items-center justify-between gap-2 flex-wrap" style="margin-top:1rem">
+      ${page > 1 ? `<a class="btn btn-outline btn-sm" href="${pageLink(page - 1)}">← ใหม่กว่า</a>` : '<span></span>'}
+      <span class="text-muted" style="font-size:.85rem">
+        แสดงฉบับที่ ${fmtCount(offset + 1)}–${fmtCount(Math.min(offset + PAGE_SIZE, total))}
+        จาก ${fmtCount(total)} ฉบับ
+      </span>
+      ${page < totalPages ? `<a class="btn btn-outline btn-sm" href="${pageLink(page + 1)}">เก่ากว่า →</a>` : '<span></span>'}
+    </div>` : '';
+
   const content = `
     <div class="card-header">
       <div>
         <h2 class="mt-0">${direction === 'incoming' ? '📥 หนังสือเข้า' : '📤 หนังสือออก'}</h2>
         <p class="text-muted" style="margin:-.3rem 0 0;font-size:.85rem">
-          ${rows.length ? `ทั้งหมด ${rows.length} ฉบับ${rows.length >= 200 ? ' (แสดง 200 ฉบับล่าสุด — ใช้ช่องค้นหาเพื่อจำกัดผลลัพธ์)' : ''}${overdueCount ? ` · <strong style="color:var(--danger)">เลยกำหนดแล้ว ${overdueCount}</strong>` : ''}`
+          ${total ? `ทั้งหมด ${fmtCount(total)} ฉบับ${totalPages > 1 ? ` · หน้า ${page} จาก ${totalPages}` : ''}${overdueCount ? ` · <strong style="color:var(--danger)">เลยกำหนดในหน้านี้ ${overdueCount}</strong>` : ''}`
             : 'ยังไม่มีรายการ'}
         </p>
       </div>
@@ -130,7 +167,7 @@ router.get('/documents', requirePage((ctx) => {
       </form>
       ${rows.length ? `<div class="table-wrap"><table>
         <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ฝ่าย</th><th>ความเร็ว</th><th>สถานะ</th><th>ครบกำหนด</th><th>วันที่ลงทะเบียน</th></tr></thead>
-        <tbody>${rowsHtml}</tbody></table></div>`
+        <tbody>${rowsHtml}</tbody></table></div>${pager}`
       : emptyState('📭', `ไม่มี${direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก'}ในรายการนี้`)}
     </div>`;
 

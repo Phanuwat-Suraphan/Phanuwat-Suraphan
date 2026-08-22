@@ -50,6 +50,20 @@ function makeDoc(overrides = {}) {
   });
 }
 
+// ผู้ใช้พร้อม roleCodes/department_id เหมือนที่ ctx.user ได้ตอนล็อกอินจริง — ตัวตรวจสิทธิ์ใช้ทั้งสองอย่าง
+function loadUserForTest(userId) {
+  const u = db.prepare('SELECT id, employee_code, department_id FROM users WHERE id = ?').get(userId);
+  if (!u) return null;
+  const roleCodes = db.prepare(`
+    SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ?
+  `).all(userId).map((r) => r.name);
+  return { ...u, roleCodes };
+}
+
+function getDocRow(id) {
+  return db.prepare('SELECT * FROM documents WHERE id = ?').get(id);
+}
+
 describe('auth: login + rate limiting', () => {
   test('rejects unknown user with a generic error', () => {
     const result = login('nonexistent', 'whatever', '127.0.0.1');
@@ -959,6 +973,63 @@ describe('ลา/ไปราชการ: สิทธิ์ต้องบั�
   test('ผู้อนุมัติ/ผู้รักษาการแทนที่ไม่มีตัวตน ถูกปฏิเสธพร้อมข้อความภาษาไทย', () => {
     assert.throws(() => newLeave({ approverId: 'ไม่มีคนนี้' }), /ไม่พบผู้อนุมัติ/);
     assert.throws(() => newLeave({ delegateId: 'ไม่มีคนนี้' }), /ไม่พบผู้รักษาการแทน/);
+  });
+});
+
+// หน้ารายการทะเบียนหนังสือกรองสิทธิ์ตั้งแต่ใน SQL เพื่อให้นับจำนวนและแบ่งหน้าได้ถูก แต่การตรวจสิทธิ์
+// รายฉบับยังใช้ canUserSeeDocument เหมือนเดิม — สองตัวนี้ต้องให้ผลตรงกันเป๊ะเสมอ ถ้าเงื่อนไข SQL หลวมกว่า
+// คือเปิดเผยหนังสือลับให้คนที่ไม่มีสิทธิ์เห็น ถ้าแคบกว่าคือซ่อนหนังสือที่ควรเห็นจนหาไม่เจอ ทั้งสองแบบ
+// ไม่มีอะไรฟ้องเลยจนกว่าจะมีคนมาบ่น เทสต์นี้จึงเทียบผลของทั้งสองกับหนังสือทุกฉบับ x ผู้ใช้ทุกบทบาท
+describe('สิทธิ์เห็นหนังสือ: เงื่อนไขใน SQL ต้องตรงกับการตรวจรายฉบับเสมอ', () => {
+  test('ทุกฉบับ x ทุกบทบาท ให้ผลเหมือนกันทั้งสองทาง', async () => {
+    const { canUserSeeDocument, visibleDocumentsSqlFilter } = await import('../src/services/workflow.js');
+    const { getSessionUser } = await import('../src/auth.js');
+
+    const docs = db.prepare('SELECT * FROM documents WHERE deleted_at IS NULL').all();
+    assert.ok(docs.length >= 3, 'ต้องมีข้อมูลพอให้เทียบ ไม่งั้นเทสต์ผ่านแบบไม่ได้ตรวจอะไรเลย');
+    const users = db.prepare('SELECT id FROM users').all()
+      .map((u) => loadUserForTest(u.id))
+      .filter(Boolean);
+    assert.ok(users.length >= 4, 'ต้องมีผู้ใช้หลายบทบาท');
+
+    let checked = 0;
+    let secretChecked = 0;
+    for (const user of users) {
+      const visible = visibleDocumentsSqlFilter(user);
+      const allowedIds = new Set(db.prepare(
+        `SELECT d.id FROM documents d WHERE d.deleted_at IS NULL AND ${visible.sql}`,
+      ).all(visible.params).map((r) => r.id));
+
+      for (const doc of docs) {
+        const bySql = allowedIds.has(doc.id);
+        const byJs = canUserSeeDocument(user, doc);
+        assert.equal(bySql, byJs,
+          `ไม่ตรงกัน: ผู้ใช้ ${user.employee_code} กับหนังสือ ${doc.doc_number_display} (ชั้นความลับ ${doc.secret_level}) — SQL=${bySql} แต่ตรวจรายฉบับ=${byJs}`);
+        checked++;
+        if (doc.secret_level === 'secret' || doc.secret_level === 'top_secret') secretChecked++;
+      }
+    }
+    assert.ok(secretChecked > 0, 'ต้องมีหนังสือชั้นความลับในชุดทดสอบ ไม่งั้นไม่ได้ตรวจส่วนที่สำคัญที่สุด');
+    assert.ok(checked >= 12, `ตรวจน้อยเกินไป (${checked} คู่)`);
+  });
+
+  test('คนที่ไม่เกี่ยวข้องต้องมองไม่เห็นหนังสือลับ ทั้งสองทาง', async () => {
+    const { canUserSeeDocument, visibleDocumentsSqlFilter } = await import('../src/services/workflow.js');
+    const outsider = loadUserForTest(seed.userIds.teacher001);
+    const secretDoc = makeDoc({ title: 'หนังสือลับที่ครูคนนี้ไม่เกี่ยวข้อง', secretLevel: 'secret', createdBy: seed.userIds.reg001 });
+
+    assert.equal(canUserSeeDocument(outsider, getDocRow(secretDoc.id)), false, 'ตัวตรวจรายฉบับต้องปฏิเสธ');
+    const visible = visibleDocumentsSqlFilter(outsider);
+    const seenBySql = db.prepare(`SELECT 1 as x FROM documents d WHERE d.id = :id AND ${visible.sql}`)
+      .get({ id: secretDoc.id, ...visible.params });
+    assert.equal(seenBySql, undefined, 'เงื่อนไข SQL ต้องไม่ปล่อยหนังสือลับหลุดไปให้คนที่ไม่เกี่ยวข้อง');
+
+    // และผู้บันทึกเองต้องยังเห็นได้ทั้งสองทาง ไม่ใช่ซ่อนหมดทุกคนแล้วเทสต์ผ่านแบบไม่ได้ตรวจอะไร
+    const owner = loadUserForTest(seed.userIds.reg001);
+    assert.equal(canUserSeeDocument(owner, getDocRow(secretDoc.id)), true);
+    const ownerVis = visibleDocumentsSqlFilter(owner);
+    assert.ok(db.prepare(`SELECT 1 as x FROM documents d WHERE d.id = :id AND ${ownerVis.sql}`)
+      .get({ id: secretDoc.id, ...ownerVis.params }), 'ผู้บันทึกต้องยังเห็นหนังสือลับของตัวเอง');
   });
 });
 

@@ -317,3 +317,9 @@ export function illustratedEmptyState(name, text) {
 export function illustration(name) {
   return ILLUSTRATIONS[name] || '';
 }
+
+// คั่นหลักพันของตัวเลข — เขียนเองแทน toLocaleString เพราะเทสต์กวาดหา toLocale* ที่ไม่ระบุ timeZone
+// (กันพลาดเรื่องโซนเวลาของวันที่) การยกเว้นเป็นรายบรรทัดจะทำให้ตัวกวาดนั้นอ่อนลงโดยไม่จำเป็น
+export function fmtCount(n) {
+  return String(Math.trunc(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
