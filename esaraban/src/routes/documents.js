@@ -8,10 +8,11 @@ import {
   voidDocument, archiveDocument, forceDeleteDocument, httpError, assertStepBelongsToDocument,
 } from '../services/workflow.js';
 import { extractTextFromPdf, guessFieldsFromText, renderPdfFirstPageImage } from '../services/ocr.js';
-import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream } from '../services/googleDrive.js';
+import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream, deleteFile } from '../services/googleDrive.js';
 import {
   stampPdf, stampDirectorDecision, stampAcknowledgeMark, stampRegistrarComment,
   DECISION_MAX_TOP_PERCENT, DEFAULT_ACK_MARK_X_PERCENT, DEFAULT_DECISION_X_PERCENT, DEFAULT_REGISTRAR_X_PERCENT,
+  ackSlotTopPercent, ACK_WORD_HEIGHT_PERCENT, ACK_ENTRY_HEIGHT_PERCENT,
 } from '../services/pdfStamp.js';
 import { getActiveDelegateFor } from '../services/delegation.js';
 import { Readable } from 'node:stream';
@@ -560,30 +561,10 @@ router.get('/documents/:id', requirePage((ctx) => {
           <label><span class="step-num">1</span> ${isDirectorDecision ? 'ส่งต่อ/อนุมัติไปยัง' : 'มอบหมายให้'} <span class="text-muted" style="font-weight:400">(ไม่เลือกก็ได้ ถ้าจบที่คุณ)</span></label>
           <select id="nextAssignee"><option value="">— ไม่ส่งต่อ จบเรื่องที่ฉัน —</option>${listUserOptions(ctx.user.id)}</select>
         </div>
-        <div class="field">
-          <label><span class="step-num">2</span> ความเห็น/ข้อความเกษียณ</label>
-          <div class="chip-row" style="margin-bottom:.4rem">
-            <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('เห็นชอบ')">เห็นชอบ</button>
-            <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('อนุมัติ')">อนุมัติ</button>
-            <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('ทราบ')">ทราบ</button>
-            <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('มอบฝ่าย', ' ดำเนินการ')">มอบฝ่าย...ดำเนินการ</button>
-            <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('เพื่อพิจารณา')">เพื่อพิจารณา</button>
-            <button type="button" class="btn btn-outline btn-sm" onclick="insertQuickPhrase('เพื่อทราบและดำเนินการ')">เพื่อทราบและดำเนินการ</button>
-          </div>
-          <textarea id="stepComment" placeholder="กดปุ่มด้านบนเพื่อใส่ข้อความสำเร็จรูป แล้วพิมพ์เพิ่มได้ หรือพิมพ์เองทั้งหมด"></textarea>
-          <details class="help-details">
-            <summary>คำไหนใช้ตอนไหน?</summary>
-            <div class="help-text">
-              <strong>อนุมัติ</strong> — ใช้อำนาจตามระเบียบ เช่น อนุมัติโครงการ/งบประมาณ<br/>
-              <strong>เห็นชอบ</strong> — เห็นด้วยกับหลักการ แล้วให้หน่วยที่เกี่ยวข้องไปจัดทำรายละเอียดต่อ<br/>
-              <strong>ทราบ</strong> — รับทราบเฉยๆ ไม่ได้สั่งการเพิ่ม
-            </div>
-          </details>
-        </div>
         ${attachments.length && isRegistrarComment ? `
         <div class="field">
           <div class="flex items-center justify-between gap-2" style="flex-wrap:nowrap">
-            <label style="margin-bottom:0"><span class="step-num">3</span> ความเห็นธุรการ เสนอ ผอ. <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+            <label style="margin-bottom:0"><span class="step-num">2</span> ความเห็นธุรการ เสนอ ผอ. <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
             <button type="button" class="btn btn-outline btn-sm" style="flex:0 0 auto;white-space:nowrap" onclick="window.clearRegistrarNote()">🗑️ ล้างค่า</button>
           </div>
           <div class="chip-row" style="margin:.4rem 0">
@@ -602,7 +583,7 @@ router.get('/documents/:id', requirePage((ctx) => {
         </div>` : ''}
         ${attachments.length && isDirectorDecision ? `
         <div class="field">
-          <label><span class="step-num">3</span> เครื่องหมายบนตราประทับ <span class="text-muted" style="font-weight:400">(ติ๊กได้หลายอัน — เฉพาะอันที่ติ๊กจะขึ้นบนตราใน PDF จริง)</span></label>
+          <label><span class="step-num">2</span> เครื่องหมายบนตราประทับ <span class="text-muted" style="font-weight:400">(ติ๊กได้หลายอัน — เฉพาะอันที่ติ๊กจะขึ้นบนตราใน PDF จริง)</span></label>
           <div class="stack" style="gap:.35rem">
             ${(() => {
               const tick = (m) => `<input type="checkbox" class="decisionMark" value="${esc(m.value)}" onchange="window.updateDecisionMarksPreview && window.updateDecisionMarksPreview()" />`;
@@ -626,13 +607,12 @@ router.get('/documents/:id', requirePage((ctx) => {
         </div>
         <div class="field">
           <div class="flex items-center justify-between gap-2" style="flex-wrap:nowrap">
-            <label style="margin-bottom:0"><span class="step-num">4</span> ข้อความบนตราประทับ "เห็นควรให้..." <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+            <label style="margin-bottom:0"><span class="step-num">3</span> ข้อความบนตราประทับ "เห็นควรให้..." <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
             <button type="button" class="btn btn-outline btn-sm" style="flex:0 0 auto;white-space:nowrap" onclick="window.clearDecisionInputs()">🗑️ ล้างค่า</button>
           </div>
           <textarea id="decisionNote" placeholder="พิมพ์ข้อความที่จะแสดงบนตราประทับในไฟล์ PDF จริง" oninput="window.updateDecisionMarksPreview && window.updateDecisionMarksPreview()"></textarea>
           <div class="callout-tip">
-            💡 อยากเลือกตำแหน่งตราประทับเอง? กด <strong>👁️ ดูตัวอย่าง</strong> ที่ไฟล์แนบไฟล์แรก แล้วลากกล่องไปวางตรงที่ต้องการ
-            <span class="text-muted">— ถ้าไม่ลาก ระบบจะวางตำแหน่งเริ่มต้นให้อัตโนมัติ</span>
+            💡 กด <strong>👁️ ดูตัวอย่าง</strong> ที่ไฟล์แนบไฟล์แรก เพื่อดูว่าตราประทับจะออกมาหน้าตาแบบไหนก่อนกดยืนยัน
           </div>
           <div class="help-text">ติ๊กผิด/พิมพ์ผิดกด "ล้างค่า" ได้ทุกเมื่อ ยังไม่มีผลจนกว่าจะกดปุ่มด้านล่าง</div>
         </div>` : ''}
@@ -651,12 +631,9 @@ router.get('/documents/:id', requirePage((ctx) => {
       </div>
     </div>
     <script>
-      // ตำแหน่งที่ลากไว้ (window.markPos/window.decisionPos จาก script ของกล่องไฟล์แนบด้านบน) — undefined
-      // ถ้าไม่เคยกดดูตัวอย่าง/ไม่เคยลาก ให้ปล่อยเป็น undefined เพื่อให้ฝั่งเซิร์ฟเวอร์ใช้ตำแหน่งเริ่มต้นเอง
+      // ตำแหน่งกล่องทุกอันเป็นค่าตายตัวฝั่งเซิร์ฟเวอร์แล้ว ที่นี่ส่งไปแค่เนื้อหาที่ผู้ใช้พิมพ์/ติ๊กเอง
       function stampPositionFields(){
         var f = {};
-        if (window.markPos) { f.markX = window.markPos.x; f.markY = window.markPos.y; }
-        if (window.decisionPos) { f.decisionX = window.decisionPos.x; f.decisionY = window.decisionPos.y; }
         var noteEl = document.getElementById('decisionNote');
         if (noteEl && noteEl.value.trim()) f.decisionNote = noteEl.value.trim();
         var checkedMarks = Array.prototype.slice.call(document.querySelectorAll('.decisionMark:checked')).map(function (el) { return el.value; });
@@ -665,10 +642,9 @@ router.get('/documents/:id', requirePage((ctx) => {
         if (notifyEl && notifyEl.value.trim()) f.decisionNotify = notifyEl.value.trim();
         var regEl = document.getElementById('registrarNote');
         if (regEl && regEl.value.trim()) f.registrarNote = regEl.value.trim();
-        if (window.registrarPos) { f.registrarX = window.registrarPos.x; f.registrarY = window.registrarPos.y; }
         return f;
       }
-      // แทรกคำที่ธุรการใช้บ่อยลงในช่องความเห็นเสนอ ผอ. — ทำงานแบบเดียวกับ insertQuickPhrase ของช่องเกษียณ
+      // แทรกคำที่ธุรการใช้บ่อยลงในช่องความเห็นเสนอ ผอ. ไม่ทับของเดิม เพิ่มขึ้นบรรทัดใหม่ พิมพ์ต่อได้ตามปกติ
       function insertRegistrarPhrase(head, tail){
         var el = document.getElementById('registrarNote');
         var sep = el.value.trim() ? '\\n' : '';
@@ -687,29 +663,17 @@ router.get('/documents/:id', requirePage((ctx) => {
       }
       function doApprove(btn){
         var next = document.getElementById('nextAssignee').value;
-        var comment = document.getElementById('stepComment').value;
         if (!next) { toast('กรุณาเลือกผู้รับที่จะส่งต่อ ก่อนกดอนุมัติ (ถ้าเป็นผู้รับคนสุดท้ายให้กด "รับทราบ/ปิดเรื่อง" แทน)', 'warning'); return; }
         if (!confirmIfNoMarksChecked()) return;
-        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/approve', Object.assign({ nextAssigneeId: next, comment: comment }, stampPositionFields()));
+        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/approve', Object.assign({ nextAssigneeId: next }, stampPositionFields()));
       }
       function doAcknowledge(btn){
         if (!confirmIfNoMarksChecked()) return;
-        var comment = document.getElementById('stepComment').value;
-        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/acknowledge', Object.assign({ comment: comment }, stampPositionFields()), '/?celebrate=1');
+        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/acknowledge', stampPositionFields(), '/?celebrate=1');
       }
       function doReject(btn){
         if (!confirmIfNoMarksChecked()) return;
         actionWithReason(btn, '/documents/${doc.id}/workflow/${step.id}/reject', 'ระบุเหตุผลที่ไม่อนุมัติ', stampPositionFields());
-      }
-      // แทรกคำเกษียณมาตรฐานลงในกล่องข้อความ — ไม่ทับของเดิม เพิ่มขึ้นบรรทัดใหม่ พิมพ์ต่อได้ตามปกติ
-      // ถ้ามี tailText (เช่น "มอบฝ่าย...ดำเนินการ") จะวางเคอร์เซอร์ไว้ระหว่างกลางให้พิมพ์ชื่อฝ่ายแทรกได้เลย
-      function insertQuickPhrase(head, tail){
-        var el = document.getElementById('stepComment');
-        var sep = el.value.trim() ? '\\n' : '';
-        var insertPos = el.value.length + sep.length + head.length;
-        el.value = el.value + sep + head + (tail || '');
-        el.focus();
-        el.setSelectionRange(insertPos, insertPos);
       }
     </script>` : '';
 
@@ -725,17 +689,42 @@ router.get('/documents/:id', requirePage((ctx) => {
           <label>ข้อความ/คำสั่ง</label>
           <textarea id="assignInstruction" placeholder="เช่น เพื่อโปรดพิจารณา"></textarea>
         </div>
+        ${attachments.length && ctx.user.roleCodes.includes('registrar') ? `
+        <div class="field">
+          <label>ความเห็นธุรการ เสนอ ผอ. <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+          <textarea id="assignRegistrarNote" placeholder="พิมพ์ความเห็นที่จะขึ้นบนตัวหนังสือ ให้ ผอ. เห็นพร้อมกับเอกสาร"></textarea>
+          <div class="callout-tip">
+            ✍️ ระบบจะพิมพ์ลงไฟล์ PDF จริงที่มุมซ้ายล่าง เป็น 3 ส่วน — บรรทัดแรก <strong>“เรียนผู้อำนวยการโรงเรียน”</strong>
+            บรรทัดถัดมาคือความเห็น แล้วปิดท้ายด้วย<strong>ลายเซ็นและตำแหน่งของคุณ</strong>
+            ${ctx.user.signature_image ? '' : '<br/><span style="color:var(--danger)">⚠️ คุณยังไม่ได้บันทึกลายเซ็นในโปรไฟล์ — ความเห็นจะขึ้นแต่จะไม่มีลายเซ็น</span>'}
+            <br/>เพราะมีลายเซ็นติดไปด้วย จึงต้องยืนยัน PIN ก่อน (ถ้าไม่เขียนความเห็น เสนอได้เลยไม่ต้องใส่ PIN)
+          </div>
+        </div>` : ''}
         <button class="btn btn-primary" onclick="doAssign(this)">เสนอ</button>
       </div>
     </div>
     <script>
-      function doAssign(btn){
+      async function doAssign(btn){
         var assigneeId = document.getElementById('assignTo').value;
         var instruction = document.getElementById('assignInstruction').value;
+        var noteEl = document.getElementById('assignRegistrarNote');
+        var registrarNote = noteEl ? noteEl.value.trim() : '';
+        var body = { assigneeId: assigneeId, instruction: instruction };
+        // ความเห็นธุรการมีลายเซ็นติดไปลงบนตัวหนังสือ จึงต้องยืนยันตัวตนเหมือนการลงนามจุดอื่นในระบบ
+        if (registrarNote) {
+          var pin = await window.askPin('ยืนยัน PIN เพื่อลงความเห็นและเสนอ ผอ.');
+          if (!pin) return;
+          body.registrarNote = registrarNote;
+          body.pin = pin;
+        }
         btn.disabled = true;
-        fetch('/documents/${doc.id}/assign', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({assigneeId, instruction}) })
+        fetch('/documents/${doc.id}/assign', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })
           .then(r => r.json().then(d => ({ok: r.ok, d})))
-          .then(({ok, d}) => { if(!ok) throw new Error(d.error); location.reload(); })
+          .then(({ok, d}) => {
+            if(!ok) throw new Error(d.error);
+            if (d.warning) { window.toast(d.warning, 'warning'); setTimeout(function(){ location.reload(); }, 2500); return; }
+            location.reload();
+          })
           .catch(e => { toast(e.message, 'danger'); btn.disabled = false; });
       }
     </script>` : '';
@@ -825,10 +814,10 @@ router.get('/documents/:id', requirePage((ctx) => {
             // ทั่วไปทำ — ปั๊มตราบนเอกสารต้นฉบับ) เฉพาะหนังสือรับเท่านั้น ลากวางตำแหน่งได้ (บันทึกอัตโนมัติ
             // ตอนปล่อยเมาส์) — หมายเหตุ: นี่คือการซ้อนแสดงตอนดูในแอปเท่านั้น ไม่ได้ฝังลงในไฟล์ PDF จริง
             var STAMP_DIRECTION = ${JSON.stringify(doc.direction)};
-            var STAMP_CAN_EDIT = ${isCreatorOrAdmin ? 'true' : 'false'};
+
             var STAMP_X = ${doc.stamp_x != null ? doc.stamp_x : 70};
             var STAMP_Y = ${doc.stamp_y != null ? doc.stamp_y : 3};
-            var STAMP_HTML = '<div class="doc-stamp"' + (STAMP_CAN_EDIT ? ' id="docStamp" style="cursor:move;left:' : ' style="left:') + STAMP_X + '%;top:' + STAMP_Y + '%">' +
+            var STAMP_HTML = '<div class="doc-stamp doc-overlay-box" id="docStamp" data-label="ตราลงรับของธุรการ" style="left:' + STAMP_X + '%;top:' + STAMP_Y + '%">' +
               '<div class="stamp-title">${esc(SCHOOL_NAME)}</div>' +
               '<div>เลขรับ......${esc(doc.doc_number_display)}......</div>' +
               '<div>วันที่......${stampDateThai(new Date(doc.created_at))}......</div>' +
@@ -839,18 +828,23 @@ router.get('/documents/:id', requirePage((ctx) => {
             // จะได้ top:undefined% ซึ่งเป็น CSS ที่ใช้ไม่ได้ เบราว์เซอร์จะทิ้งทั้งบรรทัด แล้วกล่องจะไปกองอยู่
             // ท้ายพื้นที่ตัวอย่างแทนตำแหน่งจริงที่จะประทับ — ตัวอย่างกับของจริงต้องตรงกันเสมอ
             var DECISION_MAX_TOP = ${DECISION_MAX_TOP_PERCENT};
-            // เครื่องหมาย "ทราบ" + ลายเซ็นของผู้ใช้คนปัจจุบัน (ถ้ามีลายเซ็นบันทึกไว้ในโปรไฟล์) — ลากวาง
-            // ตำแหน่งเองได้ก่อนกดปุ่มอนุมัติ/รับทราบ/ไม่อนุมัติ ตำแหน่งจะถูกส่งไปพร้อมคำขอนั้นเลย ไม่บันทึก
-            // แยกต่างหาก (ต่างจากตราลงรับที่บันทึกทันทีที่ปล่อยเมาส์ เพราะอันนี้ยังไม่ได้ "ตัดสินใจ" จริง)
-            var CAN_MARK = ${(isCurrentAssignee && ctx.user.signature_image && !isDirectorDecision) ? 'true' : 'false'};
-            var MARK_HTML = '<div class="doc-mark" id="ackMark" style="left:${DEFAULT_ACK_MARK_X_PERCENT}%;top:${step ? markStackYPercent(doc.id, step.id) : MARK_BASE_Y}%">' +
-              '<div class="mark-word">ทราบ</div>' +
-              ${ctx.user.signature_image ? `'<img src="${esc(ctx.user.signature_image)}" />' +` : "''+"}
-              '<div class="mark-name">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</div>' +
+            // ทุกกล่องอยู่ตำแหน่งตายตัวตามผังแถบล่าง (ดู pdfStamp.js) ลากย้ายเองไม่ได้แล้ว — โรงเรียนแจ้งว่า
+            // ไม่ได้ใช้การลากเลย และการลากเปิดช่องให้วางทับกันเองจนอ่านไม่ออก หน้าตัวอย่างยังมีไว้ให้ดูว่า
+            // ของจริงจะออกมาหน้าตาแบบไหน และเอาเมาส์ชี้กล่องไหนก็อ่านกล่องนั้นชัดๆ ได้ (ดู .doc-overlay-*)
+            // ตัวอย่างช่อง "ทราบ" ต้องแสดงตรงกับที่จะประทับจริง — คำว่า "ทราบ" มีคำเดียวต่อหนังสือหนึ่งฉบับ
+            // ถ้าเรามาทีหลัง จะเห็นเฉพาะช่องลายเซ็นของเราต่อจากคนก่อนหน้า ไม่มีคำว่าทราบซ้ำอีกอัน
+            var CAN_MARK = ${(isCurrentAssignee && ctx.user.signature_image && !isDirectorDecision && !isRegistrarComment) ? 'true' : 'false'};
+            var ACK_SIGNER_INDEX = ${attachments.length ? ackSignerIndex(attachments[0].id) : 0};
+            var MARK_HTML = '<div class="doc-mark doc-overlay-box" id="ackMark" data-label="ทราบ (ลายเซ็นผู้ได้รับเอกสาร)" style="left:${DEFAULT_ACK_MARK_X_PERCENT}%;top:${attachments.length ? ackSlotTopPercent(ackSignerIndex(attachments[0].id), MARK_BASE_Y) : MARK_BASE_Y}%">' +
+              (ACK_SIGNER_INDEX === 0 ? '<div class="mark-word">ทราบ</div>' : '') +
+              '<div class="mark-entry">' +
+                ${ctx.user.signature_image ? `'<div class="mark-sig"><img src="${esc(ctx.user.signature_image)}" /></div>' +` : "'<div class=\"mark-sig\"></div>' +"}
+                '<div class="mark-name">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</div>' +
+              '</div>' +
             '</div>';
             // ความเห็นธุรการเสนอ ผอ. — มุมขวาล่าง ขอบบนตรงกับกรอบตราปั๊ม ผอ. (ใช้ DECISION_MAX_TOP ตัวเดียวกัน)
             var CAN_REGISTRAR = ${(isCurrentAssignee && isRegistrarComment) ? 'true' : 'false'};
-            var REGISTRAR_HTML = '<div class="doc-registrar-note" id="registrarBox" style="left:${DEFAULT_REGISTRAR_X_PERCENT}%;top:' + DECISION_MAX_TOP + '%">' +
+            var REGISTRAR_HTML = '<div class="doc-registrar-note doc-overlay-box" id="registrarBox" data-label="ความเห็นธุรการ เสนอ ผอ." style="left:${DEFAULT_REGISTRAR_X_PERCENT}%;top:' + DECISION_MAX_TOP + '%">' +
               '<div class="reg-lead">เรียนผู้อำนวยการโรงเรียน</div>' +
               '<div class="reg-body" id="registrarNotePreview"></div>' +
               ${ctx.user.signature_image ? `'<div class="sig"><img src="${esc(ctx.user.signature_image)}" /></div>' +` : "''+"}
@@ -869,7 +863,7 @@ router.get('/documents/:id', requirePage((ctx) => {
               if (input) input.value = '';
               window.updateRegistrarPreview();
             };
-            var DECISION_HTML = '<div class="doc-decision-box" id="decisionBox" style="left:${DEFAULT_DECISION_X_PERCENT}%;top:' + DECISION_MAX_TOP + '%">' +
+            var DECISION_HTML = '<div class="doc-decision-box doc-overlay-box" id="decisionBox" data-label="กรอบตราปั๊ม ผอ." style="left:${DEFAULT_DECISION_X_PERCENT}%;top:' + DECISION_MAX_TOP + '%">' +
               '<div class="box-title">${decisionBoxTitleHtml}</div>' +
               '<div id="decisionMarksPreview"></div>' +
               '<div class="box-note" id="decisionNotePreview">ความเห็น ...</div>' +
@@ -901,8 +895,7 @@ router.get('/documents/:id', requirePage((ctx) => {
               var noteInput = document.getElementById('decisionNote');
               if (noteEl) noteEl.textContent = 'เห็นควรให้ ' + ((noteInput && noteInput.value.trim()) || '...');
             };
-            // ล้างเครื่องหมาย/ข้อความที่ติ๊ก/พิมพ์ไว้ทั้งหมด เผื่อกดหรือพิมพ์ผิด — ไม่กระทบตำแหน่งที่ลากไว้
-            // (window.decisionPos) เพราะเป็นคนละเรื่องกัน
+            // ล้างเครื่องหมาย/ข้อความที่ติ๊ก/พิมพ์ไว้ทั้งหมด เผื่อกดหรือพิมพ์ผิด
             window.clearDecisionInputs = function () {
               document.querySelectorAll('.decisionMark:checked').forEach(function (el) { el.checked = false; });
               var noteInput = document.getElementById('decisionNote');
@@ -911,55 +904,15 @@ router.get('/documents/:id', requirePage((ctx) => {
               if (notifyInput) notifyInput.value = '';
               window.updateDecisionMarksPreview();
             };
-            window.markPos = null;
-            window.decisionPos = null;
-            window.registrarPos = null;
-            var stampSaveTimer = null;
-            function saveStampPosition(x, y) {
-              fetch('/documents/${doc.id}/stamp-position', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({x: x, y: y}) })
-                .then(r => r.json().then(d => ({ok: r.ok, d})))
-                .then(({ok, d}) => { if (ok) window.toast('บันทึกตำแหน่งตราประทับแล้ว', 'success'); else window.toast(d.error, 'danger'); })
-                .catch(e => window.toast(e.message, 'danger'));
-            }
-            // maxY: เพดานเฉพาะตัว (กล่องความเห็น ผอ. ห้ามต่ำกว่า DECISION_MAX_TOP ไม่งั้นตอนประทับจริง
-            // ส่วนท้ายกล่องจะตกหน้า 2 แล้วหาย) — ถ้าไม่ส่งมา ใช้ 96% ตามเดิม
-            function makeDraggable(wrap, el, onDragEnd, maxY) {
-              el.addEventListener('pointerdown', function (e) {
-                e.preventDefault();
-                // overlay โปร่งใสคลุมทั้งกล่อง preview ระหว่างลาก — กัน iframe ของ PDF แย่ง pointer event
-                // ระหว่างลากผ่าน (ปัญหาคลาสสิกของการลากธาตุที่มี iframe ซ้อนอยู่ด้านล่าง)
-                var capture = document.createElement('div');
-                capture.style.cssText = 'position:absolute;inset:0;z-index:5;cursor:move;';
-                wrap.appendChild(capture);
-                function onMove(ev) {
-                  var rect = wrap.getBoundingClientRect();
-                  var x = ((ev.clientX - rect.left) / rect.width) * 100;
-                  var y = ((ev.clientY - rect.top) / rect.height) * 100;
-                  x = Math.max(0, Math.min(96, x));
-                  y = Math.max(0, Math.min(maxY == null ? 96 : maxY, y));
-                  el.style.left = x + '%';
-                  el.style.top = y + '%';
-                  el.dataset.x = x;
-                  el.dataset.y = y;
-                }
-                function onUp() {
-                  capture.remove();
-                  document.removeEventListener('pointermove', onMove);
-                  document.removeEventListener('pointerup', onUp);
-                  if (el.dataset.x !== undefined && onDragEnd) onDragEnd(parseFloat(el.dataset.x), parseFloat(el.dataset.y));
-                }
-                document.addEventListener('pointermove', onMove);
-                document.addEventListener('pointerup', onUp);
-              });
-            }
-            function makeStampDraggable(wrap, stamp) { makeDraggable(wrap, stamp, saveStampPosition); }
+            // เดิมตรงนี้เป็นโค้ดลากกล่องไปวางเอง ถอดออกแล้วตามที่โรงเรียนแจ้งว่าไม่ได้ใช้เลย —
+            // ทุกกล่องอยู่ตำแหน่งตายตัวตามผังแถบล่างใน pdfStamp.js ซึ่งคำนวณมาแล้วว่าไม่ทับกันและไม่ล้นหน้า
             window.pdfPreviewError = function(imgEl) {
               if (imgEl.dataset.errored) return;
               imgEl.dataset.errored = '1';
               var note = document.createElement('div');
               note.className = 'pdf-preview-fallback';
               note.style.cssText = 'width:100%;aspect-ratio:595/842;display:flex;align-items:center;justify-content:center;text-align:center;padding:1rem;color:var(--text-muted,#666);background:var(--bg-muted,#f4f4f4);border-radius:6px';
-              note.textContent = 'ไม่สามารถแสดงตัวอย่างไฟล์ได้ (เซิร์ฟเวอร์อาจยังไม่ได้ติดตั้ง poppler-utils — ดู DEPLOY.md) — ยังคงลากกล่องด้านล่างเพื่อกำหนดตำแหน่งได้ตามปกติ โดยอ้างอิงจากขอบเขตพื้นที่นี้';
+              note.textContent = 'ไม่สามารถแสดงตัวอย่างไฟล์ได้ (เซิร์ฟเวอร์อาจยังไม่ได้ติดตั้ง poppler-utils — ดู DEPLOY.md) — ไม่กระทบการลงนาม/ประทับตราลงไฟล์จริง ซึ่งใช้ตำแหน่งตายตัวอยู่แล้ว';
               imgEl.replaceWith(note);
             };
             window.applyStamp = function(attId, btn){
@@ -1002,16 +955,9 @@ router.get('/documents/:id', requirePage((ctx) => {
                     (showDecision ? DECISION_HTML : '') +
                     (showRegistrar ? REGISTRAR_HTML : '') +
                   '</div>' +
-                  (showStamp && STAMP_CAN_EDIT ? '<div class="help-text">ลากกล่องตราประทับ "ลงรับ" เพื่อย้ายตำแหน่ง — บันทึกอัตโนมัติทันทีที่ปล่อยเมาส์</div>' : '') +
-                  (showMark || showDecision || showRegistrar ? '<div class="help-text">ลากกล่อง "ทราบ" / กล่องความเห็นเพื่อย้ายตำแหน่งก่อนกดปุ่มด้านขวา — ตำแหน่งที่ลากไว้จะถูกใช้ตอนกดปุ่มดำเนินการ</div>' : '');
+                                    (showMark || showDecision || showRegistrar ? '<div class="help-text">นี่คือตัวอย่างว่าไฟล์จริงจะออกมาหน้าตาแบบไหน — เอาเมาส์ชี้กล่องไหนเพื่ออ่านกล่องนั้นชัดๆ ได้</div>' : '');
                   el.dataset.loaded = '1';
-                  var wrap = document.getElementById('stampWrap');
-                  if (showStamp && STAMP_CAN_EDIT) makeStampDraggable(wrap, document.getElementById('docStamp'));
-                  if (showMark) makeDraggable(wrap, document.getElementById('ackMark'), function(x, y) { window.markPos = { x: x, y: y }; });
-                  if (showDecision) makeDraggable(wrap, document.getElementById('decisionBox'), function(x, y) { window.decisionPos = { x: x, y: y }; }, DECISION_MAX_TOP);
                   if (showDecision) window.updateDecisionMarksPreview();
-                  // เพดานเดียวกับกล่อง ผอ. — กันส่วนท้าย (ลายเซ็น/ชื่อ/ตำแหน่ง) ตกหน้า 2 แล้วหายตอนประทับจริง
-                  if (showRegistrar) makeDraggable(wrap, document.getElementById('registrarBox'), function(x, y) { window.registrarPos = { x: x, y: y }; }, DECISION_MAX_TOP);
                   if (showRegistrar) window.updateRegistrarPreview();
                 }
               } else {
@@ -1073,8 +1019,25 @@ router.post('/documents/:id/assign', requireApi(async (ctx) => {
   const doc = getDocument(ctx.params.id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
   if (!ctx.body.assigneeId) throw httpError(400, 'กรุณาเลือกผู้รับมอบหมาย');
+
+  // ธุรการเขียนความเห็นเสนอ ผอ. ลงบนตัวหนังสือได้ตั้งแต่ตอนส่งเรื่องขึ้นไปครั้งแรก ไม่ต้องรอให้เรื่องวน
+  // กลับมาที่ตัวเอง — ผอ. จะได้เห็นความเห็นพร้อมกับตัวหนังสือตั้งแต่เปิดอ่านครั้งแรกเลย
+  //
+  // ความเห็นนี้มีลายเซ็นของธุรการติดไปด้วย จึงต้องยืนยัน PIN เหมือนการลงนามทุกจุดในระบบ — แต่บังคับ
+  // เฉพาะเมื่อมีการเขียนความเห็นจริงๆ เท่านั้น การเสนอเปล่าๆ ยังทำได้เหมือนเดิมโดยไม่ต้องใส่ PIN
+  const registrarNote = typeof ctx.body.registrarNote === 'string' ? ctx.body.registrarNote.trim() : '';
+  if (registrarNote) {
+    if (!canWriteRegistrarComment(null, ctx.user)) throw httpError(403, 'เฉพาะธุรการเท่านั้นที่เขียนความเห็นเสนอ ผอ. ได้');
+    const { verifyPin } = await import('../auth.js');
+    if (!verifyPin(ctx.user.id, ctx.body.pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
+  }
+
   assignStep({ documentId: doc.id, assigneeId: ctx.body.assigneeId, instruction: ctx.body.instruction, actorUser: ctx.user });
-  json(ctx, 200, { ok: true });
+  const warning = await stampRegistrarCommentIfApplicable({
+    documentId: doc.id, stepId: null, actorUser: ctx.user, comment: registrarNote,
+    registrarX: parsePercent(ctx.body.registrarX), registrarY: parsePercent(ctx.body.registrarY),
+  });
+  json(ctx, 200, { ok: true, warning });
 }));
 
 // ตำแหน่งลายเซ็น/กล่องความเห็นที่ผู้ใช้ลากเลือกเองในหน้าจอก่อนกดปุ่ม — undefined ถ้าไม่ได้ส่งมา (แปลว่า
@@ -1211,6 +1174,11 @@ async function readAttachmentBytes(att, { preferStamped = false } = {}) {
 // บันทึกสำเนาที่ประทับตรา/ลงนามแล้วกลับเข้า storage provider เดียวกับไฟล์ต้นฉบับ แล้วอัปเดตคอลัมน์
 // stamped_* ของ attachments (เขียนทับของเดิม เพราะไฟล์ใหม่มีทั้งกล่องเดิม + กล่องใหม่ซ้อนกันอยู่แล้ว)
 async function saveStampedCopy(att, stampedBuffer, yearBe) {
+  // อ่านสำเนาที่ประทับไว้ก่อนหน้าจากฐานข้อมูล ไม่ใช่จาก att ที่ส่งเข้ามา — ในคำขอเดียวอาจประทับซ้อนกัน
+  // หลายชั้น (ทราบ → ตราปั๊ม ผอ. → ความเห็นธุรการ) โดยใช้ att ตัวเดิมที่อ่านมาตั้งแต่ต้นทุกชั้น
+  // ค่าใน att จึงเก่าไปแล้วตั้งแต่ชั้นที่สอง
+  const prev = db.prepare('SELECT stamped_storage_provider, stamped_filepath, stamped_drive_file_id FROM attachments WHERE id = ?').get(att.id);
+
   if (isGoogleDriveEnabled()) {
     const folderId = await ensureCategoryFolder({ yearBe: yearBe || (new Date().getFullYear() + 543), typeName: 'ประทับตราแล้ว' });
     const driveFileId = await uploadFile({ buffer: stampedBuffer, filename: `${att.id}__stamped__${att.filename}`, mimeType: 'application/pdf', folderId });
@@ -1221,6 +1189,31 @@ async function saveStampedCopy(att, stampedBuffer, yearBe) {
     fs.writeFileSync(path.join(UPLOAD_DIR, safeName), stampedBuffer);
     db.prepare(`UPDATE attachments SET stamped_storage_provider = 'local', stamped_filepath = ?, stamped_drive_file_id = NULL, stamped_at = ? WHERE id = ?`)
       .run(safeName, nowIso(), att.id);
+  }
+
+  // เก็บเฉพาะไฟล์ผลลัพธ์สุดท้าย — ทิ้งสำเนาชั้นก่อนหน้าหลังบันทึกตัวใหม่สำเร็จแล้วเท่านั้น
+  //
+  // เดิมอัปโหลดไฟล์ใหม่ทุกครั้งแล้วแค่ย้ายตัวชี้ในฐานข้อมูล ไฟล์เก่าจึงค้างอยู่บน Drive ตลอดไปโดยไม่มี
+  // อะไรอ้างถึง หนังสือฉบับเดียวที่ผ่านมือ 5 คนก็เหลือขยะ 4 ไฟล์ กินโควตา 15GB ไปเรื่อยๆ และธุรการที่
+  // เปิด Drive ดูเองจะเห็นไฟล์ชื่อเหมือนกันเรียงกันหลายอัน แยกไม่ออกว่าอันไหนคือฉบับจริง
+  await deletePreviousStampedCopy(prev, att.id);
+}
+
+// ลบแบบ best-effort — ถ้าลบไม่สำเร็จก็แค่เหลือไฟล์ค้าง ไม่ควรทำให้การลงนามที่สำเร็จไปแล้วกลายเป็นล้มเหลว
+async function deletePreviousStampedCopy(prev, attachmentId) {
+  if (!prev) return;
+  try {
+    if (prev.stamped_storage_provider === 'google_drive' && prev.stamped_drive_file_id) {
+      await deleteFile(prev.stamped_drive_file_id);
+    } else if (prev.stamped_storage_provider === 'local' && prev.stamped_filepath) {
+      // ชื่อไฟล์ local เป็น "<attachmentId>-stamped.pdf" ตัวเดิมเสมอ จึงถูกเขียนทับไปแล้ว ไม่ต้องลบซ้ำ
+      const current = db.prepare('SELECT stamped_filepath FROM attachments WHERE id = ?').get(attachmentId);
+      if (current?.stamped_filepath !== prev.stamped_filepath) {
+        fs.rmSync(path.join(UPLOAD_DIR, prev.stamped_filepath), { force: true });
+      }
+    }
+  } catch (err) {
+    console.error(`[stamp] ลบสำเนาที่ประทับชั้นก่อนหน้าไม่สำเร็จ (${attachmentId}): ${err.message}`);
   }
 }
 
@@ -1252,19 +1245,24 @@ function directorTitleMode(stepId, actorUser) {
   return delegatorIsDirector ? 'acting_director' : 'generic';
 }
 
-// ตำแหน่ง Y เริ่มต้นของตรา "ทราบ" (ลายเซ็นของผู้ได้รับเอกสาร) — อยู่ข้างซ้ายของกรอบตราปั๊ม ผอ. โดยขอบบน
-// ตรงกันพอดี ตามที่โรงเรียนขอ (ดูแผนผังแถบล่างใน pdfStamp.js) — ถ้ามีหลายคนในสาย workflow เซ็นทราบ
-// จะเรียงลงมาทีละคนไม่ให้ทับกัน นับเฉพาะขั้นตอนที่ตัดสินใจไปแล้วก่อนหน้าขั้นตอนนี้ (ไม่รวมตัวเอง)
-// ผอ. เองไม่มีตรานี้ซ้อนอยู่แล้ว เพราะมีลายเซ็นในกรอบตราปั๊มของตัวเอง (ดู stampAcknowledgeMarkIfApplicable)
-// ค่านี้ใช้ร่วมกันทั้งตำแหน่งเริ่มต้นที่โชว์ในตัวอย่างบนเว็บ (ต้องตรงกันเป๊ะ ไม่งั้นลากดูตัวอย่างแล้วจะไม่ตรงกับ
+// ตำแหน่ง Y เริ่มต้นของช่อง "ทราบ" (ลายเซ็นของผู้ได้รับเอกสาร) — อยู่กลางแถบล่าง ระหว่างความเห็นธุรการ
+// กับกรอบตราปั๊ม ผอ. โดยขอบบนตรงกันทั้งสามช่อง (ดูแผนผังใน pdfStamp.js)
+// ค่านี้ใช้ร่วมกันทั้งตำแหน่งที่โชว์ในตัวอย่างบนเว็บ (ต้องตรงกันเป๊ะ ไม่งั้นลากดูตัวอย่างแล้วจะไม่ตรงกับ
 // ตำแหน่งจริงที่ฝังตอนกดปุ่ม) และตำแหน่งที่ฝังจริงตอนกดปุ่ม
 const MARK_BASE_Y = DECISION_MAX_TOP_PERCENT;
-const MARK_STEP_Y = 9;
-function markStackYPercent(documentId, stepId) {
+
+/**
+ * ลำดับที่ของผู้ลงนาม "ทราบ" บนไฟล์แนบนี้ — นับจากจำนวนครั้งที่ประทับสำเร็จไปแล้วจริงๆ
+ *
+ * ต้องนับจาก audit log ไม่ใช่นับจากจำนวนขั้นตอน workflow ที่ตัดสินใจไปแล้ว เพราะไม่ใช่ทุกคนที่ได้ตรานี้ —
+ * ผอ./ผู้รักษาการแทนมีลายเซ็นในกรอบตราปั๊มของตัวเองอยู่แล้ว ธุรการมีในกล่องความเห็นของตัวเอง และคนที่
+ * ยังไม่ได้บันทึกลายเซ็นในโปรไฟล์ก็ถูกข้ามไป ถ้านับจากขั้นตอนจะเกิดช่องว่างกลางแถวลายเซ็น
+ */
+function ackSignerIndex(attachmentId) {
   const { c } = db.prepare(`
-    SELECT COUNT(*) as c FROM workflow_steps WHERE document_id = ? AND id != ? AND status IN ('approved', 'acknowledged', 'rejected')
-  `).get(documentId, stepId);
-  return Math.min(94, MARK_BASE_Y + c * MARK_STEP_Y);
+    SELECT COUNT(*) as c FROM audit_logs WHERE action = 'attachment_mark_stamped' AND record_id = ?
+  `).get(attachmentId);
+  return c;
 }
 
 // กันกล่องความเห็น ผอ. ซ้อนทับตัวเองเป๊ะๆ เวลา ผอ. คนเดิม (assignee ช่องเดิม) ต้องตัดสินใจซ้ำบนเอกสาร
@@ -1287,14 +1285,19 @@ function decisionBoxStackYPercent(documentId, stepId, assigneeId) {
 // นั่นไม่ใช่ความผิดพลาด) เพื่อให้ผู้เรียกส่งกลับไปแจ้งผู้ใช้ต่อ ไม่ใช่กลืนความผิดพลาดแบบเงียบๆ เหมือนเดิม
 // ซึ่งทำให้ผู้ใช้ไม่รู้ว่าทำไมข้อความ/ลายเซ็นไม่ติดใน PDF ที่พิมพ์ออกมา
 async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser, markX, markY }) {
-  // ผอ./ผู้รักษาการแทน ผอ. มีลายเซ็นอยู่ในกล่องความเห็นทางการ (มุมขวาล่าง) อยู่แล้ว ไม่ต้องมีตรา "ทราบ"
-  // แยกซ้อนอีกอันนอกกล่อง — ตรานี้มีไว้สำหรับคนอื่นในสาย workflow ที่ไม่มีกล่องความเห็นเป็นของตัวเอง
+  // ผอ./ผู้รักษาการแทน ผอ. มีลายเซ็นอยู่ในกรอบตราปั๊มของตัวเอง (มุมขวาล่าง) อยู่แล้ว ไม่ต้องมีตรา "ทราบ"
+  // แยกซ้อนอีกอัน และธุรการก็มีลายเซ็นอยู่ในกล่องความเห็นที่เสนอ ผอ. อยู่แล้วเช่นกัน — ตรา "ทราบ" จึงมี
+  // ไว้สำหรับคนอื่นในสาย workflow ที่ไม่มีที่ลงนามเป็นของตัวเอง (ครู หัวหน้าฝ่าย รองผู้อำนวยการ ฯลฯ)
   if (directorTitleMode(stepId, actorUser) !== 'generic') return;
+  if (actorUser.roleCodes.includes('registrar')) return;
   if (!actorUser.signature_image) return;
   const att = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at LIMIT 1').get(documentId);
   if (!att) return;
   try {
     const originalBuffer = await readAttachmentBytes(att, { preferStamped: true });
+    // คำว่า "ทราบ" มีคำเดียวต่อหนังสือหนึ่งฉบับ — คนแรกเป็นผู้ประทับคำนั้นพร้อมเซ็นชื่อ คนถัดๆ ไปเซ็นชื่อ
+    // ต่อกันลงมาใต้คนแรกให้เป็นแถวเดียวกัน (ดู ackSlotTopPercent ใน pdfStamp.js)
+    const signerIndex = ackSignerIndex(att.id);
     const stampedBuffer = await stampAcknowledgeMark({
       originalBuffer,
       signatureDataUrl: actorUser.signature_image,
@@ -1302,8 +1305,11 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser,
       firstName: actorUser.first_name,
       lastName: actorUser.last_name,
       dateThaiLong: stampDateThai(),
+      showWord: signerIndex === 0,
       xPercent: markX ?? DEFAULT_ACK_MARK_X_PERCENT,
-      yPercent: markY ?? markStackYPercent(documentId, stepId),
+      // ถ้าผู้ใช้ลากเลือกตำแหน่งเอง ให้ถือว่านั่นคือขอบบนของ "ทั้งช่อง" แล้วคำนวณช่องของคนนี้ต่อจากนั้น
+      // เพื่อให้ยังเรียงต่อกันเป็นระเบียบเหมือนเดิม ไม่ใช่ไปทับลายเซ็นของคนก่อนหน้า
+      yPercent: ackSlotTopPercent(signerIndex, markY ?? MARK_BASE_Y),
       actingForLabel: actingForLabel(stepId, actorUser),
     });
     await saveStampedCopy(att, stampedBuffer, getDocument(documentId)?.year_be);
@@ -1318,8 +1324,11 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser,
 // เงื่อนไข: ต้องมีบทบาทธุรการ (บังคับฝั่งเซิร์ฟเวอร์ ไม่พึ่งแค่ UI ที่ซ่อนช่องไว้), ต้องไม่ใช่ผู้ที่กำลังลงนาม
 // ในฐานะ ผอ./ผู้รักษาการแทน (คนนั้นมีกล่องความเห็นทางการของตัวเองอยู่แล้ว จะได้ไม่มีความเห็นซ้อนสองที่)
 // และต้องพิมพ์ความเห็นมาจริง — ไม่พิมพ์ก็ข้ามไป ไม่ถือเป็นความผิดพลาด
+// stepId เป็น null ได้ — กรณีธุรการเขียนความเห็นตอน "เสนอ" ครั้งแรก ซึ่งยังไม่มีขั้นตอน workflow ของตัวเอง
+// (ตอนนั้นเป็นผู้บันทึกเอกสารที่กำลังส่งเรื่องขึ้นไปให้ ผอ. ไม่ใช่ผู้ถูกมอบหมาย จึงไม่ต้องเช็คโหมด ผอ.)
 function canWriteRegistrarComment(stepId, actorUser) {
-  return actorUser.roleCodes.includes('registrar') && directorTitleMode(stepId, actorUser) === 'generic';
+  if (!actorUser.roleCodes.includes('registrar')) return false;
+  return stepId ? directorTitleMode(stepId, actorUser) === 'generic' : true;
 }
 
 async function stampRegistrarCommentIfApplicable({ documentId, stepId, actorUser, comment, registrarX, registrarY }) {

@@ -1017,6 +1017,71 @@ describe('ตราประทับ: สามช่องแถบล่า�
     assert.equal(typeof DECISION_MAX_TOP_PERCENT, 'number');
   });
 
+  test('คำว่า "ทราบ" มีคำเดียวต่อหนังสือ และลายเซ็นเรียงต่อกันไม่ทับกัน', async () => {
+    const s = await import('../src/services/pdfStamp.js');
+    const base = s.DECISION_MAX_TOP_PERCENT;
+    // คนแรกได้กล่องที่มีคำว่า "ทราบ" อยู่ด้วย จึงเริ่มที่ขอบบนสุดพอดี
+    assert.equal(s.ackSlotTopPercent(0, base), base);
+    // คนถัดไปต้องเริ่ม "ใต้" บล็อกของคนก่อนหน้าพอดี ไม่ทับและไม่มีช่องโหว่
+    for (let i = 1; i < 4; i++) {
+      const prevBottom = s.ackSlotTopPercent(i - 1, base)
+        + (i === 1 ? s.ACK_WORD_HEIGHT_PERCENT : 0) + s.ACK_ENTRY_HEIGHT_PERCENT;
+      assert.ok(Math.abs(s.ackSlotTopPercent(i, base) - prevBottom) < 0.01,
+        `คนที่ ${i + 1} ต้องเริ่มที่ ${prevBottom}% แต่ได้ ${s.ackSlotTopPercent(i, base)}%`);
+    }
+    // ลายเซ็นคนที่ 4 ต้องยังอยู่ในหน้ากระดาษ (บล็อกสูง ACK_ENTRY_HEIGHT_PERCENT)
+    assert.ok(s.ackSlotTopPercent(3, base) + s.ACK_ENTRY_HEIGHT_PERCENT <= 100, 'ต้องรองรับผู้ลงนามอย่างน้อย 4 คน');
+    // ไม่ว่ามีกี่คน ต้องไม่หลุดออกนอกหน้า
+    assert.ok(s.ackSlotTopPercent(99, base) <= s.ACK_MAX_TOP_PERCENT);
+
+    // ต้องมีสวิตช์ปิดคำว่า "ทราบ" จริงๆ ไม่ใช่พิมพ์ทุกครั้ง
+    const src = fs.readFileSync(new URL('../src/services/pdfStamp.js', import.meta.url), 'utf8');
+    assert.match(src, /showWord \? '<div class="word">ทราบ<\/div>' : ''/,
+      'คำว่า "ทราบ" ต้องขึ้นเฉพาะคนแรก');
+  });
+
+  test('ธุรการ/ผอ. ไม่ได้ตรา "ทราบ" ซ้ำ เพราะมีที่ลงนามของตัวเองอยู่แล้ว', () => {
+    const src = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
+    const fn = src.slice(src.indexOf('async function stampAcknowledgeMarkIfApplicable'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    assert.match(body, /directorTitleMode\(stepId, actorUser\) !== 'generic'\) return;/,
+      'ผอ./ผู้รักษาการแทนมีลายเซ็นในกรอบตราปั๊มอยู่แล้ว');
+    assert.match(body, /roleCodes\.includes\('registrar'\)\) return;/,
+      'ธุรการมีลายเซ็นในกล่องความเห็นอยู่แล้ว ไม่ต้องมีตรา "ทราบ" อีก');
+  });
+
+  test('เก็บเฉพาะไฟล์ประทับตราฉบับล่าสุด ไม่ทิ้งไฟล์เก่าค้างไว้', () => {
+    // หนังสือฉบับเดียวถูกประทับซ้อนหลายชั้น (ความเห็นธุรการ -> ทราบ -> ตราปั๊ม ผอ.) ถ้าไม่ลบของเดิม
+    // จะเหลือไฟล์ขยะบน Drive ชั้นละไฟล์ กินโควตา และธุรการที่เปิด Drive ดูจะแยกไม่ออกว่าอันไหนฉบับจริง
+    const src = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
+    const fn = src.slice(src.indexOf('async function saveStampedCopy'), src.indexOf('async function deletePreviousStampedCopy'));
+    assert.match(fn, /await deletePreviousStampedCopy\(prev, att\.id\);/, 'ต้องลบสำเนาชั้นก่อนหน้า');
+    // ต้องอ่านค่าเดิมจากฐานข้อมูล ไม่ใช่จาก att ที่ส่งเข้ามา ซึ่งเก่าไปแล้วตั้งแต่การประทับชั้นที่สอง
+    assert.match(fn, /const prev = db\.prepare\('SELECT stamped_storage_provider/,
+      'ต้องอ่านสำเนาเดิมจากฐานข้อมูล ไม่ใช่จาก att ที่ค้างอยู่ในหน่วยความจำ');
+    const prevAt = fn.indexOf('const prev =');
+    const deleteAt = fn.indexOf('await deletePreviousStampedCopy');
+    const updateAt = fn.indexOf('stamped_at = ?');
+    assert.ok(prevAt < updateAt && updateAt < deleteAt,
+      'ต้องอ่านของเดิม -> บันทึกตัวใหม่ -> ค่อยลบของเดิม (ลบก่อนบันทึกสำเร็จ = เสี่ยงไม่เหลือไฟล์เลย)');
+  });
+
+  test('หน้าตัวอย่างไม่มีกล่องให้ลากแล้ว และไม่ส่งตำแหน่งไปกับคำขอ', () => {
+    const src = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
+    for (const gone of ['makeDraggable', 'makeStampDraggable', 'window.markPos', 'window.decisionPos', 'window.registrarPos', 'cursor:move']) {
+      assert.ok(!src.includes(gone), `ยังเหลือโค้ดลากวางอยู่: ${gone}`);
+    }
+    // ทุกกล่องต้องติดป้ายไว้ ให้เอาเมาส์ชี้แล้วรู้ว่าคือกล่องอะไร (บนจอย่อส่วน ตัวหนังสือทับกันจนอ่านไม่ออก)
+    for (const id of ['docStamp', 'ackMark', 'decisionBox', 'registrarBox']) {
+      const at = src.indexOf(`id="${id}"`);
+      assert.ok(at > 0, `ไม่พบกล่อง ${id}`);
+      assert.match(src.slice(at, at + 200), /data-label="/, `กล่อง ${id} ต้องมี data-label ไว้แสดงตอนเอาเมาส์ชี้`);
+      assert.ok(src.slice(Math.max(0, at - 120), at).includes('doc-overlay-box'), `กล่อง ${id} ต้องมีคลาส doc-overlay-box`);
+    }
+    const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+    assert.match(css, /\.doc-overlay-box:hover::after \{ opacity: 1; \}/, 'ต้องมีป้ายโผล่ตอนเอาเมาส์ชี้');
+  });
+
   test('กล่องตัวอย่างบนเว็บต้องได้ตำแหน่งจริง ไม่ใช่ top:undefined%', () => {
     // var ถูก hoist ขึ้นบนสุดของสโคปก็จริง แต่ "ค่า" ยังเป็น undefined จนกว่าจะรันบรรทัดที่กำหนดค่า
     // ถ้า var DECISION_MAX_TOP อยู่ทีหลังบรรทัดที่เอาไปต่อสตริง จะได้ style="top:undefined%" ซึ่ง

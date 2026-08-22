@@ -28,10 +28,32 @@ export const DECISION_MAX_TOP_PERCENT = 72;
 // ทั้งสามช่องยังลากย้ายตำแหน่งเองได้ก่อนกดปุ่มตามปกติ ค่าพวกนี้เป็นแค่ตำแหน่งตั้งต้น
 export const DECISION_BOX_WIDTH_PT = 190;
 export const REGISTRAR_BOX_WIDTH_PT = 190;
-export const ACK_MARK_WIDTH_PT = 112;
+export const ACK_MARK_WIDTH_PT = 130;
 export const DEFAULT_REGISTRAR_X_PERCENT = 2;
-export const DEFAULT_ACK_MARK_X_PERCENT = 36;
+export const DEFAULT_ACK_MARK_X_PERCENT = 35;
 export const DEFAULT_DECISION_X_PERCENT = 58;
+
+// ช่อง "ทราบ" มีคำว่าทราบคำเดียวอยู่บนสุด แล้วลายเซ็นของผู้ได้รับเอกสารเรียงต่อกันลงมาเป็นแถวเดียว
+//
+//   72.0%  ทราบ                     <- คำเดียวต่อหนังสือหนึ่งฉบับ (ACK_WORD_HEIGHT_PERCENT)
+//   74.8%  (ลายเซ็น) (ชื่อ) วันที่    <- คนที่ 1  ┐
+//   79.4%  (ลายเซ็น) (ชื่อ) วันที่    <- คนที่ 2  ├ ACK_ENTRY_HEIGHT_PERCENT ต่อคน
+//   84.0%  (ลายเซ็น) (ชื่อ) วันที่    <- คนที่ 3  ┘
+//
+// แต่ละคนประทับคนละครั้งตอนที่ตัวเองกดทราบ ระบบจึงไม่รู้ล่วงหน้าว่าจะมีกี่คน ต้องคำนวณตำแหน่งจากลำดับที่
+// ค่าเหล่านี้ต้องใช้ร่วมกันระหว่างตอนประทับจริงกับตอนแสดงตัวอย่างบนเว็บ ไม่งั้นลากดูแล้วไม่ตรงกับของจริง
+export const ACK_WORD_HEIGHT_PERCENT = 2.8;
+export const ACK_ENTRY_HEIGHT_PERCENT = 4.6;
+export const ACK_MAX_TOP_PERCENT = 94;
+
+/**
+ * ขอบบนของช่อง "ทราบ" สำหรับผู้ลงนามลำดับที่ index (เริ่มที่ 0)
+ * คนแรกได้กล่องที่มีคำว่า "ทราบ" อยู่ด้วย จึงเริ่มที่ขอบบนสุดพอดี ส่วนคนถัดไปเริ่มใต้บล็อกของคนก่อนหน้า
+ */
+export function ackSlotTopPercent(index, baseTopPercent = DECISION_MAX_TOP_PERCENT) {
+  if (index <= 0) return baseTopPercent;
+  return Math.min(ACK_MAX_TOP_PERCENT, baseTopPercent + ACK_WORD_HEIGHT_PERCENT + index * ACK_ENTRY_HEIGHT_PERCENT);
+}
 
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -143,28 +165,41 @@ export async function stampPdf({ originalBuffer, schoolName, docNumberDisplay, d
   return overlayHtmlOnFirstPage(originalBuffer, build);
 }
 
-// เครื่องหมาย "ทราบ" + ลายเซ็นแบบง่าย ไม่มีกรอบ — เลียนแบบวิธีที่คนจริงเขียน "ทราบ" ด้วยลายมือแล้วเซ็นชื่อ
-// ต่อท้ายบนที่ว่างของเอกสาร (ต่างจาก stampDirectorDecision ที่เป็นกล่องความเห็นทางการของผู้ตัดสินใจคนสุดท้าย)
-// ใช้กับทุกคนในสาย workflow ที่ "เห็น" เอกสารนี้แล้ว (อนุมัติ/ส่งต่อ/รับทราบ/ไม่อนุมัติ) — มีกี่คนก็ประทับ
-// ได้กี่ครั้ง เพราะแต่ละครั้งซ้อนทับไฟล์ล่าสุดที่มีเครื่องหมายของคนก่อนหน้าอยู่แล้ว (ดู overlayHtmlOnFirstPage)
-export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, prefix, firstName, lastName, dateThaiLong, xPercent, yPercent, actingForLabel }) {
+/**
+ * เครื่องหมาย "ทราบ" + ลายเซ็นของผู้ได้รับเอกสาร — ไม่มีกรอบ เลียนแบบวิธีที่คนจริงเขียนด้วยลายมือ
+ * บนที่ว่างของเอกสาร (ต่างจาก stampDirectorDecision ที่เป็นกล่องความเห็นทางการของผู้ตัดสินใจคนสุดท้าย)
+ *
+ * คำว่า "ทราบ" มีคำเดียวต่อหนังสือหนึ่งฉบับ ตามที่โรงเรียนใช้จริง — ถ้าส่งต่อกันหลายคน คนแรกเป็นผู้ประทับ
+ * คำว่า "ทราบ" พร้อมเซ็นชื่อ คนถัดๆ ไปเซ็นชื่อต่อกันลงมาใต้คนแรกเป็นแถวเดียวกัน (showWord = false)
+ * ไม่ใช่ต่างคนต่างมีคำว่า "ทราบ" ของตัวเอง
+ *
+ * แต่ละคนประทับคนละครั้ง (ตอนที่ตัวเองกดทราบ) โดยซ้อนทับไฟล์ล่าสุดที่มีลายเซ็นคนก่อนหน้าอยู่แล้ว
+ * ระบบจึงไม่รู้ล่วงหน้าว่าจะมีทั้งหมดกี่คน — ตำแหน่งของแต่ละคนคำนวณจาก "ลำดับที่เท่าไหร่" (ดู
+ * ackSlotTopPercent) เพื่อให้ลายเซ็นเรียงชิดต่อกันเป็นระเบียบ ไม่ใช่กระจัดกระจายหรือทับกัน
+ */
+export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, prefix, firstName, lastName, dateThaiLong, xPercent, yPercent, actingForLabel, showWord = true }) {
   const leftPt = Math.max(0, Math.min(90, xPercent ?? DEFAULT_ACK_MARK_X_PERCENT)) / 100 * PAGE_WIDTH_PT;
-  const topPt = Math.max(0, Math.min(94, yPercent ?? DECISION_MAX_TOP_PERCENT)) / 100 * PAGE_HEIGHT_PT;
+  const topPt = Math.max(0, Math.min(ACK_MAX_TOP_PERCENT, yPercent ?? DECISION_MAX_TOP_PERCENT)) / 100 * PAGE_HEIGHT_PT;
   const build = (shiftUpPt) => `<!doctype html><html><head><meta charset="utf-8"><style>
     @page { size: ${PAGE_WIDTH_PT}pt ${PAGE_HEIGHT_PT}pt; margin: 0; }
     body { margin: 0; font-family: "Noto Sans Thai", sans-serif; -webkit-print-color-adjust: exact; }
     .mark { position: absolute; left: ${leftPt}pt; top: ${Math.max(0, topPt - shiftUpPt)}pt; width: ${ACK_MARK_WIDTH_PT}pt; color: #2222aa; text-align: center; }
-    .mark .word { font-size: 20pt; font-weight: 700; margin-bottom: 2pt; }
-    .mark img { max-height: 30pt; max-width: 110pt; }
-    .mark .name { font-size: 7pt; margin-top: 1pt; }
-    .mark .acting { font-size: 6.5pt; font-style: italic; }
+    .mark .word { font-size: 17pt; font-weight: 700; line-height: 1.1; }
+    /* ความสูงของบล็อกลายเซ็นต้องคงที่ ไม่ว่าคนนั้นจะมีลายเซ็นบันทึกไว้หรือไม่ — ไม่งั้นคนถัดไปที่คำนวณ
+       ตำแหน่งจากลำดับที่ จะเหลื่อมกับคนก่อนหน้า (บางคนสูง บางคนเตี้ย) แล้วแถวลายเซ็นจะไม่ตรงกัน */
+    .mark .entry { height: ${ACK_ENTRY_HEIGHT_PERCENT / 100 * PAGE_HEIGHT_PT}pt; }
+    .mark .sig { height: 24pt; display: flex; align-items: flex-end; justify-content: center; }
+    .mark .sig img { max-height: 24pt; max-width: ${ACK_MARK_WIDTH_PT - 12}pt; }
+    .mark .name { font-size: 6.5pt; line-height: 1.25; white-space: nowrap; }
+    .mark .acting { font-size: 6pt; font-style: italic; line-height: 1.1; }
   </style></head><body>
     <div class="mark">
-      <div class="word">ทราบ</div>
-      ${signatureDataUrl ? `<img src="${esc(signatureDataUrl)}" />` : ''}
-      <div class="name">(${esc(prefix || '')}${esc(firstName)} ${esc(lastName)})</div>
-      ${actingForLabel ? `<div class="acting">รักษาการแทน${esc(actingForLabel)}</div>` : ''}
-      <div class="name">${esc(dateThaiLong)}</div>
+      ${showWord ? '<div class="word">ทราบ</div>' : ''}
+      <div class="entry">
+        <div class="sig">${signatureDataUrl ? `<img src="${esc(signatureDataUrl)}" />` : ''}</div>
+        <div class="name">(${esc(prefix || '')}${esc(firstName)} ${esc(lastName)}) ${esc(dateThaiLong)}</div>
+        ${actingForLabel ? `<div class="acting">รักษาการแทน${esc(actingForLabel)}</div>` : ''}
+      </div>
     </div>
   </body></html>`;
   return overlayHtmlOnFirstPage(originalBuffer, build);

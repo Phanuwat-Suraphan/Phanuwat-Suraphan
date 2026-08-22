@@ -467,31 +467,64 @@ tbody tr:last-child td { border-bottom: none; }
   z-index: 4;
   font-family: "Noto Sans Thai", sans-serif;
   user-select: none;
-  touch-action: none;
+
   box-shadow: 0 2px 8px rgba(0, 0, 0, .2);
 }
 .doc-stamp .stamp-title {
   font-weight: 700; text-align: center; margin-bottom: .3rem;
 }
-/* เครื่องหมาย "ทราบ" + ลายเซ็นแบบง่าย ลากวางเองได้ — ของคนในสาย workflow ที่ตัดสินใจ (ต่างจาก .doc-stamp
-   ตราลงรับของธุรการ และ .doc-decision-box กล่องความเห็นของผู้ตัดสินใจคนสุดท้าย) */
+/* กล่องทุกอันบนหน้าตัวอย่างอยู่ตำแหน่งตายตัว (ลากไม่ได้แล้ว) — บนหน้าจอที่ย่อลงมาจาก A4 ตัวหนังสือใน
+   กล่องจะเล็กมากและบางทีทับกับข้อความในเอกสาร เอาเมาส์ชี้กล่องไหนแล้วกล่องนั้นจะเด้งขึ้นมาอ่านชัดๆ
+   พร้อมป้ายบอกว่าคือกล่องอะไร (ของจริงบน PDF ขนาดเต็มไม่มีปัญหานี้) */
+.doc-overlay-box { transition: transform .12s ease, box-shadow .12s ease; }
+.doc-overlay-box:hover {
+  z-index: 20;
+  transform: scale(1.7);
+  background: var(--surface);
+  outline: 2px solid var(--primary);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(10, 16, 24, .35);
+}
+/* ขยายจากมุมที่กล่องอยู่ ไม่ให้เด้งออกนอกพื้นที่ตัวอย่าง — ซ้ายล่าง/กลางล่าง/ขวาล่าง/ขวาบน ตามผังจริง */
+#registrarBox:hover { transform-origin: left bottom; }
+#ackMark:hover { transform-origin: center bottom; }
+#decisionBox:hover { transform-origin: right bottom; }
+#docStamp:hover { transform-origin: right top; }
+.doc-overlay-box::after {
+  content: attr(data-label);
+  position: absolute; left: 0; bottom: 100%;
+  margin-bottom: 3px; padding: 1px 5px;
+  background: var(--primary); color: var(--primary-contrast);
+  border-radius: 4px; font-size: 7px; font-weight: 700; white-space: nowrap;
+  opacity: 0; pointer-events: none; transition: opacity .12s ease;
+}
+.doc-overlay-box:hover::after { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .doc-overlay-box, .doc-overlay-box::after { transition: none; }
+  .doc-overlay-box:hover { transform: none; }
+}
+/* เครื่องหมาย "ทราบ" + ลายเซ็นของผู้ได้รับเอกสาร — อยู่กลางแถบล่าง (ต่างจาก .doc-stamp ตราลงรับของธุรการ
+   มุมขวาบน, .doc-registrar-note ความเห็นธุรการซ้ายล่าง และ .doc-decision-box กรอบตราปั๊ม ผอ. ขวาล่าง) */
 .doc-mark {
   position: absolute;
-  width: 110px;
+  width: 130px;
   text-align: center;
   color: #2222aa;
   z-index: 4;
   font-family: "Noto Sans Thai", sans-serif;
   user-select: none;
-  touch-action: none;
-  cursor: move;
+
+
   background: rgba(255, 255, 255, .5);
   border-radius: 6px;
   padding: .2rem;
 }
-.doc-mark .mark-word { font-size: 1.3rem; font-weight: 700; }
-.doc-mark img { max-height: 34px; max-width: 100px; display: block; margin: 0 auto; }
-.doc-mark .mark-name { font-size: .68rem; }
+.doc-mark .mark-word { font-size: 1.15rem; font-weight: 700; line-height: 1.1; }
+/* ความสูงคงที่ต่อคน ให้ลายเซ็นของคนถัดไปเรียงต่อกันพอดี ไม่เหลื่อมกัน (ตรงกับ .mark .entry ใน pdfStamp.js) */
+.doc-mark .mark-entry { height: 38px; }
+.doc-mark .mark-sig { height: 26px; display: flex; align-items: flex-end; justify-content: center; }
+.doc-mark img { max-height: 26px; max-width: 110px; }
+.doc-mark .mark-name { font-size: .62rem; line-height: 1.25; white-space: nowrap; }
 .doc-decision-box {
   position: absolute;
   width: 220px;
@@ -505,8 +538,8 @@ tbody tr:last-child td { border-bottom: none; }
   z-index: 4;
   font-family: "Noto Sans Thai", sans-serif;
   user-select: none;
-  touch-action: none;
-  cursor: move;
+
+
   box-shadow: 0 2px 8px rgba(0, 0, 0, .2);
 }
 .doc-decision-box .box-title { font-weight: 700; text-align: center; margin-bottom: .3rem; }
@@ -542,8 +575,8 @@ tbody tr:last-child td { border-bottom: none; }
   z-index: 4;
   font-family: "Noto Sans Thai", sans-serif;
   user-select: none;
-  touch-action: none;
-  cursor: move;
+
+
 }
 .doc-registrar-note .reg-lead { font-weight: 700; }
 .doc-registrar-note .reg-body { white-space: pre-wrap; word-break: break-word; }
