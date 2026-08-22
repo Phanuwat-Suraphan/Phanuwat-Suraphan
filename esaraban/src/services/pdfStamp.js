@@ -20,18 +20,18 @@ export const DECISION_MAX_TOP_PERCENT = 72;
 
 // แถบล่างของเอกสารเรียงกัน 3 ช่องตามที่โรงเรียนขอ ขอบบนตรงกันทั้งสามช่อง (= DECISION_MAX_TOP_PERCENT):
 //
-//   [ ทราบ ]   [ กรอบตราปั๊ม ผอ. ]   [ ความเห็นธุรการ ]
-//     ซ้าย            กลาง               ขวาล่างสุด
+//   [ ความเห็นธุรการ ]   [ ทราบ ]   [ กรอบตราปั๊ม ผอ. ]
+//       ซ้ายล่าง           กลาง           ขวาล่าง
 //
-// "ความเห็นธุรการอยู่มุมขวาล่าง บรรทัดบนสุดตรงกับกรอบตราปั๊ม ผอ. และเซ็นทราบอยู่ข้างตราปั๊ม ผอ."
-// กล่อง ผอ. จึงขยับจากมุมขวา (เดิม 58%) มาอยู่กลางแถบ เพื่อเปิดมุมขวาล่างให้ความเห็นธุรการ
+// "ความเห็นธุรการอยู่ซ้ายล่าง ผอ. ขวาล่าง และเซ็นทราบอยู่ข้างตราปั๊ม ผอ."
+// กล่อง ผอ. อยู่มุมขวาล่างตามตรายางจริง ส่วนตรา "ทราบ" (ลายเซ็นของผู้ได้รับเอกสาร) แทรกอยู่ระหว่างกลาง
 // ทั้งสามช่องยังลากย้ายตำแหน่งเองได้ก่อนกดปุ่มตามปกติ ค่าพวกนี้เป็นแค่ตำแหน่งตั้งต้น
 export const DECISION_BOX_WIDTH_PT = 190;
 export const REGISTRAR_BOX_WIDTH_PT = 190;
 export const ACK_MARK_WIDTH_PT = 112;
-export const DEFAULT_ACK_MARK_X_PERCENT = 2;
-export const DEFAULT_DECISION_X_PERCENT = 22;
-export const DEFAULT_REGISTRAR_X_PERCENT = 58;
+export const DEFAULT_REGISTRAR_X_PERCENT = 2;
+export const DEFAULT_ACK_MARK_X_PERCENT = 36;
+export const DEFAULT_DECISION_X_PERCENT = 58;
 
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -171,7 +171,7 @@ export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, p
 }
 
 /**
- * ความเห็นของธุรการที่เสนอขึ้นไปให้ผู้อำนวยการ — วางมุมขวาล่างของเอกสาร ขอบบนตรงกับกรอบตราปั๊ม ผอ.
+ * ความเห็นของธุรการที่เสนอขึ้นไปให้ผู้อำนวยการ — วางมุมซ้ายล่างของเอกสาร ขอบบนตรงกับกรอบตราปั๊ม ผอ.
  *
  * รูปแบบตามที่โรงเรียนใช้จริง เรียงจากบนลงล่าง:
  *   บรรทัดแรก  "เรียนผู้อำนวยการโรงเรียน"

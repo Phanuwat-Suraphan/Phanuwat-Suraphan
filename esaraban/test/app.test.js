@@ -969,12 +969,12 @@ describe('ตราประทับ: สามช่องแถบล่า�
   const PAGE_W = 595; // A4 กว้าง (pt) ต้องตรงกับ PAGE_WIDTH_PT ใน pdfStamp.js
   const BORDER_AND_PADDING = 18; // กรอบ 2pt + padding 7pt ทั้งสองด้านของกล่อง ผอ.
 
-  test('ทราบ → ตรา ผอ. → ความเห็นธุรการ เรียงจากซ้ายไปขวา ไม่ทับกัน และอยู่ในหน้ากระดาษ', async () => {
+  test('ความเห็นธุรการ → ทราบ → ตรา ผอ. เรียงจากซ้ายไปขวา ไม่ทับกัน และอยู่ในหน้ากระดาษ', async () => {
     const s = await import('../src/services/pdfStamp.js');
     const slots = [
+      { name: 'ความเห็นธุรการ', left: s.DEFAULT_REGISTRAR_X_PERCENT / 100 * PAGE_W, width: s.REGISTRAR_BOX_WIDTH_PT },
       { name: 'ทราบ', left: s.DEFAULT_ACK_MARK_X_PERCENT / 100 * PAGE_W, width: s.ACK_MARK_WIDTH_PT },
       { name: 'ตรา ผอ.', left: s.DEFAULT_DECISION_X_PERCENT / 100 * PAGE_W, width: s.DECISION_BOX_WIDTH_PT + BORDER_AND_PADDING },
-      { name: 'ความเห็นธุรการ', left: s.DEFAULT_REGISTRAR_X_PERCENT / 100 * PAGE_W, width: s.REGISTRAR_BOX_WIDTH_PT },
     ];
     for (let i = 0; i < slots.length; i++) {
       const a = slots[i];
@@ -986,9 +986,9 @@ describe('ตราประทับ: สามช่องแถบล่า�
           `${prev.name} ทับ ${a.name} (${prev.name} จบที่ ${Math.round(prev.left + prev.width)}pt แต่ ${a.name} เริ่มที่ ${Math.round(a.left)}pt)`);
       }
     }
-    // ความเห็นธุรการต้องอยู่ "มุมขวา" จริงๆ ตามที่โรงเรียนขอ ไม่ใช่ลอยอยู่กลางหน้า
-    const reg = slots[2];
-    assert.ok(reg.left + reg.width >= PAGE_W * 0.86, 'ความเห็นธุรการต้องชิดขอบขวาของหน้า');
+    // ต้องชิดมุมจริงๆ ตามที่โรงเรียนขอ ไม่ใช่ลอยอยู่กลางหน้า — ธุรการซ้ายล่าง ผอ. ขวาล่าง
+    assert.ok(slots[0].left <= PAGE_W * 0.06, 'ความเห็นธุรการต้องชิดขอบซ้ายของหน้า');
+    assert.ok(slots[2].left + slots[2].width >= PAGE_W * 0.86, 'กรอบตราปั๊ม ผอ. ต้องชิดขอบขวาของหน้า');
   });
 
   test('ขอบบนของทั้งสามช่องเป็นค่าเดียวกัน (บรรทัดบนสุดของความเห็นธุรการตรงกับกรอบตราปั๊ม ผอ.)', async () => {

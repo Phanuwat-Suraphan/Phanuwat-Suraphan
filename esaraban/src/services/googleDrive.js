@@ -52,6 +52,13 @@ async function getAccessToken() {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    // invalid_grant = โทเคนถูกเพิกถอนหรือหมดอายุ ซึ่งสาเหตุที่พบบ่อยที่สุดคือแอปบน Google Cloud
+    // ยังอยู่สถานะ "Testing" — Google กำหนดให้ refresh token ของโหมดนั้นหมดอายุใน 7 วันเสมอ
+    // ข้อความเดิมส่งต่อ error ภาษาอังกฤษของ Google ตรงๆ ("Token has been expired or revoked")
+    // ซึ่งไม่ได้บอกว่าต้องทำอะไร ทั้งที่นี่คือจุดที่ทำให้ไฟล์แนบและการสำรองข้อมูลหยุดทำงานทั้งระบบ
+    if (data.error === 'invalid_grant') {
+      throw httpError(502, 'การเชื่อมต่อ Google Drive หมดอายุแล้ว — สาเหตุที่พบบ่อยที่สุดคือแอปบน Google Cloud ยังเป็นสถานะ "Testing" ซึ่งโทเคนจะหมดอายุทุก 7 วัน วิธีแก้ถาวร: เข้า Google Cloud Console แล้วกด PUBLISH APP ให้เป็น "In production" จากนั้นเพิกถอนสิทธิ์ที่ myaccount.google.com/permissions แล้วเชื่อมต่อใหม่ที่ /admin/google-drive (ดูขั้นตอนที่ 4 ใน deploy/GOOGLE_DRIVE.md)');
+    }
     throw httpError(502, `เชื่อมต่อ Google Drive ไม่สำเร็จ (ต่ออายุ token ล้มเหลว): ${data.error_description || data.error || res.statusText} — อาจต้องเชื่อมต่อบัญชีใหม่ที่ /admin/google-drive`);
   }
   cachedToken = { accessToken: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 };
