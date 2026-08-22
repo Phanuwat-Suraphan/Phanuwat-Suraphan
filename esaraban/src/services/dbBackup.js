@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import {
   isGoogleDriveEnabled, isGoogleDriveConnected, ensureBackupFolder, ensureFolderPath, listSubfolders,
-  listFilesInFolder, uploadFile, downloadFileStream, deleteFile,
+  listFilesInFolder, uploadFile, downloadFileStream, deleteFile, getFileParents,
 } from './googleDrive.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -80,6 +80,40 @@ export function planBackupCleanup(dayFolders, { today, keepRecent = KEEP_RECENT,
   });
 
   return { deleteFolderIds, deleteFileIds };
+}
+
+/**
+ * วันที่ย้อนหลังไป n วันจากวันไทยที่กำหนด (คืนชื่อโฟลเดอร์รูปแบบเดียวกัน '2569-08-21')
+ * แปลง พ.ศ. -> ค.ศ. ก่อนคำนวณ แล้วแปลงกลับ เพื่อให้ข้ามเดือน/ข้ามปีถูกต้องเสมอ
+ */
+export function shiftThaiDay(day, deltaDays) {
+  const ce = Date.UTC(Number(day.slice(0, 4)) - 543, Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10)));
+  const d = new Date(ce + deltaDays * 86400000);
+  const y = String(d.getUTCFullYear() + 543);
+  return `${y}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+/**
+ * แบ่งโฟลเดอร์พี่น้องชั้นหนึ่งออกเป็น "ลบทั้งอัน" กับ "ต้องเปิดเข้าไปดูข้างใน" เทียบกับเส้นตาย
+ *
+ * หัวใจของการตัดของเก่าแบบไม่ต้องเปิดดูทุกวัน: ชื่อโฟลเดอร์เป็นตัวเลขล้วน (2569 / 2569-08 / 2569-08-21)
+ * เรียงตามตัวอักษรแล้วได้ลำดับเวลาพอดี จึงตัดสินได้จากชื่ออย่างเดียวว่าทั้งปี/ทั้งเดือนนั้นเก่าเกินหรือยัง
+ * ไม่ต้องยิง API เข้าไปนับไฟล์ข้างใน — มีแค่โฟลเดอร์ที่ "คร่อมเส้นตายพอดี" เท่านั้นที่ต้องเปิดดูต่อ
+ *
+ * @param siblings  [{id, name}] โฟลเดอร์ระดับเดียวกัน
+ * @param cutoff    เส้นตายความละเอียดเท่าชื่อโฟลเดอร์ เช่น '2568' / '2568-08' / '2568-08-22'
+ *                  โฟลเดอร์ที่ชื่อ < cutoff = เก่าเกินทั้งอัน, = cutoff = คร่อมเส้น, > cutoff = ยังไม่ถึงคิว
+ */
+export function splitByCutoff(siblings, cutoff) {
+  const deleteIds = [];
+  const descendIds = [];
+  for (const f of siblings) {
+    const key = f.name.slice(0, cutoff.length);
+    if (key < cutoff) deleteIds.push(f.id);
+    else if (key === cutoff) descendIds.push(f.id);
+    // key > cutoff = ใหม่กว่าเส้นตาย เก็บไว้ทั้งอัน ไม่ต้องเปิดดู
+  }
+  return { deleteIds, descendIds };
 }
 
 export function isBackupEnabled() {
@@ -145,7 +179,11 @@ export async function backupNow(reason = 'manual') {
     log(`สำรองข้อมูลขึ้น Google Drive แล้ว (${reason}, ${(buffer.length / 1048576).toFixed(2)} MB) → ${at.day}`);
     status.lastOkAt = Date.now();
     status.lastError = null;
-    await pruneOldBackups(root, at.day);
+    // ข้อมูลขึ้น Drive ครบแล้วตรงนี้ ปลดล็อกก่อนเก็บกวาด — การตัดของเก่ารอบวันละครั้งใช้เวลาเป็นนาที
+    // ถ้ายังถือล็อกอยู่แล้วบังเอิญโฮสต์สั่งปิดเครื่องช่วงนั้นพอดี การสำรองรอบสุดท้ายก่อนปิดจะถูกข้าม
+    // (backupNow คืน false ทันทีเมื่อ backingUp ยังเป็น true) แล้วงานช่วงท้ายจะหายไปโดยไม่จำเป็น
+    backingUp = false;
+    await pruneOldBackups(root, at.day, dayFolder);
     return true;
   } catch (err) {
     // สำรองไม่สำเร็จต้องไม่ทำให้ระบบล่ม — ผู้ใช้ยังต้องทำงานต่อได้ แต่ต้องเห็นชัดว่ากำลังไม่ถูกสำรอง
@@ -157,25 +195,32 @@ export async function backupNow(reason = 'manual') {
   }
 }
 
-/** อ่านโครงสร้างสำเนาสำรองทั้งหมดจาก Drive: ปี → เดือน → วัน → ไฟล์ (เรียงใหม่ไปเก่าทุกชั้น) */
-export async function readBackupTree() {
+/**
+ * อ่านเฉพาะโครงสร้างโฟลเดอร์ ปี → เดือน → วัน (ยังไม่ดึงรายชื่อไฟล์ในแต่ละวัน)
+ *
+ * ต้องแยกจากการดึงไฟล์เด็ดขาด เพราะการอ่านไฟล์ต้องยิง API หนึ่งครั้ง "ต่อวัน" — พอเก็บครบ 1 ปี
+ * จะกลายเป็น ~380 ครั้งต่อการเรียกหนึ่งที ทำให้หน้าเว็บโหลดเป็นนาที และถ้าเอาไปใช้ตอนตัดของเก่า
+ * ที่ทำงานทุก 5 นาที จะเป็นแสนครั้งต่อวันจนชนโควตา Drive — โครงสร้างโฟลเดอร์อย่างเดียวใช้แค่ ~27 ครั้ง
+ * (1 + จำนวนปี + จำนวนเดือน) เพราะหนึ่งคำขอคืนโฟลเดอร์ลูกทั้งหมดของชั้นนั้นมาเลย
+ */
+export async function readBackupFolders() {
   const root = await ensureBackupFolder();
   const years = [];
   for (const year of await listSubfolders(root)) {
     const months = [];
     for (const month of await listSubfolders(year.id)) {
-      const days = [];
-      for (const day of await listSubfolders(month.id)) {
-        const files = (await listFilesInFolder(day.id, { limit: 1000 }))
-          .filter((f) => f.name.startsWith(BACKUP_PREFIX))
-          .sort((a, b) => b.name.localeCompare(a.name));
-        days.push({ ...day, files });
-      }
-      months.push({ ...month, days });
+      months.push({ ...month, days: await listSubfolders(month.id) });
     }
     years.push({ ...year, months });
   }
   return years;
+}
+
+/** รายชื่อสำเนาในโฟลเดอร์ของวันหนึ่ง เรียงใหม่ไปเก่า — เรียกเฉพาะตอนที่ต้องใช้ไฟล์ของวันนั้นจริงๆ */
+export async function readBackupDayFiles(dayFolderId) {
+  return (await listFilesInFolder(dayFolderId, { limit: 1000 }))
+    .filter((f) => f.name.startsWith(BACKUP_PREFIX))
+    .sort((a, b) => b.name.localeCompare(a.name));
 }
 
 /** โฟลเดอร์รายวันทั้งหมด เรียงใหม่ไปเก่า — ใช้ทั้งตอนตัดของเก่าทิ้งและตอนหาสำเนาล่าสุดเพื่อกู้คืน */
@@ -184,22 +229,94 @@ function flattenDays(years) {
     .sort((a, b) => b.name.localeCompare(a.name));
 }
 
-async function pruneOldBackups(root, today) {
-  const days = flattenDays(await readBackupTree());
-  const { deleteFolderIds, deleteFileIds } = planBackupCleanup(days, { today });
-  for (const id of [...deleteFileIds, ...deleteFolderIds]) {
+/**
+ * ตัดไฟล์ในโฟลเดอร์วันหนึ่งให้เหลือ keep ชุดล่าสุด
+ * คืน "จำนวนไฟล์ก่อนตัด" ไม่ใช่จำนวนที่เหลือ — ตัวเรียกต้องแยกให้ออกระหว่าง "เพิ่งตัดไป"
+ * กับ "ตัดไปแล้วตั้งแต่รอบก่อน" ซึ่งถ้าคืนจำนวนที่เหลือจะได้ 1 เท่ากันทั้งสองกรณี แยกไม่ออก
+ */
+async function trimDayFolder(dayFolderId, keep) {
+  const files = await readBackupDayFiles(dayFolderId);
+  for (const f of files.slice(keep)) {
     try {
-      await deleteFile(id); // Drive มองโฟลเดอร์เป็นไฟล์ชนิดหนึ่ง ลบด้วยคำสั่งเดียวกันและลบของข้างในตามไปด้วย
+      await deleteFile(f.id);
     } catch (err) {
-      log(`ลบสำเนาเก่าไม่สำเร็จ (${id}): ${err.message}`);
+      log(`ลบสำเนาเก่าไม่สำเร็จ (${f.name}): ${err.message}`);
     }
   }
-  // เก็บกวาดโฟลเดอร์เดือน/ปีที่ไม่เหลืออะไรข้างในแล้ว ไม่ให้รกสะสมไปเรื่อยๆ
+  return files.length;
+}
+
+/**
+ * ตัดของเก่าทิ้ง — ออกแบบให้ "ราคาถูกทุกรอบ แพงวันละครั้ง"
+ *
+ *   ทุกรอบสำรอง (ทุก 5 นาที) — ตัดเฉพาะโฟลเดอร์ของวันนี้ให้เหลือ KEEP_RECENT ชุด = ยิง API 1 ครั้ง
+ *   เมื่อข้ามวันใหม่          — ค่อยไล่ตัดวันที่ผ่านมาให้เหลือวันละชุด และลบโฟลเดอร์ที่เกิน 1 ปี
+ *
+ * เดิมทำงานเต็มรูปแบบทุกรอบ ซึ่งพอเก็บครบปีจะเป็น ~380 API calls ทุก 5 นาที (~110,000 ครั้ง/วัน)
+ */
+let lastFullPruneDay = null;
+let pruning = false;
+async function pruneOldBackups(root, today, todayFolderId) {
+  // การเก็บกวาดทำงานนอกล็อกของ backupNow แล้ว (ดูเหตุผลที่นั่น) จึงต้องมีล็อกของตัวเอง ไม่งั้นรอบถัดไป
+  // อาจเข้ามาลบซ้อนกับรอบที่ยังไม่จบ — ข้ามไปเฉยๆ ได้ เพราะรอบที่กำลังทำอยู่ก็เก็บกวาดให้ครบอยู่แล้ว
+  if (pruning) return;
+  pruning = true;
+  try {
+    await pruneInner(root, today, todayFolderId);
+  } finally {
+    pruning = false;
+  }
+}
+
+async function pruneInner(root, today, todayFolderId) {
+  // 1) วันนี้ยังเขียนเพิ่มเรื่อยๆ — ตัดให้ไม่บวมทุกรอบ (ถูกมาก: 1 คำขอ + จำนวนไฟล์ที่เกิน)
+  await trimDayFolder(todayFolderId, KEEP_RECENT);
+  if (lastFullPruneDay === today) return;
+
+  const years = await readBackupFolders();
+
+  // 2) ไล่ตัดวันที่ผ่านไปแล้วให้เหลือวันละชุด — ตรวจทุกวัน ไม่หยุดกลางทาง
+  //
+  // เคยเขียนให้หยุดทันทีที่เจอวันที่ถูกตัดไปแล้ว (ปกติหยุดตั้งแต่วันที่ 2 จึงเร็วมาก) แต่ถ้ามีวันเก่าที่ยัง
+  // ไม่ถูกตัดค้างอยู่ "หลัง" วันที่ถูกตัดแล้ว มันจะไม่มีวันถูกตัดเลยตลอดไป เพราะรอบต่อๆ ไปก็หยุดที่เดิม —
+  // ไฟล์ส่วนเกินจะค้างกินโควตา Drive อยู่เงียบๆ โดยไม่มีอะไรฟ้อง งานนี้ทำวันละครั้ง และหนึ่งคำขอต่อวัน
+  // ที่เก็บไว้ (เต็มที่ 365 คำขอ) ยังถูกกว่าของเดิมที่ยิง ~380 คำขอ "ทุก 5 นาที" หลายร้อยเท่า
+  // จึงเลือกความถูกต้องที่พิสูจน์ได้ แทนการประหยัดคำขอที่ต้องมานั่งพิสูจน์ว่าไม่มีวันตกหล่น
+  let trimmed = 0;
+  for (const day of flattenDays(years).filter((d) => d.name < today)) {
+    if ((await trimDayFolder(day.id, 1)) > 1) trimmed++;
+  }
+  if (trimmed) log(`ตัดสำเนาส่วนเกินของวันที่ผ่านมาแล้ว ${trimmed} วัน (เหลือวันละ 1 ชุด)`);
+
+  // 3) ลบของที่เกินจำนวนวันที่ขอเก็บ — ตัดสินจากชื่อโฟลเดอร์ล้วนๆ ไม่ต้องเปิดดูข้างใน (ดู splitByCutoff)
+  const oldest = shiftThaiDay(today, -(KEEP_DAILY_DAYS - 1)); // วันเก่าสุดที่ยังเก็บไว้
+  await deleteExpired(years, oldest);
+
+  // 4) เก็บกวาดโฟลเดอร์เดือน/ปีที่ไม่เหลืออะไรข้างในแล้ว ไม่ให้รกสะสมไปเรื่อยๆ
   for (const year of await listSubfolders(root)) {
     for (const month of await listSubfolders(year.id)) {
       if (!(await listSubfolders(month.id)).length) await deleteFile(month.id).catch(() => {});
     }
     if (!(await listSubfolders(year.id)).length) await deleteFile(year.id).catch(() => {});
+  }
+
+  lastFullPruneDay = today;
+}
+
+async function deleteExpired(years, oldestKeptDay) {
+  const del = async (id, what) => {
+    try { await deleteFile(id); } catch (err) { log(`ลบ${what}เก่าไม่สำเร็จ (${id}): ${err.message}`); }
+  };
+  const yearSplit = splitByCutoff(years, oldestKeptDay.slice(0, 4));
+  for (const id of yearSplit.deleteIds) await del(id, 'สำเนาทั้งปี');
+  for (const yearId of yearSplit.descendIds) {
+    const year = years.find((y) => y.id === yearId);
+    const monthSplit = splitByCutoff(year.months, oldestKeptDay.slice(0, 7));
+    for (const id of monthSplit.deleteIds) await del(id, 'สำเนาทั้งเดือน');
+    for (const monthId of monthSplit.descendIds) {
+      const month = year.months.find((m) => m.id === monthId);
+      for (const id of splitByCutoff(month.days, oldestKeptDay).deleteIds) await del(id, 'สำเนาทั้งวัน');
+    }
   }
 }
 
@@ -210,19 +327,22 @@ async function pruneOldBackups(root, today) {
  */
 export async function deleteBackupNode(nodeId) {
   if (!isBackupEnabled()) throw new Error('ยังไม่ได้เปิดใช้การสำรองขึ้น Google Drive');
-  const years = await readBackupTree();
-  const allowed = new Set();
+  const years = await readBackupFolders();
+  const dayIds = new Set();
+  const allowedFolders = new Set();
   for (const y of years) {
-    allowed.add(y.id);
+    allowedFolders.add(y.id);
     for (const m of y.months) {
-      allowed.add(m.id);
-      for (const d of m.days) {
-        allowed.add(d.id);
-        d.files.forEach((f) => allowed.add(f.id));
-      }
+      allowedFolders.add(m.id);
+      for (const d of m.days) { allowedFolders.add(d.id); dayIds.add(d.id); }
     }
   }
-  if (!allowed.has(nodeId)) throw new Error('ไม่พบรายการสำเนาสำรองนี้');
+  if (allowedFolders.has(nodeId)) return deleteFile(nodeId);
+
+  // ไม่ใช่โฟลเดอร์ — ต้องเป็นไฟล์ที่อยู่ในโฟลเดอร์รายวันของสำเนาสำรองเท่านั้น เช็คจากโฟลเดอร์แม่ของไฟล์
+  // (ถามพ่อแม่ของไฟล์ 1 คำขอ ถูกกว่าไล่อ่านรายชื่อไฟล์ของทุกวันมาเทียบ ซึ่งพอครบปีคือ ~365 คำขอ)
+  const parents = await getFileParents(nodeId);
+  if (!parents || !parents.some((p) => dayIds.has(p))) throw new Error('ไม่พบรายการสำเนาสำรองนี้');
   await deleteFile(nodeId);
 }
 
@@ -238,8 +358,14 @@ export async function restoreDatabaseIfMissing() {
 
   try {
     // ไล่จากโฟลเดอร์วันล่าสุดลงไป — วันล่าสุดอาจมีแต่โฟลเดอร์เปล่า (เช่นลบไฟล์ทิ้งไปเอง) จึงต้องหาต่อ
-    const days = flattenDays(await readBackupTree());
-    const latest = days.find((d) => d.files.length)?.files[0];
+    // เปิดดูไฟล์ทีละวันตามที่จำเป็นจริงๆ ปกติเจอตั้งแต่วันแรก — ไม่ใช่อ่านไฟล์ของทุกวันมาก่อนแล้วค่อยเลือก
+    // ซึ่งตอนเก็บครบปีจะกลายเป็น ~365 คำขอ ถ่วงเวลาเปิดระบบทุกครั้งที่โฮสต์ล้างดิสก์
+    const days = flattenDays(await readBackupFolders());
+    let latest = null;
+    for (const day of days) {
+      const files = await readBackupDayFiles(day.id);
+      if (files.length) { latest = files[0]; break; }
+    }
     if (!latest) {
       log('ไม่พบสำเนาฐานข้อมูลบน Google Drive — เริ่มต้นด้วยฐานข้อมูลใหม่');
       return false;

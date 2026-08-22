@@ -8,7 +8,7 @@ import { router, html, json } from '../router.js';
 import { layout, esc, fmtDate } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { audit } from '../db.js';
-import { isBackupEnabled, readBackupTree, deleteBackupNode, getBackupStatus } from '../services/dbBackup.js';
+import { isBackupEnabled, readBackupFolders, readBackupDayFiles, deleteBackupNode, getBackupStatus } from '../services/dbBackup.js';
 
 const CAN_MANAGE = ['admin', 'registrar'];
 
@@ -58,17 +58,12 @@ export function backupTreeHtml(years) {
             ${deleteButton(month.id, monthLabel(month.name), 'ทั้งเดือน')}
           </summary>
           ${month.days.map((day) => `
-            <details class="backup-node" style="margin-left:1rem">
+            <details class="backup-node" style="margin-left:1rem" ontoggle="loadBackupDay(this, '${esc(day.id)}', ${JSON.stringify(dayLabel(day.name)).replace(/"/g, '&quot;')})">
               <summary>
                 <span class="backup-name">📅 ${esc(dayLabel(day.name))}</span>
-                <span class="text-muted">${day.files.length} ชุด</span>
                 ${deleteButton(day.id, dayLabel(day.name), 'ทั้งวัน')}
               </summary>
-              ${day.files.length ? day.files.map((f) => `
-                <div class="backup-file">
-                  <span>💾 ${esc(fileLabel(f.name))} <span class="text-muted">${esc(sizeLabel(f.size))}</span></span>
-                  ${deleteButton(f.id, `${dayLabel(day.name)} ${fileLabel(f.name)}`, 'ไฟล์นี้')}
-                </div>`).join('') : '<div class="backup-file text-muted">ไม่มีไฟล์ในวันนี้</div>'}
+              <div class="backup-file text-muted">กำลังอ่านรายการ…</div>
             </details>`).join('')}
         </details>`).join('')}
     </details>`).join('');
@@ -89,16 +84,16 @@ router.get('/admin/backups', requireRole(...CAN_MANAGE)(requirePage(async (ctx) 
   let years = [];
   let loadError = null;
   try {
-    years = await readBackupTree();
+    // อ่านเฉพาะโครงสร้างโฟลเดอร์ ไม่อ่านไฟล์ในแต่ละวัน — รายชื่อไฟล์โหลดตอนกดเปิดวันนั้นแทน
+    // (ถ้าอ่านไฟล์ของทุกวันตรงนี้ พอเก็บครบ 1 ปีจะเป็น ~380 คำขอไป Google Drive หน้าจะค้างเป็นนาที)
+    years = await readBackupFolders();
   } catch (err) {
     loadError = err.message;
   }
 
   const status = getBackupStatus();
-  const totalFiles = years.reduce((s, y) => s + y.months.reduce((s2, m) => s2 + m.days.reduce((s3, d) => s3 + d.files.length, 0), 0), 0);
-  const totalDays = years.reduce((s, y) => s + y.months.reduce((s2, m) => s2 + m.days.length, 0), 0);
-  const totalBytes = years.reduce((s, y) => s + y.months.reduce((s2, m) => s2 + m.days.reduce(
-    (s3, d) => s3 + d.files.reduce((s4, f) => s4 + Number(f.size || 0), 0), 0), 0), 0);
+  const allDays = years.flatMap((y) => y.months.flatMap((m) => m.days.map((d) => d.name))).sort();
+  const totalDays = allDays.length;
 
   const treeHtml = backupTreeHtml(years);
 
@@ -122,10 +117,12 @@ router.get('/admin/backups', requireRole(...CAN_MANAGE)(requirePage(async (ctx) 
       <div class="kpi-grid">
         <div class="kpi-card"><div class="kpi-icon kpi-icon-primary">📅</div>
           <div><div class="kpi-value">${totalDays}</div><div class="kpi-label">วันที่มีสำเนา</div></div></div>
-        <div class="kpi-card"><div class="kpi-icon kpi-icon-success">💾</div>
-          <div><div class="kpi-value">${totalFiles}</div><div class="kpi-label">ไฟล์ทั้งหมด</div></div></div>
+        <div class="kpi-card"><div class="kpi-icon kpi-icon-success">🗓️</div>
+          <div><div class="kpi-value" style="font-size:1.05rem">${totalDays ? esc(dayLabel(allDays[allDays.length - 1])) : '—'}</div>
+          <div class="kpi-label">สำเนาล่าสุด</div></div></div>
         <div class="kpi-card"><div class="kpi-icon kpi-icon-warning">📦</div>
-          <div><div class="kpi-value">${(totalBytes / 1048576).toFixed(0)}</div><div class="kpi-label">ขนาดรวม (MB)</div></div></div>
+          <div><div class="kpi-value" style="font-size:1.05rem">${totalDays ? esc(dayLabel(allDays[0])) : '—'}</div>
+          <div class="kpi-label">ย้อนหลังได้ถึง</div></div></div>
       </div>
       <div class="callout-tip" style="margin-top:1rem">
         ⚠️ สำเนาที่ลบไปแล้ว<strong>เรียกคืนไม่ได้</strong> — ถ้าเซิร์ฟเวอร์ถูกล้างหลังจากนั้น จะกู้ข้อมูลของวันที่ลบไปไม่ได้อีก
@@ -138,6 +135,31 @@ router.get('/admin/backups', requireRole(...CAN_MANAGE)(requirePage(async (ctx) 
     </div>
 
     <script>
+      // โหลดรายชื่อไฟล์ของวันนั้นตอนกดเปิดเท่านั้น — ถ้าโหลดมาพร้อมหน้าทั้งปี จะเป็นหลายร้อยคำขอ
+      // ไป Google Drive ต่อการเปิดหน้าหนึ่งครั้ง หน้าจะค้างเป็นนาที
+      async function loadBackupDay(el, dayId, label) {
+        if (!el.open || el.dataset.loaded) return;
+        el.dataset.loaded = '1';
+        var box = el.querySelector('.backup-file');
+        try {
+          var res = await fetch('/admin/backups/day/' + encodeURIComponent(dayId));
+          var data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'อ่านรายการไม่สำเร็จ');
+          if (!data.files.length) { box.textContent = 'ไม่มีไฟล์ในวันนี้'; return; }
+          box.outerHTML = data.files.map(function (f) {
+            return '<div class="backup-file"><span>💾 ' + f.timeLabel +
+              ' <span class="text-muted">' + f.sizeLabel + '</span></span>' +
+              '<button class="btn btn-outline btn-sm" style="color:var(--danger);border-color:var(--danger)" ' +
+              'onclick="removeBackup(' + JSON.stringify(f.id).replace(/"/g, '&quot;') + ', ' +
+              JSON.stringify(label + ' ').replace(/"/g, '&quot;') + ' + ' + JSON.stringify(f.timeLabel).replace(/"/g, '&quot;') +
+              ', \\'ไฟล์นี้\\')">🗑️ ลบไฟล์นี้</button></div>';
+          }).join('');
+        } catch (e) {
+          box.textContent = 'อ่านรายการไม่สำเร็จ: ' + e.message;
+          el.dataset.loaded = '';
+        }
+      }
+
       async function removeBackup(id, label, what) {
         if (!confirm('ยืนยันลบสำเนาสำรอง ' + what + ' "' + label + '"?\\n\\nลบแล้วเรียกคืนไม่ได้')) return;
         var pin = await window.askPin('ยืนยัน PIN เพื่อลบสำเนาสำรอง ' + what);
@@ -159,6 +181,25 @@ router.get('/admin/backups', requireRole(...CAN_MANAGE)(requirePage(async (ctx) 
 
   html(ctx, 200, layout({ user: ctx.user, title: 'สำเนาสำรองฐานข้อมูล', path: '/admin/backups', content }));
 })));
+
+// รายชื่อสำเนาของวันหนึ่ง — โหลดตอนผู้ใช้กดเปิดวันนั้นบนหน้าจัดการ (ดู loadBackupDay ฝั่งเว็บ)
+router.get('/admin/backups/day/:dayId', requireApi(async (ctx) => {
+  if (!ctx.user.roleCodes.some((r) => CAN_MANAGE.includes(r))) {
+    return json(ctx, 403, { error: 'เฉพาะธุรการ/ผู้ดูแลระบบเท่านั้น' });
+  }
+  if (!isBackupEnabled()) return json(ctx, 400, { error: 'ยังไม่ได้เปิดใช้การสำรองขึ้น Google Drive' });
+  const dayId = decodeURIComponent(ctx.params.dayId);
+  // ยืนยันก่อนว่า id ที่ส่งมาเป็นโฟลเดอร์รายวันของสำเนาสำรองจริง ไม่ใช่โฟลเดอร์อื่นในบัญชี Drive
+  // (เหตุผลเดียวกับ deleteBackupNode — ห้ามให้คำขอที่ยิงเองอ่านโฟลเดอร์ไหนก็ได้ เช่นไฟล์แนบหนังสือ)
+  const years = await readBackupFolders();
+  const isBackupDay = years.some((y) => y.months.some((m) => m.days.some((d) => d.id === dayId)));
+  if (!isBackupDay) return json(ctx, 404, { error: 'ไม่พบโฟลเดอร์สำเนาสำรองของวันนี้' });
+
+  const files = (await readBackupDayFiles(dayId)).map((f) => ({
+    id: f.id, timeLabel: fileLabel(f.name), sizeLabel: sizeLabel(f.size),
+  }));
+  json(ctx, 200, { files });
+}));
 
 router.post('/admin/backups/delete', requireApi(async (ctx) => {
   if (!ctx.user.roleCodes.some((r) => CAN_MANAGE.includes(r))) {

@@ -112,6 +112,25 @@ export async function ensureFolderPath(parentId, names) {
   return current;
 }
 
+// หาโฟลเดอร์ตามชื่อ — คืน null ถ้าไม่มี (ต่างจาก findOrCreateFolder ที่จะสร้างให้เลย)
+// ใช้ตอนไล่หาโฟลเดอร์ของวันที่ผ่านมาแล้ว ซึ่ง "ไม่มี" เป็นคำตอบที่ถูกต้อง ไม่ใช่เหตุให้ไปสร้างโฟลเดอร์เปล่าทิ้งไว้
+export async function findFolder(name, parentId) {
+  const q = encodeURIComponent(`name='${name.replace(/'/g, "\\'")}' and mimeType='application/vnd.google-apps.folder' and trashed=false and '${parentId}' in parents`);
+  const res = await driveFetch(`${API_BASE}?q=${q}&fields=files(id,name)&pageSize=1&spaces=drive`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw httpError(502, `ค้นหาโฟลเดอร์บน Google Drive ไม่สำเร็จ: ${data.error?.message || res.statusText}`);
+  return data.files?.[0] || null;
+}
+
+// โฟลเดอร์แม่ของไฟล์หนึ่งไฟล์ — ใช้ตรวจว่าไฟล์ที่ผู้ใช้สั่งลบอยู่ในโฟลเดอร์สำเนาสำรองจริงหรือไม่
+// โดยไม่ต้องไล่อ่านรายชื่อไฟล์ของทุกวันมาเทียบ (ดู deleteBackupNode ใน dbBackup.js)
+export async function getFileParents(fileId) {
+  const res = await driveFetch(`${API_BASE}/${encodeURIComponent(fileId)}?fields=id,name,parents&supportsAllDrives=true`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return null; // ไม่มีไฟล์นี้/ไม่มีสิทธิ์ — ตัวเรียกจะปฏิเสธการลบเอง
+  return data.parents || [];
+}
+
 // เฉพาะโฟลเดอร์ย่อย เรียงตามชื่อจากใหม่ไปเก่า (ชื่อเป็นวันที่แบบ 2569-08-21 จึงเรียงตามตัวอักษรได้ตรงเวลา)
 export async function listSubfolders(parentId) {
   const q = encodeURIComponent(`'${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`);

@@ -1160,31 +1160,86 @@ describe('สำรองฐานข้อมูล: สำเนาต้อ�
       assert.deepEqual(planBackupCleanup([], { today: '2569-08-21' }), { deleteFolderIds: [], deleteFileIds: [] });
     });
 
-    test('หน้าจัดการมีปุ่มลบครบทุกชั้น — ทั้งปี ทั้งเดือน ทั้งวัน และรายไฟล์', async () => {
+    test('ตัดของเก่าโดยดูจากชื่อโฟลเดอร์ ไม่ต้องเปิดดูข้างในทุกวัน', async () => {
+      const { splitByCutoff } = await import('../src/services/dbBackup.js');
+      // เส้นตาย 2568-08-22 = วันเก่าสุดที่ยังเก็บไว้
+      const years = [{ id: 'y69', name: '2569' }, { id: 'y68', name: '2568' }, { id: 'y67', name: '2567' }];
+      const y = splitByCutoff(years, '2568');
+      assert.deepEqual(y.deleteIds, ['y67'], 'ปีที่เก่ากว่าเส้นตายลบทั้งปีได้เลย ไม่ต้องเปิดดู');
+      assert.deepEqual(y.descendIds, ['y68'], 'มีแค่ปีที่คร่อมเส้นตายที่ต้องเปิดดูต่อ');
+      // ปี 2569 ใหม่กว่าเส้นตาย ต้องไม่ถูกแตะและไม่ต้องเปิดดู — นี่คือจุดที่ประหยัดคำขอได้มากที่สุด
+      assert.ok(!y.deleteIds.includes('y69') && !y.descendIds.includes('y69'));
+
+      const m = splitByCutoff([{ id: 'm09', name: '2568-09' }, { id: 'm08', name: '2568-08' }, { id: 'm07', name: '2568-07' }], '2568-08');
+      assert.deepEqual(m.deleteIds, ['m07']);
+      assert.deepEqual(m.descendIds, ['m08']);
+
+      const d = splitByCutoff([{ id: 'd23', name: '2568-08-23' }, { id: 'd22', name: '2568-08-22' }, { id: 'd21', name: '2568-08-21' }], '2568-08-22');
+      assert.deepEqual(d.deleteIds, ['d21'], 'วันที่เก่ากว่าเส้นตายเท่านั้นที่ถูกลบ');
+      assert.ok(!d.deleteIds.includes('d22'), 'วันที่ตรงเส้นตายพอดีคือวันเก่าสุดที่ยังเก็บไว้ ห้ามลบ');
+    });
+
+    test('นับวันย้อนหลังข้ามเดือน/ข้ามปี พ.ศ. ได้ถูกต้อง', async () => {
+      const { shiftThaiDay } = await import('../src/services/dbBackup.js');
+      assert.equal(shiftThaiDay('2569-08-21', -1), '2569-08-20');
+      assert.equal(shiftThaiDay('2569-08-01', -1), '2569-07-31', 'ข้ามเดือน');
+      assert.equal(shiftThaiDay('2569-01-01', -1), '2568-12-31', 'ข้ามปี พ.ศ.');
+      assert.equal(shiftThaiDay('2567-03-01', -1), '2567-02-29', 'ปีอธิกสุรทิน (ค.ศ. 2024)');
+      // เก็บ 365 วัน "รวมวันนี้ด้วย" จึงย้อนไป 364 วัน — ช่วง 2568-08-22 ถึง 2569-08-21 คือ 365 วันพอดี
+      assert.equal(shiftThaiDay('2569-08-21', -364), '2568-08-22', 'วันเก่าสุดที่ยังเก็บไว้ตามค่าเริ่มต้น 365 วัน');
+      const span = (Date.UTC(2026, 7, 21) - Date.UTC(2025, 7, 22)) / 86400000 + 1;
+      assert.equal(span, 365, 'ยืนยันว่าช่วงที่เก็บคือ 365 วันจริง');
+    });
+
+    test('อ่านโครงสร้างโฟลเดอร์ต้องไม่ยิงคำขออ่านไฟล์ของทุกวัน', () => {
+      // เก็บครบ 1 ปี = 365 โฟลเดอร์รายวัน ถ้าอ่านไฟล์ของทุกวันจะเป็น ~380 คำขอต่อการเรียกหนึ่งครั้ง
+      // ซึ่งถูกเรียกทั้งตอนเปิดหน้าจัดการ ตอนกู้คืน และ (เดิม) ตอนตัดของเก่าทุก 5 นาที = แสนกว่าคำขอ/วัน
+      const src = fs.readFileSync(new URL('../src/services/dbBackup.js', import.meta.url), 'utf8');
+      const body = src.slice(src.indexOf('export async function readBackupFolders'));
+      const fn = body.slice(0, body.indexOf('\n}\n') + 2);
+      assert.ok(!/listFilesInFolder|readBackupDayFiles/.test(fn),
+        'readBackupFolders ต้องอ่านแค่โครงสร้างโฟลเดอร์ ห้ามอ่านไฟล์ในแต่ละวัน');
+      // และตัวตัดของเก่าที่ทำงานทุก 5 นาที ต้องไม่ไปเรียกตัวที่ไล่ทั้งต้นไม้
+      assert.match(src, /async function pruneOldBackups\(root, today, todayFolderId\)/);
+      assert.match(src, /if \(lastFullPruneDay === today\) return;/,
+        'งานหนักต้องทำวันละครั้ง ไม่ใช่ทุกรอบสำรอง');
+    });
+
+    test('การเก็บกวาดต้องไม่ถือล็อกการสำรอง (ไม่งั้นการสำรองรอบสุดท้ายก่อนปิดเครื่องจะถูกข้าม)', () => {
+      // รอบเก็บกวาดวันละครั้งใช้เวลาเป็นนาที ถ้ายังถือ backingUp อยู่แล้วโฮสต์สั่งปิดเครื่องช่วงนั้นพอดี
+      // backupNow('ก่อนปิดเซิร์ฟเวอร์') จะคืน false ทันที แล้วงานช่วงท้ายหายไปทั้งที่กันได้
+      const src = fs.readFileSync(new URL('../src/services/dbBackup.js', import.meta.url), 'utf8');
+      const fn = src.slice(src.indexOf('export async function backupNow'), src.indexOf('export async function readBackupFolders'));
+      const releaseAt = fn.indexOf('backingUp = false;');
+      const pruneAt = fn.indexOf('await pruneOldBackups(');
+      assert.ok(releaseAt > 0 && pruneAt > 0);
+      assert.ok(releaseAt < pruneAt, 'ต้องปลดล็อก backingUp ก่อนเรียก pruneOldBackups');
+      // และเมื่อไม่ได้ถือล็อกร่วมกันแล้ว ตัวเก็บกวาดต้องมีล็อกของตัวเองกันทำงานซ้อนกัน
+      assert.match(src, /if \(pruning\) return;/, 'pruneOldBackups ต้องมีล็อกของตัวเอง');
+    });
+
+    test('หน้าจัดการมีปุ่มลบครบทุกชั้น และโหลดไฟล์รายวันตอนกดเปิดเท่านั้น', async () => {
       const { backupTreeHtml } = await import('../src/routes/backups.js');
       const html = backupTreeHtml([{
         id: 'y', name: '2569',
-        months: [{
-          id: 'm', name: '2569-08',
-          days: [{ id: 'd', name: '2569-08-21', files: [{ id: 'f', name: 'esaraban-1530.db', size: 2097152 }] }],
-        }],
+        months: [{ id: 'm', name: '2569-08', days: [{ id: 'd', name: '2569-08-21' }] }],
       }]);
-      for (const [id, what] of [['y', 'ทั้งปี'], ['m', 'ทั้งเดือน'], ['d', 'ทั้งวัน'], ['f', 'ไฟล์นี้']]) {
+      for (const [id, what] of [['y', 'ทั้งปี'], ['m', 'ทั้งเดือน'], ['d', 'ทั้งวัน']]) {
         assert.ok(html.includes(`removeBackup('${id}'`), `ต้องมีปุ่มลบของ ${what}`);
         assert.ok(html.includes(`ลบ${what}`), `ปุ่มต้องบอกว่าลบ${what}`);
       }
+      // รายชื่อไฟล์ต้องไม่ถูก render มาพร้อมหน้า — ต้องผูก loadBackupDay ไว้ให้ไปโหลดตอนกดเปิดวันนั้น
+      // (ถ้า render มาพร้อมหน้า พอเก็บครบ 1 ปีจะเป็น ~380 คำขอไป Google Drive ต่อการเปิดหน้าหนึ่งครั้ง)
+      assert.match(html, /ontoggle="loadBackupDay\(this, 'd'/, 'วันต้องผูกตัวโหลดไฟล์แบบกดแล้วค่อยโหลด');
       // ชื่อโฟลเดอร์เก็บเป็นตัวเลขล้วนเพื่อให้เรียงถูก แต่ต้องแสดงเป็นคำอ่านให้ธุรการเข้าใจ
       assert.ok(html.includes('สิงหาคม 2569'), 'เดือนต้องแสดงเป็นชื่อเดือนไทย');
       assert.ok(html.includes('21 สิงหาคม 2569'), 'วันต้องแสดงเป็นวันที่อ่านออก');
-      assert.ok(html.includes('15:30 น.'), 'ไฟล์ต้องแสดงเป็นเวลาที่สำรอง');
-      assert.ok(html.includes('2.00 MB'), 'ต้องบอกขนาดไฟล์');
     });
 
-    test('ไม่มีไฟล์ในวันนั้น ต้องไม่พังและบอกให้รู้', async () => {
+    test('ไม่มีสำเนาเลย ต้อง render ได้โดยไม่พัง', async () => {
       const { backupTreeHtml } = await import('../src/routes/backups.js');
-      const html = backupTreeHtml([{ id: 'y', name: '2569', months: [{ id: 'm', name: '2569-08', days: [{ id: 'd', name: '2569-08-21', files: [] }] }] }]);
-      assert.ok(html.includes('ไม่มีไฟล์ในวันนี้'));
       assert.equal(backupTreeHtml([]), '');
+      assert.ok(backupTreeHtml([{ id: 'y', name: '2569', months: [] }]).includes('ปี 2569'));
     });
   });
 
