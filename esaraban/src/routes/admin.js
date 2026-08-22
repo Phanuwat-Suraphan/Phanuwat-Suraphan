@@ -6,6 +6,7 @@ import {
   isGoogleDriveEnabled, isGoogleDriveConnected, getOAuthClientConfig, exchangeCodeForTokens, DRIVE_SCOPE, AUTH_URL,
   listAllAttachmentFiles, deleteFile,
 } from '../services/googleDrive.js';
+import { isLineEnabled, sendLineMessage, getLineStatus } from '../services/line.js';
 
 /**
  * ไฟล์บน Drive ที่ไม่มีรายการในระบบอ้างถึงแล้ว
@@ -243,6 +244,62 @@ router.get('/admin/google-drive', requireRole('admin')(requirePage((ctx) => {
       };
     </script>` : ''}`;
   html(ctx, 200, layout({ user: ctx.user, title: 'เชื่อมต่อ Google Drive', path: '/admin/google-drive', content }));
+})));
+
+router.get('/admin/line', requireRole('admin')(requirePage((ctx) => {
+  const enabled = isLineEnabled();
+  const st = getLineStatus();
+  const content = `
+    <h2>💬 แจ้งเตือนเข้ากลุ่ม LINE</h2>
+    <div class="card">
+      <table class="table-plain">
+        <tbody>
+          <tr><td class="text-muted">LINE_CHANNEL_ACCESS_TOKEN</td><td>${process.env.LINE_CHANNEL_ACCESS_TOKEN ? '<span class="badge badge-success">ตั้งค่าแล้ว</span>' : '<span class="badge badge-muted">ยังไม่ได้ตั้งค่า</span>'}</td></tr>
+          <tr><td class="text-muted">LINE_TARGET_ID</td><td>${process.env.LINE_TARGET_ID ? '<span class="badge badge-success">ตั้งค่าแล้ว</span>' : '<span class="badge badge-muted">ยังไม่ได้ตั้งค่า</span>'}</td></tr>
+          <tr><td class="text-muted">PUBLIC_BASE_URL (สำหรับลิงก์ในข้อความ)</td><td>${process.env.PUBLIC_BASE_URL ? `<code>${esc(process.env.PUBLIC_BASE_URL)}</code>` : '<span class="badge badge-muted">ไม่ได้ตั้ง — ข้อความจะไม่มีลิงก์</span>'}</td></tr>
+          <tr><td class="text-muted">สถานะล่าสุด</td><td>${
+            st.state === 'ok' ? `<span class="badge badge-success">ส่งได้ปกติ</span> <span class="text-muted">(ส่งไปแล้ว ${st.sentCount} ข้อความตั้งแต่เปิดระบบ)</span>`
+            : st.state === 'warn' ? `<span class="badge badge-danger">ส่งไม่สำเร็จ</span> ${esc(st.lastError?.message || '')}`
+            : st.state === 'pending' ? '<span class="badge badge-muted">ยังไม่ได้ส่งข้อความแรก</span>'
+            : '<span class="badge badge-muted">ยังไม่ได้เปิดใช้</span>'
+          }</td></tr>
+        </tbody>
+      </table>
+      ${enabled
+        ? `<button class="btn btn-primary" style="margin-top:1rem" onclick="testLine(this)">📨 ส่งข้อความทดสอบเข้ากลุ่ม</button>`
+        : `<div class="alert alert-warning" style="margin-top:1rem">
+             ต้องตั้ง <code>LINE_CHANNEL_ACCESS_TOKEN</code> และ <code>LINE_TARGET_ID</code> เป็น environment variable ก่อน
+             แล้ว redeploy — ดูขั้นตอนสร้างทีละขั้นใน <code>deploy/LINE.md</code>
+           </div>`}
+      <div class="callout-tip" style="margin-top:1rem">
+        ℹ️ ระบบส่งเข้า LINE <strong>เฉพาะเรื่องด่วนจริง</strong> เท่านั้น — หนังสือด่วนมาก/ด่วนที่สุดที่เพิ่งมอบหมาย
+        และเรื่องที่ถูกส่งกลับแก้ไข/ไม่อนุมัติ ส่วนเรื่องปกติยังแจ้งในเว็บเหมือนเดิม
+        เพราะ LINE Official Account มีโควตาข้อความฟรีจำกัดต่อเดือน ถ้ายิงทุกเรื่องโควตาจะหมดตั้งแต่ต้นเดือน
+        แล้วเรื่องด่วนจริงๆ ปลายเดือนจะส่งไม่ออก
+      </div>
+    </div>
+    <script>
+      window.testLine = async function (btn) {
+        window.setBtnLoading(btn);
+        try {
+          const res = await fetch('/admin/line/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.error || 'ส่งไม่สำเร็จ');
+          window.toast('ส่งข้อความทดสอบแล้ว — ไปดูในกลุ่ม LINE ได้เลย', 'success');
+          setTimeout(function () { location.reload(); }, 1500);
+        } catch (e) { window.toast(e.message, 'danger'); }
+        window.restoreBtn(btn);
+      };
+    </script>`;
+  html(ctx, 200, layout({ user: ctx.user, title: 'แจ้งเตือนเข้ากลุ่ม LINE', path: '/admin/line', content }));
+})));
+
+router.post('/admin/line/test', requireRole('admin')(requireApi(async (ctx) => {
+  const result = await sendLineMessage(
+    `✅ ทดสอบการเชื่อมต่อจากระบบสารบรรณอิเล็กทรอนิกส์\nถ้าเห็นข้อความนี้ในกลุ่ม แปลว่าตั้งค่าถูกต้องแล้ว`,
+  );
+  audit({ userId: ctx.user.id, action: 'line_test_sent', tableName: 'settings', recordId: null, detail: { ok: result.ok, error: result.error || null } });
+  json(ctx, result.ok ? 200 : 502, result);
 })));
 
 router.get('/admin/google-drive/orphans', requireRole('admin')(requireApi(async (ctx) => {

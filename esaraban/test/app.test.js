@@ -976,6 +976,72 @@ describe('ลา/ไปราชการ: สิทธิ์ต้องบั�
   });
 });
 
+// แจ้งเตือนเข้ากลุ่ม LINE เป็นช่องทางเดียวที่ถึงครูตอนไม่ได้เปิดเว็บ แต่ต้องไม่ทำให้ระบบหลักพัง
+// ถ้า LINE ล่ม/โควตาหมด/ตอบช้า การอนุมัติที่สำเร็จไปแล้วต้องไม่กลายเป็น error จนผู้ใช้กดซ้ำ
+describe('แจ้งเตือน LINE: ต้องไม่ทำให้การบันทึกงานพังไม่ว่าเกิดอะไรขึ้น', () => {
+  test('ไม่ได้ตั้งค่าไว้ ต้องถือว่าปิดอยู่และไม่พัง', async () => {
+    const line = await import('../src/services/line.js');
+    const saved = { t: process.env.LINE_CHANNEL_ACCESS_TOKEN, id: process.env.LINE_TARGET_ID };
+    delete process.env.LINE_CHANNEL_ACCESS_TOKEN;
+    delete process.env.LINE_TARGET_ID;
+    try {
+      assert.equal(line.isLineEnabled(), false);
+      assert.equal(line.getLineStatus().state, 'off');
+      assert.deepEqual(await line.sendLineMessage('ทดสอบ'), { ok: false, error: 'ยังไม่ได้ตั้งค่า LINE' });
+      // และการแจ้งเตือนปกติต้องยังบันทึกลงฐานข้อมูลได้ตามเดิม
+      const { notifyUser } = await import('../src/services/notify.js');
+      const doc = makeDoc({ title: 'ทดสอบแจ้งเตือนตอน LINE ปิดอยู่' });
+      notifyUser({ userId: seed.userIds.teacher001, documentId: doc.id, title: 'ทดสอบ', message: 'x', lineAlert: true });
+      assert.ok(db.prepare('SELECT 1 FROM notifications WHERE document_id = ?').get(doc.id), 'ต้องยังบันทึกแจ้งเตือนในเว็บได้');
+    } finally {
+      if (saved.t) process.env.LINE_CHANNEL_ACCESS_TOKEN = saved.t;
+      if (saved.id) process.env.LINE_TARGET_ID = saved.id;
+    }
+  });
+
+  test('ตั้งค่าไว้แต่ยิงไม่ออก ต้องคืน error ไม่ใช่ throw', async () => {
+    const line = await import('../src/services/line.js');
+    const saved = { t: process.env.LINE_CHANNEL_ACCESS_TOKEN, id: process.env.LINE_TARGET_ID };
+    // ปลายทางที่ต่อไม่ติดแน่ๆ — จำลองสภาพ LINE ล่ม/เน็ตมีปัญหา
+    process.env.LINE_CHANNEL_ACCESS_TOKEN = 'tokenที่ใช้ไม่ได้'.replace(/[^\x20-\x7E]/g, '') + 'X';
+    process.env.LINE_TARGET_ID = 'Utest';
+    try {
+      const r = await line.sendLineMessage('ทดสอบ');
+      assert.equal(typeof r.ok, 'boolean', 'ต้องคืนผลเป็นวัตถุเสมอ ไม่ throw');
+    } finally {
+      if (saved.t) process.env.LINE_CHANNEL_ACCESS_TOKEN = saved.t; else delete process.env.LINE_CHANNEL_ACCESS_TOKEN;
+      if (saved.id) process.env.LINE_TARGET_ID = saved.id; else delete process.env.LINE_TARGET_ID;
+    }
+  });
+
+  test('token ที่คัดลอกเกินมา ต้องได้ข้อความบอกเป็นภาษาคน ไม่ใช่ error ดิบของ Node', async () => {
+    const src = fs.readFileSync(new URL('../src/services/line.js', import.meta.url), 'utf8');
+    assert.match(src, /\/\^\[\\x20-\\x7E\]\+\$\/\.test\(token\)/, 'ต้องตรวจว่า token เป็น ASCII ก่อนใส่ลง HTTP header');
+    assert.match(src, /function envTrimmed/, 'ต้องตัดช่องว่าง/ขึ้นบรรทัดใหม่ที่ติดมาตอนคัดลอกวาง');
+  });
+
+  test('ยิง LINE เฉพาะเรื่องด่วนจริง ไม่ใช่ทุกการแจ้งเตือน (กันโควตาหมดกลางเดือน)', () => {
+    const wf = fs.readFileSync(new URL('../src/services/workflow.js', import.meta.url), 'utf8');
+    const alerts = (wf.match(/lineAlert:/g) || []).length;
+    const notifies = (wf.match(/notifyUser\(/g) || []).length;
+    assert.ok(alerts >= 1 && alerts < notifies,
+      `ต้องยิง LINE บางเรื่อง ไม่ใช่ทุกเรื่อง (แจ้งเตือน ${notifies} จุด ยิง LINE ${alerts} จุด)`);
+    // เรื่องที่ปิดไปแล้วด้วยดี (รับทราบ/เสร็จสิ้น) ไม่ควรไปรบกวนกลุ่ม LINE
+    const ackBlock = wf.slice(wf.indexOf('export function acknowledgeAndComplete'), wf.indexOf('export function rejectStep'));
+    assert.ok(!ackBlock.includes('lineAlert'), 'เรื่องที่ปิดเรียบร้อยแล้วไม่ต้องยิงเข้ากลุ่ม LINE');
+  });
+
+  test('ข้อความที่ส่งเข้า LINE ต้องไม่มีเนื้อหาในไฟล์แนบ', () => {
+    // กลุ่ม LINE อาจมีคนนอกโรงเรียนอยู่ด้วย ข้อความจึงมีได้แค่หัวเรื่องกับลิงก์ ซึ่งเปิดต่อต้องล็อกอินอยู่ดี
+    const src = fs.readFileSync(new URL('../src/services/notify.js', import.meta.url), 'utf8');
+    const fn = src.slice(src.indexOf('function pushLineAlert'));
+    for (const leak of ['attachment', 'subject', 'readAttachmentBytes', 'signature']) {
+      assert.ok(!fn.includes(leak), `ข้อความ LINE ไม่ควรมี ${leak}`);
+    }
+    assert.match(fn, /publicUrl\(/, 'ต้องส่งเป็นลิงก์ให้กดกลับมาที่ระบบ ไม่ใช่ส่งเนื้อหาไปทั้งก้อน');
+  });
+});
+
 // หน้ารายการทะเบียนหนังสือกรองสิทธิ์ตั้งแต่ใน SQL เพื่อให้นับจำนวนและแบ่งหน้าได้ถูก แต่การตรวจสิทธิ์
 // รายฉบับยังใช้ canUserSeeDocument เหมือนเดิม — สองตัวนี้ต้องให้ผลตรงกันเป๊ะเสมอ ถ้าเงื่อนไข SQL หลวมกว่า
 // คือเปิดเผยหนังสือลับให้คนที่ไม่มีสิทธิ์เห็น ถ้าแคบกว่าคือซ่อนหนังสือที่ควรเห็นจนหาไม่เจอ ทั้งสองแบบ
