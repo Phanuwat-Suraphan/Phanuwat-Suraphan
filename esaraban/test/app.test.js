@@ -1066,6 +1066,49 @@ describe('ตราประทับ: สามช่องแถบล่า�
       'ต้องอ่านของเดิม -> บันทึกตัวใหม่ -> ค่อยลบของเดิม (ลบก่อนบันทึกสำเร็จ = เสี่ยงไม่เหลือไฟล์เลย)');
   });
 
+  test('ล้างไฟล์ที่ไม่มีเจ้าของ ต้องไม่แตะโฟลเดอร์สำเนาฐานข้อมูล', () => {
+    // ไฟล์ในโฟลเดอร์สำเนาฐานข้อมูลไม่ได้ผูกกับตาราง attachments จึงเข้าข่าย "ไม่มีเจ้าของ" ทั้งหมด
+    // ถ้าเผลอกวาดรวมไปด้วย = ลบสำเนาที่ใช้กู้ทะเบียนหนังสือทั้งเล่มกลับมา ซึ่งเรียกคืนไม่ได้อีกเลย
+    const src = fs.readFileSync(new URL('../src/services/googleDrive.js', import.meta.url), 'utf8');
+    const fn = src.slice(src.indexOf('export async function listAllAttachmentFiles'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    assert.match(body, /if \(year\.name === BACKUP_FOLDER_NAME\) continue;/,
+      'listAllAttachmentFiles ต้องข้ามโฟลเดอร์สำเนาฐานข้อมูลเสมอ');
+    // และต้องหาโฟลเดอร์หลักแบบไม่สร้างใหม่ ไม่งั้นการ "ตรวจ" จะไปสร้างโฟลเดอร์เปล่าทิ้งไว้
+    assert.match(body, /await findFolder\(ROOT_FOLDER_NAME, 'root'\)/,
+      'ต้องใช้ findFolder ที่ไม่สร้างโฟลเดอร์ใหม่');
+  });
+
+  test('ล้างไฟล์ที่ไม่มีเจ้าของ ต้องเทียบจาก id และตรวจใหม่ตอนลบ ไม่เชื่อรายการจากฝั่งเว็บ', () => {
+    const src = fs.readFileSync(new URL('../src/routes/admin.js', import.meta.url), 'utf8');
+    const finder = src.slice(src.indexOf('async function findOrphanDriveFiles'));
+    const body = finder.slice(0, finder.indexOf('\n}\n'));
+    // เทียบจาก id เท่านั้น — ชื่อไฟล์ซ้ำกันได้ และเดาผิดแปลว่าลบไฟล์แนบของจริงทิ้ง
+    assert.match(body, /referenced\.add\(row\.drive_file_id\)/);
+    assert.match(body, /referenced\.add\(row\.stamped_drive_file_id\)/);
+    assert.match(body, /files\.filter\(\(f\) => !referenced\.has\(f\.id\)\)/);
+
+    // endpoint ลบต้องตรวจหาใหม่เองฝั่งเซิร์ฟเวอร์ ไม่รับ id จากฝั่งเว็บ (ไม่งั้นสั่งลบไฟล์อะไรก็ได้)
+    const del = src.slice(src.indexOf("router.post('/admin/google-drive/orphans/delete'"));
+    const delBody = del.slice(0, del.indexOf('\n})));'));
+    assert.match(delBody, /const files = await findOrphanDriveFiles\(\);/,
+      'ต้องตรวจหาใหม่ตอนลบ ไม่ใช้รายการที่ฝั่งเว็บส่งมา');
+    assert.ok(!/ctx\.body\.(ids|files|fileIds)/.test(delBody), 'ห้ามรับรายการไฟล์ที่จะลบจากฝั่งเว็บ');
+    assert.match(delBody, /verifyPin\(ctx\.user\.id, ctx\.body\.pin\)/, 'ต้องยืนยัน PIN ก่อนลบ');
+  });
+
+  test('ความเห็นธุรการรอบที่สองต้องไม่ทับรอบแรก และเก็บไว้ในระบบให้ ผอ. เห็นในเว็บด้วย', () => {
+    const src = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
+    // ระยะเลื่อนขึ้นต้องมากกว่าความสูงกล่อง (~160pt ≈ 19% ของหน้า) ไม่งั้นรอบที่ 2 ยังทับรอบแรก
+    const step = Number((src.match(/const REGISTRAR_BOX_STEP_Y = (\d+);/) || [])[1]);
+    assert.ok(step >= 19, `ระยะเลื่อนขึ้นต้องมากกว่าความสูงกล่อง แต่ได้ ${step}%`);
+    assert.match(src, /yPercent: registrarY \?\? registrarBoxYPercent\(att\.id\)/,
+      'ต้องคำนวณตำแหน่งจากจำนวนครั้งที่เคยลงความเห็นบนไฟล์นี้');
+    // ความเห็นต้องถูกเก็บในระบบด้วย ไม่ใช่พิมพ์ลง PDF อย่างเดียว — ผอ. จะได้เห็นโดยไม่ต้องเปิดไฟล์แนบ
+    assert.match(src, /INSERT INTO comments \(id, document_id, user_id, message, created_at\)[\s\S]{0,200}เรียนผู้อำนวยการโรงเรียน/,
+      'ความเห็นธุรการต้องถูกบันทึกเป็นความคิดเห็นในระบบด้วย');
+  });
+
   test('หน้าตัวอย่างไม่มีกล่องให้ลากแล้ว และไม่ส่งตำแหน่งไปกับคำขอ', () => {
     const src = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
     for (const gone of ['makeDraggable', 'makeStampDraggable', 'window.markPos', 'window.decisionPos', 'window.registrarPos', 'cursor:move']) {

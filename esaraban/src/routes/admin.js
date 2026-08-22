@@ -4,7 +4,27 @@ import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { db, uuid, nowIso, hashSecret, audit } from '../db.js';
 import {
   isGoogleDriveEnabled, isGoogleDriveConnected, getOAuthClientConfig, exchangeCodeForTokens, DRIVE_SCOPE, AUTH_URL,
+  listAllAttachmentFiles, deleteFile,
 } from '../services/googleDrive.js';
+
+/**
+ * ไฟล์บน Drive ที่ไม่มีรายการในระบบอ้างถึงแล้ว
+ *
+ * เกิดจากเวอร์ชันก่อนหน้าที่ประทับตราแต่ละชั้นแล้วอัปโหลดไฟล์ใหม่ทุกครั้งโดยไม่ลบชั้นเก่าทิ้ง หนังสือ
+ * ฉบับเดียวที่ผ่านมือหลายคนจึงเหลือไฟล์ค้างชั้นละไฟล์ (ตอนนี้แก้ที่ต้นเหตุแล้วใน saveStampedCopy
+ * แต่ของที่ค้างมาก่อนหน้านั้นยังอยู่) และจากไฟล์ของหนังสือที่ถูกลบถาวรไปแล้ว
+ *
+ * เทียบจาก id ตรงๆ ไม่ใช่เดาจากชื่อไฟล์ — ชื่อซ้ำกันได้ และการเดาผิดแปลว่าลบไฟล์แนบของจริงทิ้ง
+ */
+async function findOrphanDriveFiles() {
+  const files = await listAllAttachmentFiles();
+  const referenced = new Set();
+  for (const row of db.prepare('SELECT drive_file_id, stamped_drive_file_id FROM attachments').all()) {
+    if (row.drive_file_id) referenced.add(row.drive_file_id);
+    if (row.stamped_drive_file_id) referenced.add(row.stamped_drive_file_id);
+  }
+  return files.filter((f) => !referenced.has(f.id));
+}
 
 function oauthRedirectUri(ctx) {
   const proto = ctx.req.headers['x-forwarded-proto'] || 'https';
@@ -172,8 +192,84 @@ router.get('/admin/google-drive', requireRole('admin')(requirePage((ctx) => {
       ${!clientConfigured ? `<div class="alert alert-warning" style="margin-top:1rem">ต้องตั้งค่า <code>GOOGLE_OAUTH_CLIENT_ID</code> และ <code>GOOGLE_OAUTH_CLIENT_SECRET</code> เป็น environment variable ก่อน (ดูขั้นตอนสร้างใน <code>deploy/GOOGLE_DRIVE.md</code>) แล้ว redeploy จึงจะกดเชื่อมต่อได้</div>` : ''}
       ${clientConfigured ? `<a class="btn btn-primary" style="margin-top:1rem" href="/admin/google-drive/start">${connected ? '🔄 เชื่อมต่อบัญชีใหม่ (เปลี่ยนบัญชี)' : '🔗 เชื่อมต่อบัญชี Google'}</a>` : ''}
       <p class="text-muted" style="font-size:.8rem;margin-top:1rem">ไฟล์ที่อัปโหลดหลังเชื่อมต่อจะไปอยู่ในโฟลเดอร์ "ระบบสารบรรณอิเล็กทรอนิกส์ (esaraban)" ในบัญชี Google Drive ที่เชื่อมต่อ นับพื้นที่ในโควตา 15GB ปกติของบัญชีนั้น</p>
-    </div>`;
+    </div>
+
+    ${enabled && connected ? `
+    <div class="card">
+      <h3 class="mt-0">🧹 ล้างไฟล์ที่ไม่มีเจ้าของ</h3>
+      <p class="text-muted" style="font-size:.85rem">
+        ตรวจหาไฟล์บน Drive ที่ไม่มีหนังสือฉบับไหนในระบบอ้างถึงแล้ว — ส่วนใหญ่เป็นไฟล์ประทับตราชั้นเก่า
+        ที่ค้างมาจากเวอร์ชันก่อน (ตอนนี้ระบบเก็บไฟล์ประทับตราไว้ฉบับเดียวเสมอแล้ว) และไฟล์ของหนังสือที่ถูกลบถาวรไป
+        <br/><strong>ไม่แตะโฟลเดอร์สำเนาฐานข้อมูล</strong> — จัดการแยกที่หน้า "สำเนาสำรองข้อมูล"
+      </p>
+      <button class="btn btn-outline" onclick="scanOrphans(this)">🔍 ตรวจหาไฟล์ที่ไม่มีเจ้าของ</button>
+      <div id="orphanResult" style="margin-top:1rem"></div>
+    </div>
+    <script>
+      window.scanOrphans = async function (btn) {
+        window.setBtnLoading(btn);
+        var box = document.getElementById('orphanResult');
+        try {
+          var res = await fetch('/admin/google-drive/orphans');
+          var data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'ตรวจไม่สำเร็จ');
+          window.restoreBtn(btn);
+          if (!data.files.length) { box.innerHTML = '<div class="alert alert-success">ไม่พบไฟล์ที่ไม่มีเจ้าของ — สะอาดดีอยู่แล้ว</div>'; return; }
+          var mb = (data.totalBytes / 1048576).toFixed(2);
+          box.innerHTML = '<div class="alert alert-warning">พบ <strong>' + data.files.length + '</strong> ไฟล์ที่ไม่มีเจ้าของ รวม ' + mb + ' MB</div>' +
+            '<div class="table-wrap"><table><thead><tr><th>ไฟล์</th><th>อยู่ใน</th><th>ขนาด</th></tr></thead><tbody>' +
+            data.files.map(function (f) {
+              return '<tr><td style="word-break:break-all">' + f.name + '</td><td>' + f.yearName + ' / ' + f.categoryName +
+                '</td><td>' + Math.round((f.size || 0) / 1024) + ' KB</td></tr>';
+            }).join('') + '</tbody></table></div>' +
+            '<button class="btn btn-outline btn-sm" style="margin-top:.8rem;color:var(--danger);border-color:var(--danger)" onclick="deleteOrphans(this)">🗑️ ลบทั้งหมด ' + data.files.length + ' ไฟล์</button>';
+        } catch (e) { window.restoreBtn(btn); box.innerHTML = '<div class="alert alert-danger">' + e.message + '</div>'; }
+      };
+      window.deleteOrphans = async function (btn) {
+        if (!confirm('ยืนยันลบไฟล์ที่ไม่มีเจ้าของทั้งหมด?\\n\\nลบแล้วเรียกคืนไม่ได้')) return;
+        var pin = await window.askPin('ยืนยัน PIN เพื่อลบไฟล์ที่ไม่มีเจ้าของ');
+        if (!pin) return;
+        window.setBtnLoading(btn);
+        try {
+          var res = await fetch('/admin/google-drive/orphans/delete', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: pin }),
+          });
+          var data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'ลบไม่สำเร็จ');
+          window.toast('ลบไปแล้ว ' + data.deleted + ' ไฟล์' + (data.failed ? ' (ลบไม่สำเร็จ ' + data.failed + ' ไฟล์)' : ''), 'success');
+          document.getElementById('orphanResult').innerHTML = '';
+        } catch (e) { window.toast(e.message, 'danger'); }
+        window.restoreBtn(btn);
+      };
+    </script>` : ''}`;
   html(ctx, 200, layout({ user: ctx.user, title: 'เชื่อมต่อ Google Drive', path: '/admin/google-drive', content }));
+})));
+
+router.get('/admin/google-drive/orphans', requireRole('admin')(requireApi(async (ctx) => {
+  if (!isGoogleDriveEnabled() || !isGoogleDriveConnected()) return json(ctx, 400, { error: 'ยังไม่ได้เชื่อมต่อ Google Drive' });
+  const files = await findOrphanDriveFiles();
+  json(ctx, 200, {
+    files: files.map((f) => ({ id: f.id, name: f.name, size: Number(f.size || 0), yearName: f.yearName, categoryName: f.categoryName })),
+    totalBytes: files.reduce((s, f) => s + Number(f.size || 0), 0),
+  });
+})));
+
+router.post('/admin/google-drive/orphans/delete', requireRole('admin')(requireApi(async (ctx) => {
+  if (!isGoogleDriveEnabled() || !isGoogleDriveConnected()) return json(ctx, 400, { error: 'ยังไม่ได้เชื่อมต่อ Google Drive' });
+  const { verifyPin } = await import('../auth.js');
+  if (!verifyPin(ctx.user.id, ctx.body.pin)) return json(ctx, 401, { error: 'PIN ไม่ถูกต้อง' });
+
+  // ตรวจหาใหม่ตรงนี้อีกครั้ง ไม่ใช้รายการที่ฝั่งเว็บส่งกลับมา — ระหว่างที่ผู้ใช้อ่านผลแล้วกดยืนยัน อาจมี
+  // คนอื่นแนบไฟล์/ประทับตราเพิ่ม ไฟล์ที่เพิ่งกลายเป็น "มีเจ้าของ" จะได้ไม่ถูกลบทิ้งตามรายการเก่า
+  // และผู้ใช้จะสั่งลบ id อะไรก็ได้ตามใจไม่ได้ด้วย
+  const files = await findOrphanDriveFiles();
+  let deleted = 0;
+  let failed = 0;
+  for (const f of files) {
+    try { await deleteFile(f.id); deleted++; } catch { failed++; }
+  }
+  audit({ userId: ctx.user.id, action: 'drive_orphans_deleted', tableName: 'google_drive', recordId: null, detail: { deleted, failed } });
+  json(ctx, 200, { deleted, failed });
 })));
 
 router.get('/admin/google-drive/start', requireRole('admin')(requirePage((ctx) => {

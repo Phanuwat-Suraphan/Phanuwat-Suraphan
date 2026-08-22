@@ -1174,9 +1174,12 @@ async function readAttachmentBytes(att, { preferStamped = false } = {}) {
 // บันทึกสำเนาที่ประทับตรา/ลงนามแล้วกลับเข้า storage provider เดียวกับไฟล์ต้นฉบับ แล้วอัปเดตคอลัมน์
 // stamped_* ของ attachments (เขียนทับของเดิม เพราะไฟล์ใหม่มีทั้งกล่องเดิม + กล่องใหม่ซ้อนกันอยู่แล้ว)
 async function saveStampedCopy(att, stampedBuffer, yearBe) {
-  // อ่านสำเนาที่ประทับไว้ก่อนหน้าจากฐานข้อมูล ไม่ใช่จาก att ที่ส่งเข้ามา — ในคำขอเดียวอาจประทับซ้อนกัน
-  // หลายชั้น (ทราบ → ตราปั๊ม ผอ. → ความเห็นธุรการ) โดยใช้ att ตัวเดิมที่อ่านมาตั้งแต่ต้นทุกชั้น
-  // ค่าใน att จึงเก่าไปแล้วตั้งแต่ชั้นที่สอง
+  // อ่านสำเนาที่ประทับไว้ก่อนหน้าจากฐานข้อมูลสดๆ ไม่ใช่จาก att ที่ส่งเข้ามา
+  //
+  // ตอนนี้ผู้เรียกทุกจุดอ่าน att ใหม่ก่อนใช้อยู่แล้ว ค่าจึงตรงกัน แต่ในคำขอเดียวมีการประทับซ้อนกันได้ถึง
+  // 3 ชั้น (ความเห็นธุรการ → ทราบ → ตราปั๊ม ผอ.) ถ้าวันหลังมีใครรวบให้อ่าน att ครั้งเดียวแล้วส่งต่อทุกชั้น
+  // เพื่อประหยัด query ค่าใน att จะเก่าตั้งแต่ชั้นที่สองทันที แล้วบรรทัดลบข้างล่างจะไปลบไฟล์ผิดตัว —
+  // ลบสำเนาผิดตัวแล้วเรียกคืนไม่ได้ จึงไม่ฝากความถูกต้องไว้กับวินัยของผู้เรียก
   const prev = db.prepare('SELECT stamped_storage_provider, stamped_filepath, stamped_drive_file_id FROM attachments WHERE id = ?').get(att.id);
 
   if (isGoogleDriveEnabled()) {
@@ -1331,6 +1334,18 @@ function canWriteRegistrarComment(stepId, actorUser) {
   return stepId ? directorTitleMode(stepId, actorUser) === 'generic' : true;
 }
 
+// ธุรการเขียนความเห็นบนหนังสือฉบับเดิมได้มากกว่าหนึ่งครั้ง (เช่น เสนอไปแล้ว ผอ. ส่งกลับแก้ไข แล้วเสนอใหม่)
+// ถ้าไม่ขยับตำแหน่ง ความเห็นรอบที่สองจะทับรอบแรกเป๊ะๆ จนอ่านไม่ออกทั้งคู่ — เลื่อนขึ้นทีละกล่องเหมือน
+// กรอบตราปั๊ม ผอ. โดยระยะต้องมากกว่าความสูงกล่อง (~160pt ≈ 19% ของหน้า) ไม่งั้นรอบที่ 2 ยังทับรอบแรก
+const REGISTRAR_BOX_STEP_Y = 20;
+const REGISTRAR_BOX_MIN_Y = 4;
+function registrarBoxYPercent(attachmentId) {
+  const { c } = db.prepare(`
+    SELECT COUNT(*) as c FROM audit_logs WHERE action = 'attachment_registrar_stamped' AND record_id = ?
+  `).get(attachmentId);
+  return Math.max(REGISTRAR_BOX_MIN_Y, DECISION_MAX_TOP_PERCENT - c * REGISTRAR_BOX_STEP_Y);
+}
+
 async function stampRegistrarCommentIfApplicable({ documentId, stepId, actorUser, comment, registrarX, registrarY }) {
   const text = typeof comment === 'string' ? comment.trim() : '';
   if (!text || !canWriteRegistrarComment(stepId, actorUser)) return;
@@ -1348,10 +1363,14 @@ async function stampRegistrarCommentIfApplicable({ documentId, stepId, actorUser
       position: actorUser.position,
       dateThaiLong: stampDateThai(),
       xPercent: registrarX,
-      yPercent: registrarY,
+      yPercent: registrarY ?? registrarBoxYPercent(att.id),
     });
     await saveStampedCopy(att, stampedBuffer, getDocument(documentId)?.year_be);
     audit({ userId: actorUser.id, action: 'attachment_registrar_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId, comment: text } });
+    // เก็บความเห็นไว้ในระบบด้วย ไม่ใช่แค่พิมพ์ลงไฟล์ PDF — ผอ. จะได้เห็นตั้งแต่เปิดหน้าเอกสารในเว็บ
+    // โดยไม่ต้องเปิดไฟล์แนบก่อน และยังค้นหา/อ้างอิงย้อนหลังได้ (ไฟล์ PDF ค้นข้อความข้างในไม่ได้)
+    db.prepare('INSERT INTO comments (id, document_id, user_id, message, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(uuid(), documentId, actorUser.id, `เรียนผู้อำนวยการโรงเรียน\n${text}`, nowIso());
   } catch (err) {
     audit({ userId: actorUser.id, action: 'attachment_registrar_stamp_failed', tableName: 'attachments', recordId: att.id, detail: { documentId, error: err.message } });
     return `บันทึกผลสำเร็จ แต่ลงความเห็นธุรการลงในไฟล์ PDF จริงไม่สำเร็จ: ${err.message}`;

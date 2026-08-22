@@ -99,10 +99,34 @@ export async function ensureCategoryFolder({ yearBe, typeName }) {
   return findOrCreateFolder(typeName, yearFolder);
 }
 
+export const BACKUP_FOLDER_NAME = 'สำเนาฐานข้อมูล (ห้ามลบ)';
+
 // โฟลเดอร์เก็บสำเนาฐานข้อมูล — แยกจากโฟลเดอร์ไฟล์แนบ เพื่อให้ธุรการไม่เผลอเปิด/ลบปนกับหนังสือ
 export async function ensureBackupFolder() {
   const root = await findOrCreateFolder(ROOT_FOLDER_NAME, 'root');
-  return findOrCreateFolder('สำเนาฐานข้อมูล (ห้ามลบ)', root);
+  return findOrCreateFolder(BACKUP_FOLDER_NAME, root);
+}
+
+/**
+ * ไล่เก็บไฟล์แนบทั้งหมดใต้โฟลเดอร์หลักของระบบ (ปี → ประเภทหนังสือ → ไฟล์)
+ *
+ * ข้ามโฟลเดอร์สำเนาฐานข้อมูลเสมอ เพราะไฟล์ในนั้นไม่ได้ผูกกับตาราง attachments จึงจะถูกมองว่า
+ * "ไม่มีเจ้าของ" ทั้งหมด แล้วโดนลบยกโฟลเดอร์ — ซึ่งคือสำเนาที่ใช้กู้ทะเบียนหนังสือทั้งเล่มกลับมา
+ * คืน null ถ้ายังไม่มีโฟลเดอร์หลัก (ยังไม่เคยอัปโหลดอะไรเลย) — ไม่สร้างโฟลเดอร์เปล่าทิ้งไว้
+ */
+export async function listAllAttachmentFiles() {
+  const root = await findFolder(ROOT_FOLDER_NAME, 'root');
+  if (!root) return [];
+  const out = [];
+  for (const year of await listSubfolders(root.id)) {
+    if (year.name === BACKUP_FOLDER_NAME) continue;
+    for (const category of await listSubfolders(year.id)) {
+      for (const file of await listFilesInFolder(category.id, { limit: 1000 })) {
+        out.push({ ...file, yearName: year.name, categoryName: category.name });
+      }
+    }
+  }
+  return out;
 }
 
 // สร้าง/หาโฟลเดอร์ซ้อนกันหลายชั้นตามลำดับที่ให้มา เช่น ['2569', '2569-08', '2569-08-21']
