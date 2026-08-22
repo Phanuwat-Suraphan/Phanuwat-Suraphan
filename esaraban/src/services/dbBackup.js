@@ -18,7 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import {
-  isGoogleDriveEnabled, isGoogleDriveConnected, ensureBackupFolder,
+  isGoogleDriveEnabled, isGoogleDriveConnected, ensureBackupFolder, ensureFolderPath, listSubfolders,
   listFilesInFolder, uploadFile, downloadFileStream, deleteFile,
 } from './googleDrive.js';
 
@@ -31,49 +31,55 @@ const BACKUP_INTERVAL_MS = Math.max(1, Number(process.env.BACKUP_INTERVAL_MINUTE
 const BACKUP_PREFIX = 'esaraban-';
 
 // เก็บสำเนาแบบ 2 ชั้น:
-//   ชั้นที่ 1 — สำเนาล่าสุดไม่กี่ชุด กันกรณีเซิร์ฟเวอร์ดับกะทันหัน (ย้อนกลับไปไม่กี่นาทีที่แล้ว)
-//   ชั้นที่ 2 — วันละ 1 ชุด (ชุดสุดท้ายของวันนั้น) ย้อนหลังได้เป็นเดือน
-// ถ้าเก็บแบบ "20 ชุดล่าสุด" อย่างเดียว จะย้อนหลังได้แค่ราวชั่วโมงเดียว (เพราะสำรองทุก 5 นาที) —
-// ซึ่งไม่พอเลยกับกรณีที่ธุรการเพิ่งมารู้ตัววันรุ่งขึ้นว่าลบผิด/แก้ผิด แล้วอยากได้ข้อมูลของเมื่อวานคืน
+//   วันปัจจุบัน — เก็บหลายชุด (ทุกรอบที่สำรอง) กันกรณีเซิร์ฟเวอร์ดับกะทันหัน ย้อนกลับได้ไม่กี่นาที
+//   วันก่อนๆ  — เก็บวันละ 1 ชุด (ชุดสุดท้ายของวันนั้น) ย้อนหลังได้ 1 ปี
+//
+// ทำไมวันเก่าต้องเหลือวันละชุด: ถ้าเก็บทุกชุดที่สำรองทุก 5 นาทีตลอดปี จะเป็นแสนไฟล์ ~51GB
+// ซึ่งเกินโควตาฟรี 15GB ของบัญชี Google ไปสามเท่า — เก็บวันละชุดใช้แค่ราว 0.2GB
 const KEEP_RECENT = Math.max(3, Number(process.env.BACKUP_KEEP_RECENT) || 12);
-const KEEP_DAILY_DAYS = Math.max(1, Number(process.env.BACKUP_KEEP_DAYS) || 90);
+const KEEP_DAILY_DAYS = Math.max(1, Number(process.env.BACKUP_KEEP_DAYS) || 365);
 
-// ชื่อไฟล์อิงวันเวลาไทย เรียงตามตัวอักษรแล้วได้ลำดับเวลาพอดี และธุรการอ่านออกเองว่าเป็นสำเนาของวันไหน
-// เช่น esaraban-2026-08-21-1530.db
-function backupFilename(date = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
+/**
+ * วัน/เดือน/ปี ตามปฏิทินไทย (พ.ศ.) ของจุดเวลาหนึ่ง — ใช้ตั้งชื่อโฟลเดอร์และไฟล์
+ * ใช้ พ.ศ. เพราะธุรการต้องเปิดหาเองใน Google Drive ได้โดยไม่ต้องแปลงปีในหัว
+ * รูปแบบ 2569-08-21 เรียงตามตัวอักษรแล้วได้ลำดับเวลาพอดี
+ */
+export function thaiDateParts(date = new Date()) {
+  const p = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', hour12: false,
-  }).formatToParts(date).reduce((acc, p) => ({ ...acc, [p.type]: p.value }), {});
-  return `${BACKUP_PREFIX}${parts.year}-${parts.month}-${parts.day}-${parts.hour}${parts.minute}.db`;
+  }).formatToParts(date).reduce((acc, x) => ({ ...acc, [x.type]: x.value }), {});
+  const year = String(Number(p.year) + 543); // ค.ศ. -> พ.ศ.
+  return { year, month: `${year}-${p.month}`, day: `${year}-${p.month}-${p.day}`, time: `${p.hour}${p.minute}` };
 }
 
-// วันที่ (ตามเวลาไทย) ของสำเนาหนึ่งชุด — อ่านจากชื่อไฟล์ก่อน ถ้าเป็นชื่อรูปแบบเก่าค่อยใช้เวลาที่ Drive บันทึกไว้
-function backupDay(file) {
-  const fromName = file.name?.match(/^esaraban-(\d{4}-\d{2}-\d{2})/);
-  if (fromName) return fromName[1];
-  if (file.createdTime) return new Date(file.createdTime).toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
-  return null;
+// ชื่อไฟล์: เวลาไทยของวันนั้น เช่น esaraban-1530.db (วันอยู่ที่ชื่อโฟลเดอร์แล้ว ไม่ต้องซ้ำในชื่อไฟล์)
+function backupFilename(date = new Date()) {
+  return `${BACKUP_PREFIX}${thaiDateParts(date).time}.db`;
 }
 
 /**
- * เลือกว่าสำเนาชุดไหนต้องลบทิ้ง — แยกออกมาเป็นฟังก์ชันล้วนๆ เพื่อทดสอบได้โดยไม่ต้องต่อ Google Drive
- * @param files รายการไฟล์เรียงใหม่สุดก่อน (ตามที่ listFilesInFolder คืนมา)
+ * วางแผนว่าจะลบอะไรบ้าง — แยกเป็นฟังก์ชันล้วนๆ เพื่อทดสอบได้โดยไม่ต้องต่อ Google Drive
+ * (ลบสำเนาสำรองผิดพลาดแล้วเรียกคืนไม่ได้ ตรรกะตรงนี้จึงต้องมีเทสต์คุมแน่นๆ)
+ *
+ * @param dayFolders รายการโฟลเดอร์รายวัน เรียงใหม่ไปเก่า: [{ id, name: '2569-08-21', files: [{id,name}] }]
+ *                   files ในแต่ละวันเรียงใหม่ไปเก่าเช่นกัน
+ * @param today      ชื่อโฟลเดอร์ของวันนี้ (ไม่ต้องลดเหลือชุดเดียว เพราะยังเขียนเพิ่มอยู่)
  */
-export function selectBackupsToDelete(files, { keepRecent = KEEP_RECENT, keepDailyDays = KEEP_DAILY_DAYS } = {}) {
-  const keep = new Set();
-  files.slice(0, keepRecent).forEach((f) => keep.add(f.id));
+export function planBackupCleanup(dayFolders, { today, keepRecent = KEEP_RECENT, keepDailyDays = KEEP_DAILY_DAYS } = {}) {
+  const deleteFolderIds = [];
+  const deleteFileIds = [];
 
-  const daysKept = new Set();
-  for (const f of files) {
-    const day = backupDay(f);
-    if (!day) { keep.add(f.id); continue; } // อ่านวันไม่ออก อย่าเสี่ยงลบทิ้ง
-    if (daysKept.has(day)) continue;
-    if (daysKept.size >= keepDailyDays) break;
-    daysKept.add(day);
-    keep.add(f.id); // ไฟล์แรกที่เจอของวันนั้น = ชุดล่าสุดของวันนั้น (เพราะเรียงใหม่สุดมาก่อน)
-  }
-  return files.filter((f) => !keep.has(f.id));
+  dayFolders.forEach((folder, index) => {
+    // เกินจำนวนวันที่ขอเก็บ — ลบทั้งโฟลเดอร์ของวันนั้น
+    if (index >= keepDailyDays) { deleteFolderIds.push(folder.id); return; }
+    const files = folder.files || [];
+    // วันนี้ยังสำรองเพิ่มอยู่เรื่อยๆ จึงเก็บหลายชุด ส่วนวันที่ผ่านไปแล้วเหลือชุดสุดท้ายของวันพอ
+    const keep = folder.name === today ? keepRecent : 1;
+    files.slice(keep).forEach((f) => deleteFileIds.push(f.id));
+  });
+
+  return { deleteFolderIds, deleteFileIds };
 }
 
 export function isBackupEnabled() {
@@ -130,12 +136,16 @@ export async function backupNow(reason = 'manual') {
   status.lastAttemptAt = Date.now();
   try {
     const buffer = await snapshotBuffer();
-    const folderId = await ensureBackupFolder();
-    await uploadFile({ buffer, filename: backupFilename(), mimeType: 'application/x-sqlite3', folderId });
-    log(`สำรองข้อมูลขึ้น Google Drive แล้ว (${reason}, ${(buffer.length / 1048576).toFixed(2)} MB)`);
+    const root = await ensureBackupFolder();
+    const at = thaiDateParts();
+    // เก็บแยกเป็นโฟลเดอร์ ปี / เดือน / วัน เพื่อให้ธุรการเปิดหาสำเนาของวันที่ต้องการเองได้ใน Drive
+    // และเพื่อให้ลบทั้งวัน/ทั้งเดือน/ทั้งปีได้ในคลิกเดียวจากหน้าจัดการสำเนาสำรอง
+    const dayFolder = await ensureFolderPath(root, [at.year, at.month, at.day]);
+    await uploadFile({ buffer, filename: backupFilename(), mimeType: 'application/x-sqlite3', folderId: dayFolder });
+    log(`สำรองข้อมูลขึ้น Google Drive แล้ว (${reason}, ${(buffer.length / 1048576).toFixed(2)} MB) → ${at.day}`);
     status.lastOkAt = Date.now();
     status.lastError = null;
-    await pruneOldBackups(folderId);
+    await pruneOldBackups(root, at.day);
     return true;
   } catch (err) {
     // สำรองไม่สำเร็จต้องไม่ทำให้ระบบล่ม — ผู้ใช้ยังต้องทำงานต่อได้ แต่ต้องเห็นชัดว่ากำลังไม่ถูกสำรอง
@@ -147,18 +157,73 @@ export async function backupNow(reason = 'manual') {
   }
 }
 
-async function pruneOldBackups(folderId) {
-  // ต้องดึงมาให้พอครอบคลุมทั้งชุดล่าสุดและชุดรายวันย้อนหลัง ไม่งั้นไฟล์ที่อยู่นอกหน้าแรกจะไม่ถูกพิจารณา
-  // แล้วค้างสะสมอยู่บน Drive ไปเรื่อยๆ โดยไม่มีใครรู้
-  const limit = Math.min(1000, (KEEP_RECENT + KEEP_DAILY_DAYS) * 3);
-  const files = (await listFilesInFolder(folderId, { limit })).filter((f) => f.name.startsWith(BACKUP_PREFIX));
-  for (const old of selectBackupsToDelete(files)) {
+/** อ่านโครงสร้างสำเนาสำรองทั้งหมดจาก Drive: ปี → เดือน → วัน → ไฟล์ (เรียงใหม่ไปเก่าทุกชั้น) */
+export async function readBackupTree() {
+  const root = await ensureBackupFolder();
+  const years = [];
+  for (const year of await listSubfolders(root)) {
+    const months = [];
+    for (const month of await listSubfolders(year.id)) {
+      const days = [];
+      for (const day of await listSubfolders(month.id)) {
+        const files = (await listFilesInFolder(day.id, { limit: 1000 }))
+          .filter((f) => f.name.startsWith(BACKUP_PREFIX))
+          .sort((a, b) => b.name.localeCompare(a.name));
+        days.push({ ...day, files });
+      }
+      months.push({ ...month, days });
+    }
+    years.push({ ...year, months });
+  }
+  return years;
+}
+
+/** โฟลเดอร์รายวันทั้งหมด เรียงใหม่ไปเก่า — ใช้ทั้งตอนตัดของเก่าทิ้งและตอนหาสำเนาล่าสุดเพื่อกู้คืน */
+function flattenDays(years) {
+  return years.flatMap((y) => y.months.flatMap((m) => m.days))
+    .sort((a, b) => b.name.localeCompare(a.name));
+}
+
+async function pruneOldBackups(root, today) {
+  const days = flattenDays(await readBackupTree());
+  const { deleteFolderIds, deleteFileIds } = planBackupCleanup(days, { today });
+  for (const id of [...deleteFileIds, ...deleteFolderIds]) {
     try {
-      await deleteFile(old.id);
+      await deleteFile(id); // Drive มองโฟลเดอร์เป็นไฟล์ชนิดหนึ่ง ลบด้วยคำสั่งเดียวกันและลบของข้างในตามไปด้วย
     } catch (err) {
-      log(`ลบสำเนาเก่า ${old.name} ไม่สำเร็จ: ${err.message}`);
+      log(`ลบสำเนาเก่าไม่สำเร็จ (${id}): ${err.message}`);
     }
   }
+  // เก็บกวาดโฟลเดอร์เดือน/ปีที่ไม่เหลืออะไรข้างในแล้ว ไม่ให้รกสะสมไปเรื่อยๆ
+  for (const year of await listSubfolders(root)) {
+    for (const month of await listSubfolders(year.id)) {
+      if (!(await listSubfolders(month.id)).length) await deleteFile(month.id).catch(() => {});
+    }
+    if (!(await listSubfolders(year.id)).length) await deleteFile(year.id).catch(() => {});
+  }
+}
+
+/**
+ * ลบสำเนาสำรองตามที่ผู้ใช้เลือก — ทีละไฟล์ ทั้งวัน ทั้งเดือน หรือทั้งปี
+ * รับเป็น Drive file/folder id ตรงๆ แต่ต้องยืนยันก่อนว่า id นั้นอยู่ใต้โฟลเดอร์สำเนาสำรองจริง
+ * ไม่งั้นใครที่ยิงคำขอเองจะสั่งลบไฟล์อะไรก็ได้ในบัญชี Drive ที่แอปสร้างไว้ รวมถึงไฟล์แนบหนังสือ
+ */
+export async function deleteBackupNode(nodeId) {
+  if (!isBackupEnabled()) throw new Error('ยังไม่ได้เปิดใช้การสำรองขึ้น Google Drive');
+  const years = await readBackupTree();
+  const allowed = new Set();
+  for (const y of years) {
+    allowed.add(y.id);
+    for (const m of y.months) {
+      allowed.add(m.id);
+      for (const d of m.days) {
+        allowed.add(d.id);
+        d.files.forEach((f) => allowed.add(f.id));
+      }
+    }
+  }
+  if (!allowed.has(nodeId)) throw new Error('ไม่พบรายการสำเนาสำรองนี้');
+  await deleteFile(nodeId);
 }
 
 /**
@@ -172,13 +237,14 @@ export async function restoreDatabaseIfMissing() {
   if (fs.existsSync(DB_PATH)) return false;
 
   try {
-    const folderId = await ensureBackupFolder();
-    const files = (await listFilesInFolder(folderId)).filter((f) => f.name.startsWith(BACKUP_PREFIX));
-    if (!files.length) {
+    // ไล่จากโฟลเดอร์วันล่าสุดลงไป — วันล่าสุดอาจมีแต่โฟลเดอร์เปล่า (เช่นลบไฟล์ทิ้งไปเอง) จึงต้องหาต่อ
+    const days = flattenDays(await readBackupTree());
+    const latest = days.find((d) => d.files.length)?.files[0];
+    if (!latest) {
       log('ไม่พบสำเนาฐานข้อมูลบน Google Drive — เริ่มต้นด้วยฐานข้อมูลใหม่');
       return false;
     }
-    const stream = await downloadFileStream(files[0].id); // listFilesInFolder เรียงใหม่สุดไว้ก่อนแล้ว
+    const stream = await downloadFileStream(latest.id);
     if (!stream) {
       log('เปิดสำเนาล่าสุดบน Google Drive ไม่ได้ — เริ่มต้นด้วยฐานข้อมูลใหม่');
       return false;
@@ -191,7 +257,7 @@ export async function restoreDatabaseIfMissing() {
     const tmp = `${DB_PATH}.restoring`;
     fs.writeFileSync(tmp, Buffer.concat(chunks));
     fs.renameSync(tmp, DB_PATH);
-    log(`กู้คืนฐานข้อมูลจากสำเนา ${files[0].name} เรียบร้อย`);
+    log(`กู้คืนฐานข้อมูลจากสำเนา ${latest.name} เรียบร้อย`);
     return true;
   } catch (err) {
     // กู้คืนไม่สำเร็จต้องไม่ทำให้เปิดระบบไม่ได้ — ให้เริ่มด้วยฐานข้อมูลใหม่แล้วบันทึกไว้ใน log

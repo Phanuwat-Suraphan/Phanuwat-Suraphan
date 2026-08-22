@@ -667,3 +667,21 @@ th.wrap, td.wrap { white-space: normal; min-width: 13rem; }
 /* บนจอแคบ ป้ายกำกับต้องตัดบรรทัดได้ด้วย ไม่งั้นป้ายยาวๆ อย่าง GOOGLE_OAUTH_CLIENT_ID / SECRET
    จะดันตารางจนล้นออกนอกจอมือถือ — บนจอกว้างค่อยบังคับให้อยู่บรรทัดเดียวเพื่อความเป็นระเบียบ */
 @media (min-width: 640px) { .table-plain td:first-child { white-space: nowrap; } }
+
+/* ---------- หน้าจัดการสำเนาสำรองฐานข้อมูล (ปี → เดือน → วัน → ไฟล์) ---------- */
+.backup-node { border-left: 2px solid var(--border); padding-left: .6rem; margin: .25rem 0; }
+.backup-node > summary {
+  display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
+  cursor: pointer; padding: .35rem .2rem; border-radius: 6px; list-style: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.backup-node > summary::-webkit-details-marker { display: none; }
+.backup-node > summary::before { content: '▸'; font-size: .75rem; transition: transform .15s ease; color: var(--text-muted); }
+.backup-node[open] > summary::before { transform: rotate(90deg); }
+.backup-node > summary:hover { background: var(--surface-2); }
+.backup-node .backup-name { font-weight: 600; flex: 1 1 auto; min-width: 8rem; }
+.backup-file {
+  display: flex; align-items: center; justify-content: space-between; gap: .6rem; flex-wrap: wrap;
+  padding: .3rem .2rem .3rem 1.6rem; border-bottom: 1px solid var(--border); font-size: .9rem;
+}
+.backup-file:last-child { border-bottom: none; }

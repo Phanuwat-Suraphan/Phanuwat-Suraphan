@@ -98,6 +98,22 @@ export async function ensureBackupFolder() {
   return findOrCreateFolder('สำเนาฐานข้อมูล (ห้ามลบ)', root);
 }
 
+// สร้าง/หาโฟลเดอร์ซ้อนกันหลายชั้นตามลำดับที่ให้มา เช่น ['2569', '2569-08', '2569-08-21']
+export async function ensureFolderPath(parentId, names) {
+  let current = parentId;
+  for (const name of names) current = await findOrCreateFolder(name, current);
+  return current;
+}
+
+// เฉพาะโฟลเดอร์ย่อย เรียงตามชื่อจากใหม่ไปเก่า (ชื่อเป็นวันที่แบบ 2569-08-21 จึงเรียงตามตัวอักษรได้ตรงเวลา)
+export async function listSubfolders(parentId) {
+  const q = encodeURIComponent(`'${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+  const res = await driveFetch(`${API_BASE}?q=${q}&fields=files(id,name)&pageSize=1000&spaces=drive`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw httpError(502, `อ่านรายการโฟลเดอร์บน Google Drive ไม่สำเร็จ: ${data.error?.message || res.statusText}`);
+  return (data.files || []).sort((a, b) => b.name.localeCompare(a.name));
+}
+
 // รายชื่อไฟล์ในโฟลเดอร์ เรียงใหม่สุดก่อน — ใช้หาสำเนาฐานข้อมูลล่าสุดตอนกู้คืน และหาไฟล์เก่าที่ต้องลบทิ้ง
 export async function listFilesInFolder(folderId, { limit = 100 } = {}) {
   const q = encodeURIComponent(`'${folderId}' in parents and trashed=false`);

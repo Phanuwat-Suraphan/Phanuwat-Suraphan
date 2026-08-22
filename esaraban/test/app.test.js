@@ -27,7 +27,7 @@ const {
   createLeaveRequest, approveLeaveRequest, rejectLeaveRequest, canSeeLeaveRequest, getLeaveRequest,
 } = await import('../src/services/leave.js');
 const { createDelegation } = await import('../src/services/delegation.js');
-const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, selectBackupsToDelete } = await import('../src/services/dbBackup.js');
+const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, planBackupCleanup, thaiDateParts } = await import('../src/services/dbBackup.js');
 const sqliteModule = await import('node:sqlite');
 const { createDestructionBatch, approveDestructionBatch } = await import('../src/services/retention.js');
 const zlib = await import('node:zlib');
@@ -996,68 +996,105 @@ describe('สำรองฐานข้อมูล: สำเนาต้อ�
 
   // สำรองทุก 5 นาที ถ้าเก็บแบบ "N ชุดล่าสุด" อย่างเดียวจะย้อนหลังได้แค่ราวชั่วโมงเดียว —
   // ไม่พอเลยกับกรณีที่เพิ่งมารู้ตัววันรุ่งขึ้นว่าลบผิด/แก้ผิด แล้วอยากได้ข้อมูลของเมื่อวานคืน
-  describe('เก็บสำเนาย้อนหลังวันละชุด', () => {
-    // จำลองสำเนาทุก 5 นาที ตลอด N วัน เรียงใหม่สุดก่อน (ตามที่ Google Drive คืนมา)
-    function fakeBackups(days, perDay = 12) {
-      const files = [];
-      for (let d = 0; d < days; d++) {
-        const day = new Date(Date.UTC(2026, 7, 21) - d * 86400000).toISOString().slice(0, 10);
-        for (let i = 0; i < perDay; i++) {
-          const hh = String(23 - Math.floor(i / 2)).padStart(2, '0');
-          const mm = i % 2 ? '30' : '00';
-          files.push({ id: `${day}-${hh}${mm}`, name: `esaraban-${day}-${hh}${mm}.db` });
-        }
-      }
-      return files;
+  describe('เก็บสำเนาย้อนหลังวันละชุด แยกเป็นโฟลเดอร์รายวัน 1 ปี', () => {
+    // จำลองโฟลเดอร์รายวัน N วัน วันละ perDay ชุด เรียงใหม่ไปเก่าทั้งชั้นวันและชั้นไฟล์
+    // (ตรงกับที่ readBackupTree() คืนมาหลังเรียงแล้ว)
+    function fakeDays(days, perDay = 12, endDay = '2569-08-21') {
+      const base = Date.UTC(Number(endDay.slice(0, 4)) - 543, Number(endDay.slice(5, 7)) - 1, Number(endDay.slice(8, 10)));
+      return Array.from({ length: days }, (_, d) => {
+        const iso = new Date(base - d * 86400000).toISOString().slice(0, 10);
+        const name = `${Number(iso.slice(0, 4)) + 543}${iso.slice(4)}`;
+        return {
+          id: `day-${name}`,
+          name,
+          files: Array.from({ length: perDay }, (_, i) => {
+            const hhmm = `${String(23 - Math.floor(i / 2)).padStart(2, '0')}${i % 2 ? '30' : '00'}`;
+            return { id: `${name}-${hhmm}`, name: `esaraban-${hhmm}.db` };
+          }),
+        };
+      });
     }
 
-    test('เก็บชุดล่าสุดไว้หลายชุด และเก็บวันละ 1 ชุดย้อนหลังตามที่ตั้งไว้', () => {
-      const files = fakeBackups(10);
-      const kept = files.filter((f) => !selectBackupsToDelete(files, { keepRecent: 6, keepDailyDays: 7 }).includes(f));
-      const days = [...new Set(kept.map((f) => f.name.slice(9, 19)))];
-      assert.equal(days.length, 7, `ต้องเหลือ 7 วัน แต่เหลือ ${days.length}: ${days.join(', ')}`);
-      // 6 ชุดล่าสุดของวันปัจจุบัน + วันละ 1 ชุดของอีก 6 วันที่เหลือ
-      assert.equal(kept.length, 12, `จำนวนชุดที่เก็บไม่ตรง: ${kept.map((f) => f.name).join(', ')}`);
-      assert.ok(kept.includes(files[0]), 'ชุดล่าสุดต้องถูกเก็บเสมอ');
+    test('ชื่อโฟลเดอร์เป็น พ.ศ. ตามเวลาไทย เพื่อให้ธุรการเปิดหาเองใน Drive ได้', () => {
+      // 21 ส.ค. 2026 เวลา 23:30 UTC = 22 ส.ค. 2026 06:30 ตามเวลาไทย -> ต้องลงโฟลเดอร์ของวันที่ 22
+      const p = thaiDateParts(new Date('2026-08-21T23:30:00Z'));
+      assert.equal(p.year, '2569');
+      assert.equal(p.month, '2569-08');
+      assert.equal(p.day, '2569-08-22', 'ต้องใช้วันตามเวลาไทย ไม่ใช่ UTC');
+      assert.equal(p.time, '0630');
+      // เรียงตามตัวอักษรแล้วต้องได้ลำดับเวลาพอดี ไม่งั้นการหา "สำเนาล่าสุด" ตอนกู้คืนจะหยิบผิดวัน
+      assert.ok('2569-08-22' > '2569-08-09' && '2569-08-09' > '2569-07-31');
     });
 
-    test('ชุดที่เก็บไว้ของแต่ละวัน ต้องเป็นชุดสุดท้ายของวันนั้น (ข้อมูลครบที่สุด)', () => {
-      const files = fakeBackups(5);
-      const toDelete = new Set(selectBackupsToDelete(files, { keepRecent: 1, keepDailyDays: 5 }).map((f) => f.id));
-      for (const day of ['2026-08-20', '2026-08-19', '2026-08-18']) {
-        const ofDay = files.filter((f) => f.name.includes(day));
-        const keptOfDay = ofDay.filter((f) => !toDelete.has(f.id));
-        assert.equal(keptOfDay.length, 1, `วัน ${day} ต้องเหลือชุดเดียว`);
-        assert.equal(keptOfDay[0].id, ofDay[0].id, `วัน ${day} ต้องเก็บชุดล่าสุดของวันนั้น ไม่ใช่ชุดแรกของวัน`);
+    test('วันนี้เก็บหลายชุด วันที่ผ่านไปแล้วเหลือวันละชุด (ชุดสุดท้ายของวันนั้น)', () => {
+      const days = fakeDays(10);
+      const { deleteFolderIds, deleteFileIds } = planBackupCleanup(days, {
+        today: '2569-08-21', keepRecent: 6, keepDailyDays: 7,
+      });
+      assert.deepEqual(deleteFolderIds, ['day-2569-08-14', 'day-2569-08-13', 'day-2569-08-12'],
+        'วันที่เกิน 7 วันย้อนหลังต้องถูกลบทั้งโฟลเดอร์');
+
+      const gone = new Set(deleteFileIds);
+      const kept = days.slice(0, 7).map((d) => ({ name: d.name, files: d.files.filter((f) => !gone.has(f.id)) }));
+      assert.equal(kept[0].files.length, 6, 'วันนี้ต้องเก็บ 6 ชุดล่าสุด');
+      for (const day of kept.slice(1)) {
+        assert.equal(day.files.length, 1, `วัน ${day.name} ต้องเหลือชุดเดียว`);
+        assert.equal(day.files[0].id, `${day.name}-2300`, `วัน ${day.name} ต้องเก็บชุดล่าสุดของวันนั้น ไม่ใช่ชุดแรกของวัน`);
       }
     });
 
-    test('เก่ากว่าที่ตั้งไว้ถูกลบทิ้ง แต่ไม่ลบเกินจำนวนวันที่ขอเก็บ', () => {
-      const files = fakeBackups(100);
-      const toDelete = selectBackupsToDelete(files, { keepRecent: 12, keepDailyDays: 30 });
-      const keptDays = new Set(files.filter((f) => !toDelete.includes(f)).map((f) => f.name.slice(9, 19)));
-      assert.equal(keptDays.size, 30);
-      assert.ok(keptDays.has('2026-08-21'), 'วันล่าสุดต้องอยู่');
-      assert.ok(!keptDays.has('2026-05-14'), 'วันที่เก่าเกินกว่าที่ขอเก็บต้องถูกลบ');
+    test('ไม่ลบไฟล์ในโฟลเดอร์ที่กำลังจะถูกลบทั้งโฟลเดอร์ (ยิงซ้ำเปล่าๆ)', () => {
+      const { deleteFolderIds, deleteFileIds } = planBackupCleanup(fakeDays(3), {
+        today: '2569-08-21', keepRecent: 12, keepDailyDays: 1,
+      });
+      assert.deepEqual(deleteFolderIds, ['day-2569-08-20', 'day-2569-08-19']);
+      assert.deepEqual(deleteFileIds, [], 'ลบทั้งโฟลเดอร์แล้ว ไม่ต้องสั่งลบไฟล์ข้างในทีละไฟล์อีก');
     });
 
-    test('ไฟล์ที่อ่านวันไม่ออกเลย ต้องไม่ถูกลบทิ้ง', () => {
-      const files = [
-        { id: 'new', name: 'esaraban-2026-08-21-1200.db' },
-        { id: 'unknown', name: 'esaraban-สำรองมือ.db' }, // ไม่มีวันในชื่อ และไม่มี createdTime ให้เทียบ
-      ];
-      const toDelete = selectBackupsToDelete(files, { keepRecent: 1, keepDailyDays: 1 });
-      assert.deepEqual(toDelete, [], 'ถ้าไม่แน่ใจว่าเป็นสำเนาของวันไหน ต้องเก็บไว้ก่อน ไม่ลบเสี่ยงๆ');
+    test('เก็บครบ 1 ปีตามค่าเริ่มต้น — ไม่ตัดวันทิ้งก่อนครบปี', () => {
+      // ค่าเริ่มต้น 365 วัน: 365 วันแรกต้องอยู่ครบ วันที่ 366 เป็นต้นไปถึงถูกลบ
+      const { deleteFolderIds } = planBackupCleanup(fakeDays(400, 2), { today: '2569-08-21' });
+      assert.equal(deleteFolderIds.length, 35);
+      assert.ok(!deleteFolderIds.includes('day-2568-08-22'), 'วันที่ 365 ย้อนหลังต้องยังอยู่');
     });
 
-    test('ชื่อไฟล์รูปแบบเดิม (ISO เต็ม) ยังจัดกลุ่มตามวันได้ตามปกติ', () => {
-      const files = [
-        { id: 'a', name: 'esaraban-2026-08-21T10-00-00-000Z.db' },
-        { id: 'b', name: 'esaraban-2026-08-21T09-00-00-000Z.db' },
-        { id: 'c', name: 'esaraban-2026-08-20T09-00-00-000Z.db' },
-      ];
-      const toDelete = selectBackupsToDelete(files, { keepRecent: 1, keepDailyDays: 2 });
-      assert.deepEqual(toDelete.map((f) => f.id), ['b'], 'ต้องเหลือชุดล่าสุดของแต่ละวัน');
+    test('วันนี้ยังไม่มีในรายการ ก็ต้องไม่ทำให้วันอื่นถูกเก็บเกิน', () => {
+      // เช่นเพิ่งข้ามเที่ยงคืนมาแล้วยังไม่ได้สำรองรอบแรกของวันใหม่
+      const { deleteFileIds } = planBackupCleanup(fakeDays(2, 4, '2569-08-20'), {
+        today: '2569-08-21', keepRecent: 12, keepDailyDays: 365,
+      });
+      assert.equal(deleteFileIds.length, 6, 'ทั้งสองวันเป็นวันที่ผ่านไปแล้ว ต้องเหลือวันละชุด');
+    });
+
+    test('ไม่มีสำเนาเลย ต้องไม่สั่งลบอะไร', () => {
+      assert.deepEqual(planBackupCleanup([], { today: '2569-08-21' }), { deleteFolderIds: [], deleteFileIds: [] });
+    });
+
+    test('หน้าจัดการมีปุ่มลบครบทุกชั้น — ทั้งปี ทั้งเดือน ทั้งวัน และรายไฟล์', async () => {
+      const { backupTreeHtml } = await import('../src/routes/backups.js');
+      const html = backupTreeHtml([{
+        id: 'y', name: '2569',
+        months: [{
+          id: 'm', name: '2569-08',
+          days: [{ id: 'd', name: '2569-08-21', files: [{ id: 'f', name: 'esaraban-1530.db', size: 2097152 }] }],
+        }],
+      }]);
+      for (const [id, what] of [['y', 'ทั้งปี'], ['m', 'ทั้งเดือน'], ['d', 'ทั้งวัน'], ['f', 'ไฟล์นี้']]) {
+        assert.ok(html.includes(`removeBackup('${id}'`), `ต้องมีปุ่มลบของ ${what}`);
+        assert.ok(html.includes(`ลบ${what}`), `ปุ่มต้องบอกว่าลบ${what}`);
+      }
+      // ชื่อโฟลเดอร์เก็บเป็นตัวเลขล้วนเพื่อให้เรียงถูก แต่ต้องแสดงเป็นคำอ่านให้ธุรการเข้าใจ
+      assert.ok(html.includes('สิงหาคม 2569'), 'เดือนต้องแสดงเป็นชื่อเดือนไทย');
+      assert.ok(html.includes('21 สิงหาคม 2569'), 'วันต้องแสดงเป็นวันที่อ่านออก');
+      assert.ok(html.includes('15:30 น.'), 'ไฟล์ต้องแสดงเป็นเวลาที่สำรอง');
+      assert.ok(html.includes('2.00 MB'), 'ต้องบอกขนาดไฟล์');
+    });
+
+    test('ไม่มีไฟล์ในวันนั้น ต้องไม่พังและบอกให้รู้', async () => {
+      const { backupTreeHtml } = await import('../src/routes/backups.js');
+      const html = backupTreeHtml([{ id: 'y', name: '2569', months: [{ id: 'm', name: '2569-08', days: [{ id: 'd', name: '2569-08-21', files: [] }] }] }]);
+      assert.ok(html.includes('ไม่มีไฟล์ในวันนี้'));
+      assert.equal(backupTreeHtml([]), '');
     });
   });
 
