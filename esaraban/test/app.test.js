@@ -962,6 +962,23 @@ describe('ลา/ไปราชการ: สิทธิ์ต้องบั�
   });
 });
 
+// Google บังคับให้กรอก Privacy policy URL ที่เปิดดูได้โดยไม่ต้องล็อกอิน ก่อนจะกด PUBLISH APP ได้
+// ถ้าหน้านี้กลายเป็นต้องล็อกอินเมื่อไหร่ Google จะตรวจไม่ผ่าน แล้วแอปจะตกกลับไปสถานะ Testing
+// ซึ่งโทเคนหมดอายุทุก 7 วัน — ไฟล์แนบและการสำรองฐานข้อมูลจะหยุดทำงานทั้งระบบ
+describe('หน้านโยบายความเป็นส่วนตัว ต้องเปิดดูได้โดยไม่ต้องล็อกอิน', () => {
+  test('/privacy ไม่ถูกห่อด้วย requirePage และมีลิงก์จากหน้าเข้าสู่ระบบ', () => {
+    const privacySrc = fs.readFileSync(new URL('../src/routes/privacy.js', import.meta.url), 'utf8');
+    assert.match(privacySrc, /router\.get\('\/privacy'/);
+    assert.ok(!/router\.get\('\/privacy',\s*require(Page|Role|Api)/.test(privacySrc),
+      '/privacy ต้องเป็นหน้าสาธารณะ ห้ามห่อด้วย requirePage/requireRole — Google ต้องเข้ามาตรวจได้เอง');
+    // ต้องมีทางเข้าถึงจริงจากหน้าแรกด้วย ไม่ใช่ URL ลอยๆ ที่ไม่มีใครลิงก์ถึง
+    const authSrc = fs.readFileSync(new URL('../src/routes/auth.js', import.meta.url), 'utf8');
+    assert.match(authSrc, /href="\/privacy"/, 'หน้าเข้าสู่ระบบต้องมีลิงก์ไปนโยบายความเป็นส่วนตัว');
+    // และต้องถูก import เข้า router จริง ไม่งั้น route ไม่ถูกลงทะเบียน
+    assert.match(fs.readFileSync(new URL('../src/routes/index.js', import.meta.url), 'utf8'), /import '\.\/privacy\.js';/);
+  });
+});
+
 // แถบล่างของเอกสารมี 3 ช่องเรียงกัน (ทราบ / กรอบตราปั๊ม ผอ. / ความเห็นธุรการ) ขอบบนตรงกันทั้งสามช่อง
 // ถ้าใครไปแก้ตำแหน่งหรือความกว้างของช่องใดช่องหนึ่ง แล้วช่องมาทับกันหรือล้นออกนอกหน้ากระดาษ จะไม่มี
 // อะไรฟ้องเลยจนกว่าจะมีคนพิมพ์เอกสารจริงออกมาแล้วอ่านความเห็นทับกันไม่ออก — เทสต์นี้กันไว้ตรงนั้น

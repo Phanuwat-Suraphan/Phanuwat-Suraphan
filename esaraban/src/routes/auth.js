@@ -39,6 +39,9 @@ function loginPage({ error } = {}) {
           teacher001 / Teacher@2569 (ครู)<br/>
           PIN ทดสอบทุกบัญชี: เลขซ้ำ 6 หลักตามท้ายรหัส (เช่น admin = 111111)
         </div>
+        <div class="text-muted" style="text-align:center;margin-top:1rem;font-size:.82rem">
+          <a href="/privacy">นโยบายความเป็นส่วนตัว</a>
+        </div>
       </div>
     </div>
   </div>`;

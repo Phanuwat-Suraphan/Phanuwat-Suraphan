@@ -70,14 +70,40 @@
 ไม่ต้องส่งให้ Google ตรวจสอบ ไม่ต้องรอ ไม่ต้องแนบวิดีโอ/นโยบายความเป็นส่วนตัวใดๆ**
 (scope นี้ให้สิทธิ์แอปเห็นเฉพาะไฟล์ที่แอปสร้างเองเท่านั้น ไม่เห็นไฟล์อื่นใน Drive ของคุณเลย)
 
-### ขั้นตอน
+### 4.1 กรอกหน้า Branding ให้ครบก่อน (ไม่งั้นปุ่ม Publish app จะกดไม่ได้)
+
+ปุ่ม **Publish app** จะเป็นสีเทากดไม่ได้ พร้อมข้อความว่า
+*"Valid app name, support email, homepage url, and privacy policy url are required"*
+จนกว่าจะกรอก 4 อย่างนี้ครบใน **Google Auth Platform → Branding**:
+
+| ช่อง | กรอกอะไร |
+|---|---|
+| **App name** | ชื่อระบบ เช่น `ระบบสารบรรณอิเล็กทรอนิกส์ โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ ๑` |
+| **User support email** | อีเมล Gmail ของบัญชีที่ใช้เก็บไฟล์ (เลือกจาก dropdown ได้) |
+| **Application home page** | `https://<โดเมนเว็บของคุณ>/` |
+| **Privacy policy link** | `https://<โดเมนเว็บของคุณ>/privacy` |
+| **Authorized domains** | โดเมนของเว็บ เช่น `onrender.com` |
+
+ระบบมีหน้านโยบายความเป็นส่วนตัวเตรียมไว้ให้แล้วที่ `/privacy` (ดู `src/routes/privacy.js`) —
+เป็น**หน้าสาธารณะ เปิดดูได้โดยไม่ต้องล็อกอิน** เพราะ Google จะเข้ามาตรวจเอง ถ้าหน้านี้ต้องล็อกอิน
+เมื่อไหร่ Google จะตรวจไม่ผ่านทันที (มีเทสต์คุมไว้แล้วว่าห้ามกลายเป็นหน้าที่ต้องล็อกอิน)
+
+> ถ้ามีอีเมลกลางของโรงเรียนที่อยากให้แสดงในหน้านโยบาย ตั้ง env var `PRIVACY_CONTACT_EMAIL` เพิ่มได้
+> ไม่ตั้งก็ได้ หน้าจะเขียนว่าให้ติดต่อผู้ดูแลระบบของโรงเรียนแทน
+
+กด **Save** ที่หน้า Branding แล้วค่อยกลับไปหน้า Audience
+
+### 4.2 กด PUBLISH APP
 
 1. ไปที่ <https://console.cloud.google.com/auth/audience> (เลือกโปรเจกต์ให้ถูกอันมุมบนซ้าย)
    — ถ้าเมนูหน้าตาไม่ตรง ให้ไปที่ **APIs & Services → OAuth consent screen → Audience** แทน
 2. ดูหัวข้อ **Publishing status** จะเขียนว่า `Testing`
-3. กดปุ่ม **PUBLISH APP**
+3. กดปุ่ม **PUBLISH APP** (ตอนนี้ควรกดได้แล้ว)
 4. มีกล่องยืนยันขึ้นมา (`Push to production?`) → กด **Confirm**
 5. Publishing status ต้องเปลี่ยนเป็น **`In production`** — เท่านี้เสร็จ
+
+> ปุ่ม **Make internal** ข้างล่างใช้ได้เฉพาะบัญชี Google Workspace ขององค์กรเท่านั้น
+> ถ้าใช้ Gmail ธรรมดาจะกดไม่ได้ — ต้องไปทาง PUBLISH APP อย่างเดียว
 
 ### แล้วต้องต่อ Drive ใหม่อีกครั้ง
 
