@@ -1,4 +1,4 @@
-import { db, uuid, nowIso, beYear, audit, computeRetentionUntil, todayInBangkok } from '../db.js';
+import { db, uuid, nowIso, beYear, audit, computeRetentionUntil, todayInBangkok, RETENTION_YEARS } from '../db.js';
 import { nextRunningNumber } from '../numbering.js';
 import { notifyUser } from './notify.js';
 import { deleteFile as deleteDriveFile, isGoogleDriveEnabled } from './googleDrive.js';
@@ -9,6 +9,55 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
+
+// ค่าที่ยอมรับได้ของแต่ละช่องที่เป็นตัวเลือก — ต้องตรวจฝั่งเซิร์ฟเวอร์ ไม่ใช่พึ่ง <select> ในหน้าเว็บ
+//
+// ที่สำคัญที่สุดคือ secret_level: canUserSeeDocument จำกัดสิทธิ์เฉพาะค่า 'secret'/'top_secret' เท่านั้น
+// ค่าอื่นทั้งหมดถูกถือว่าเป็นหนังสือทั่วไปที่ทุกคนอ่านได้ ถ้าปล่อยให้ค่าแปลกปลอมหลุดเข้ามา หนังสือที่
+// ธุรการตั้งใจให้เป็นความลับสูงสุดจะกลายเป็นหนังสือสาธารณะทันทีโดยไม่มีอะไรฟ้อง (ทดสอบยืนยันแล้วว่า
+// ครูเปิดอ่านได้จริง) — จึงปฏิเสธค่าที่ไม่รู้จักไปเลย ดีกว่าเดาแล้วเดาผิดในทางที่เปิดเผยข้อมูล
+const VALID_PRIORITY = new Set(['normal', 'urgent', 'very_urgent', 'most_urgent']);
+const VALID_SECRET = new Set(['normal', 'internal', 'secret', 'top_secret']);
+const VALID_DIRECTION = new Set(['incoming', 'outgoing']);
+
+// เพดานความยาวข้อความ — กันการวางเนื้อหาหนังสือทั้งฉบับลงช่องชื่อเรื่องโดยไม่ตั้งใจ ซึ่งเกิดขึ้นง่ายมาก
+// เวลาก๊อปจากไฟล์ Word ทดสอบแล้ว: ชื่อเรื่อง 50,000 ตัวอักษรฉบับเดียวทำให้หน้าทะเบียนพองเป็น 115KB
+// ต่อการเปิดหนึ่งครั้ง และทำให้ตาราง/ตราประทับ/ไฟล์ Excel ที่ส่งออกเสียรูปทั้งหมด
+const MAX_LEN = { title: 500, subject: 5000, correspondentName: 300, externalDocNumber: 100, customDocNumber: 100 };
+
+function assertLength(value, field, label) {
+  if (typeof value === 'string' && value.length > MAX_LEN[field]) {
+    throw httpError(400, `${label}ยาวเกินไป (${value.length} ตัวอักษร) — จำกัดไม่เกิน ${MAX_LEN[field]} ตัวอักษร`);
+  }
+}
+
+/**
+ * ตรวจว่าเป็นวันที่จริงในรูปแบบ YYYY-MM-DD — คืน null ถ้าเว้นว่าง, throw ถ้ากรอกมาแต่ไม่ใช่วันที่
+ *
+ * เดิมเก็บค่าที่กรอกมาดิบๆ ลงฐานข้อมูลเลย ข้อความอย่าง "ไม่ใช่วันที่" จึงกลายเป็นวันครบกำหนดได้จริง
+ * แล้วหน้าเอกสารก็แสดงคำนั้นออกมาตรงๆ ส่วนการนับว่าเลยกำหนดหรือยังก็เงียบไป (daysUntil คืน null)
+ * หนังสือฉบับนั้นจึงหลุดจากรายการเลยกำหนดตลอดไปโดยไม่มีใครรู้
+ */
+function normalizeDate(value, label) {
+  if (!value) return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw httpError(400, `${label}ไม่ใช่วันที่ที่ถูกต้อง (ต้องเป็นรูปแบบ ปี-เดือน-วัน)`);
+  const d = new Date(`${s}T00:00:00Z`);
+  // เช็คซ้ำว่าเป็นวันที่มีอยู่จริง — "2026-13-45" ผ่าน regex แต่ Date จะเลื่อนไปเป็นวันอื่นเงียบๆ
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) {
+    throw httpError(400, `${label}ไม่ใช่วันที่ที่มีอยู่จริง (${s})`);
+  }
+  // ช่องกรอกวันที่ของเบราว์เซอร์เป็น ค.ศ. เสมอ แต่ครูไทยคิดเป็น พ.ศ. การกรอก 2569 แทน 2026 จึงเกิดง่ายมาก
+  // ถ้าปล่อยผ่าน วันครบกำหนดจะไปอยู่อีก 543 ปีข้างหน้า แล้วหนังสือฉบับนั้นจะไม่มีวันขึ้นว่าเลยกำหนดเลย
+  // ค้างอยู่เงียบๆ ตลอดไป — ดักไว้พร้อมบอกวิธีแก้ตรงๆ ดีกว่าให้ไปเจอตอนเรื่องค้างแล้ว
+  const year = Number(s.slice(0, 4));
+  if (year > 2400) {
+    throw httpError(400, `${label}ดูเหมือนกรอกเป็นปี พ.ศ. (${year}) — ช่องนี้ใช้ปี ค.ศ. ถ้าเป็น พ.ศ. ${year} ให้กรอกเป็น ${year - 543}`);
+  }
+  if (year < 1900) throw httpError(400, `${label}มีปีที่ไม่สมเหตุสมผล (${year})`);
+  return s;
+}
 
 /**
  * Create a new incoming/outgoing document with an atomic running number.
@@ -21,6 +70,17 @@ const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
 // running_number/year_be ยังนับเดินหน้าตามปกติเบื้องหลังเสมอ (ใช้คำนวณอายุการเก็บ/นับสถิติ) ไม่ผูกกับ
 // เลขที่กำหนดเอง เฉพาะ doc_number_display (เลขที่ที่แสดง/พิมพ์/ประทับตราจริง) เท่านั้นที่ถูกแทนที่
 export function createDocument({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, externalDocNumber, externalDocDate, dueDate, retentionClass, customDocNumber, createdBy }) {
+  if (direction && !VALID_DIRECTION.has(direction)) throw httpError(400, 'ประเภทหนังสือ (เข้า/ออก) ไม่ถูกต้อง');
+  if (priority && !VALID_PRIORITY.has(priority)) throw httpError(400, `ชั้นความเร็ว "${priority}" ไม่ถูกต้อง`);
+  if (secretLevel && !VALID_SECRET.has(secretLevel)) throw httpError(400, `ชั้นความลับ "${secretLevel}" ไม่ถูกต้อง`);
+  if (retentionClass && !(retentionClass in RETENTION_YEARS)) throw httpError(400, `อายุการเก็บ "${retentionClass}" ไม่ถูกต้อง`);
+  for (const [field, label] of [['title', 'ชื่อเรื่อง'], ['subject', 'สาระสำคัญ'], ['correspondentName', 'ชื่อหน่วยงาน'],
+    ['externalDocNumber', 'เลขที่หนังสือต้นทาง'], ['customDocNumber', 'เลขที่กำหนดเอง']]) {
+    assertLength({ title, subject, correspondentName, externalDocNumber, customDocNumber }[field], field, label);
+  }
+  externalDocDate = normalizeDate(externalDocDate, 'วันที่ของหนังสือต้นทาง');
+  dueDate = normalizeDate(dueDate, 'วันครบกำหนด');
+
   let result;
   let duplicateDocNumberWarning = null;
   db.exec('BEGIN IMMEDIATE');
