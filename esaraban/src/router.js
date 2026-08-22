@@ -53,7 +53,10 @@ export function json(ctx, status, obj) {
 // (เจอจริงที่ไฟล์แนบของประกาศ ซึ่งเคยประกอบหัวนี้เองแยกจากของหน้าเอกสาร)
 // filename* ตาม RFC 5987 เก็บชื่อจริงแบบ UTF-8 ส่วน filename= เหลือไว้เป็นตัวสำรองแบบ ASCII
 // อยู่ในไฟล์นี้เพราะเป็น helper ของการตอบ HTTP เหมือน html()/json() ทุกเส้นทางที่ส่งไฟล์ต้องใช้ตัวนี้ตัวเดียว
-export function contentDispositionHeader(filename, fallback = 'document.pdf') {
+// disposition: 'inline' ให้เบราว์เซอร์เปิดดูในแท็บ (ไฟล์แนบหนังสือ/หลักฐาน) — 'attachment' บังคับดาวน์โหลด
+// ใช้กับไฟล์ที่ผู้ใช้ต้องเอาไปเปิดในโปรแกรมอื่น เช่น ไฟล์ตัวอย่างสำหรับกรอกใน Excel ซึ่งถ้าเปิดในเบราว์เซอร์
+// จะกลายเป็นข้อความดิบบนหน้าจอ แล้วผู้ใช้จะไม่รู้ว่าต้องทำอะไรต่อ
+export function contentDispositionHeader(filename, fallback = 'document.pdf', disposition = 'inline') {
   const name = String(filename || fallback);
   const stripped = name.replace(/[^\x20-\x7E]/g, '').replace(/"/g, '').trim();
   // ชื่อไทยล้วนอย่าง "ประกาศรับสมัครครู.pdf" พอตัดอักขระที่ไม่ใช่ ASCII ออกจะเหลือแค่ ".pdf" ซึ่งบนเครื่อง
@@ -61,7 +64,7 @@ export function contentDispositionHeader(filename, fallback = 'document.pdf') {
   // จึงผ่านการตรวจเสมอถ้าดูทั้งสตริง
   const stem = stripped.replace(/\.[^.]*$/, '');
   const asciiFallback = /[A-Za-z0-9]/.test(stem) ? stripped : fallback;
-  return `inline; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+  return `${disposition}; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 
 export function redirect(ctx, location, extraHeaders) {

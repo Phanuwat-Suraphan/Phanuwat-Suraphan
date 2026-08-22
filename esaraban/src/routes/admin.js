@@ -1,7 +1,9 @@
-import { router, html, json, redirect } from '../router.js';
+import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
 import { layout, esc, fmtDate, emptyState } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { db, uuid, nowIso, hashSecret, audit } from '../db.js';
+import { readTable, planUserImport, applyUserImport, templateCsv } from '../services/userImport.js';
+import { httpError } from '../services/workflow.js';
 import {
   isGoogleDriveEnabled, isGoogleDriveConnected, getOAuthClientConfig, exchangeCodeForTokens, DRIVE_SCOPE, AUTH_URL,
   listAllAttachmentFiles, deleteFile,
@@ -102,7 +104,91 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
           }
         </script>
       </div>
-    </div>`;
+    </div>
+
+    <div class="card">
+      <h3 class="mt-0">📥 นำเข้ารายชื่อจาก Excel/CSV</h3>
+      <p class="text-muted" style="font-size:.85rem;margin-top:-.3rem">
+        เปิดใช้ระบบครั้งแรกไม่ต้องพิมพ์ทีละคน — อัปโหลดไฟล์รายชื่อครูที่มีอยู่แล้วได้เลย
+        รองรับทั้ง <code>.xlsx</code> และ <code>.csv</code>
+      </p>
+      <a class="btn btn-outline btn-sm" href="/admin/users/template.csv">⬇️ ดาวน์โหลดไฟล์ตัวอย่าง</a>
+      <div class="callout-tip" style="margin-top:.8rem">
+        ต้องมีคอลัมน์อย่างน้อย <strong>รหัสประจำตัว, ชื่อ, นามสกุล</strong> —
+        ส่วน คำนำหน้า/อีเมล/ตำแหน่ง/ฝ่าย/บทบาท ใส่หรือไม่ใส่ก็ได้ (ไม่ใส่บทบาทจะเป็น "ครู")
+        <br/>ชื่อฝ่ายและบทบาทต้องตรงกับที่มีในระบบ ระบบจะบอกให้ก่อนถ้าไม่ตรง
+        <br/><strong>รหัสผ่านและ PIN ระบบสุ่มให้คนละชุด</strong> แล้วแสดงครั้งเดียวหลังนำเข้าเสร็จ ให้พิมพ์เก็บไว้แจก
+      </div>
+      <input type="file" id="importFile" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="margin-top:.8rem" />
+      <div id="importResult" style="margin-top:1rem"></div>
+    </div>
+    <script>
+      var importPayload = null;
+      document.getElementById('importFile').addEventListener('change', async function () {
+        var file = this.files[0];
+        if (!file) return;
+        var box = document.getElementById('importResult');
+        box.innerHTML = '<p class="text-muted">กำลังตรวจไฟล์…</p>';
+        try {
+          var b64 = await new Promise(function (res, rej) {
+            var r = new FileReader();
+            r.onload = function () { res(r.result.split(',')[1]); };
+            r.onerror = rej;
+            r.readAsDataURL(file);
+          });
+          importPayload = { fileName: file.name, fileDataBase64: b64 };
+          var res = await fetch('/admin/users/import/preview', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(importPayload),
+          });
+          var data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'อ่านไฟล์ไม่สำเร็จ');
+          renderPreview(data);
+        } catch (e) { box.innerHTML = '<div class="alert alert-danger">' + e.message + '</div>'; }
+      });
+
+      function renderPreview(data) {
+        var s = data.summary;
+        var rows = data.items.map(function (it) {
+          var badge = it.status === 'ok' ? '<span class="badge badge-success">นำเข้าได้</span>'
+            : it.status === 'skip' ? '<span class="badge badge-muted">มีอยู่แล้ว</span>'
+            : '<span class="badge badge-danger">ผิดพลาด</span>';
+          return '<tr><td>' + it.rowNumber + '</td><td>' + esc(it.employeeCode) + '</td><td>' +
+            esc((it.prefix || '') + it.firstName + ' ' + it.lastName) + '</td><td>' + esc(it.roleLabel || it.roleName || '') +
+            '</td><td>' + badge + '</td><td class="text-muted">' + esc(it.reason || '') + '</td></tr>';
+        }).join('');
+        document.getElementById('importResult').innerHTML =
+          '<div class="alert ' + (s.error ? 'alert-warning' : 'alert-success') + '">ตรวจไฟล์แล้ว — นำเข้าได้ <strong>' + s.ok +
+          '</strong> คน · มีอยู่แล้ว ' + s.skip + ' · ผิดพลาด ' + s.error + '</div>' +
+          '<div class="table-wrap"><table><thead><tr><th>แถว</th><th>รหัส</th><th>ชื่อ</th><th>บทบาท</th><th>ผล</th><th>หมายเหตุ</th></tr></thead><tbody>' +
+          rows + '</tbody></table></div>' +
+          (s.ok ? '<button class="btn btn-primary" style="margin-top:.8rem" onclick="confirmImport(this)">✅ ยืนยันนำเข้า ' + s.ok + ' คน</button>' : '');
+      }
+
+      function esc(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+      async function confirmImport(btn) {
+        var pin = await window.askPin('ยืนยัน PIN เพื่อสร้างบัญชีผู้ใช้');
+        if (!pin) return;
+        window.setBtnLoading(btn);
+        try {
+          var res = await fetch('/admin/users/import', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.assign({ pin: pin }, importPayload)),
+          });
+          var data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'นำเข้าไม่สำเร็จ');
+          document.getElementById('importResult').innerHTML =
+            '<div class="alert alert-success">สร้างบัญชีแล้ว <strong>' + data.created.length + '</strong> คน — ' +
+            '<strong>รหัสผ่านและ PIN ด้านล่างแสดงครั้งเดียวเท่านั้น</strong> กรุณาพิมพ์หรือคัดลอกเก็บไว้ก่อนออกจากหน้านี้</div>' +
+            '<div class="table-wrap"><table><thead><tr><th>รหัสประจำตัว</th><th>ชื่อ</th><th>รหัสผ่าน</th><th>PIN</th></tr></thead><tbody>' +
+            data.created.map(function (c) {
+              return '<tr><td>' + esc(c.employeeCode) + '</td><td>' + esc(c.name) +
+                '</td><td><code>' + esc(c.password) + '</code></td><td><code>' + esc(c.pin) + '</code></td></tr>';
+            }).join('') + '</tbody></table></div>' +
+            '<button class="btn btn-outline btn-sm" style="margin-top:.8rem" onclick="window.print()">🖨️ พิมพ์รายการนี้</button>';
+        } catch (e) { window.toast(e.message, 'danger'); window.restoreBtn(btn); }
+      }
+    </script>`;
   html(ctx, 200, layout({ user: ctx.user, title: 'จัดการผู้ใช้', path: '/admin/users', content }));
 })));
 
@@ -317,3 +403,44 @@ router.get('/admin/google-drive/callback', requireRole('admin')(requirePage(asyn
     </div>`;
   html(ctx, 200, layout({ user: ctx.user, title: 'เชื่อมต่อสำเร็จ', path: '/admin/google-drive', content }));
 })));
+
+// ---------------- นำเข้ารายชื่อบุคลากรจาก Excel/CSV ----------------
+router.get('/admin/users/template.csv', requireRole('admin')(requirePage((ctx) => {
+  const body = Buffer.from(templateCsv(), 'utf8');
+  ctx.res.writeHead(200, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Length': body.length,
+    'Content-Disposition': contentDispositionHeader('ตัวอย่างรายชื่อบุคลากร.csv', 'user-import-template.csv', 'attachment'),
+  });
+  ctx.res.end(body);
+})));
+
+// ตรวจไฟล์แล้วบอกว่าจะเกิดอะไรขึ้น โดยยังไม่เขียนอะไรลงฐานข้อมูล — แอดมินได้ตรวจก่อนกดยืนยันจริง
+// (สร้างบัญชีผิด 50 บัญชีแล้วมาไล่ลบทีหลังเจ็บปวดกว่าตรวจก่อนมาก)
+router.post('/admin/users/import/preview', requireRole('admin')(requireApi(async (ctx) => {
+  const plan = buildPlan(ctx.body);
+  json(ctx, 200, plan);
+})));
+
+router.post('/admin/users/import', requireRole('admin')(requireApi(async (ctx) => {
+  const { verifyPin } = await import('../auth.js');
+  if (!verifyPin(ctx.user.id, ctx.body.pin)) return json(ctx, 401, { error: 'PIN ไม่ถูกต้อง' });
+  const plan = buildPlan(ctx.body);
+  if (!plan.summary.ok) return json(ctx, 400, { error: 'ไม่มีรายชื่อที่นำเข้าได้ในไฟล์นี้' });
+  const created = applyUserImport(plan.items, ctx.user.id);
+  json(ctx, 201, { created, summary: plan.summary });
+})));
+
+// อ่านไฟล์แล้ววางแผนใหม่ทุกครั้ง ไม่รับรายการที่ฝั่งเว็บส่งกลับมา — ระหว่างที่แอดมินอ่านผลตรวจแล้วกดยืนยัน
+// อาจมีคนเพิ่มผู้ใช้รหัสเดียวกันไปแล้ว และเพื่อไม่ให้คำขอที่ยิงเองสร้างบัญชีอะไรก็ได้ตามใจ
+function buildPlan(body) {
+  if (!body.fileDataBase64) throw httpError(400, 'ไม่พบไฟล์');
+  const buffer = Buffer.from(body.fileDataBase64, 'base64');
+  if (buffer.length > 5 * 1024 * 1024) throw httpError(413, 'ไฟล์ใหญ่เกิน 5MB');
+  const rows = readTable(buffer, body.fileName || '');
+  return planUserImport(rows, {
+    departments: db.prepare('SELECT id, name FROM departments').all(),
+    roles: db.prepare('SELECT id, name, name_th FROM roles').all(),
+    existingCodes: db.prepare('SELECT employee_code FROM users WHERE deleted_at IS NULL').all().map((u) => u.employee_code),
+  });
+}

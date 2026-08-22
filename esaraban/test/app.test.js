@@ -976,6 +976,70 @@ describe('ลา/ไปราชการ: สิทธิ์ต้องบั�
   });
 });
 
+// นำเข้ารายชื่อครูทีเดียว 30-50 คนตอนเปิดใช้ระบบครั้งแรก — ถ้าสร้างบัญชีผิดแล้วต้องมาไล่ลบทีหลัง
+// เจ็บปวดกว่าตรวจก่อนมาก ตรรกะการตรวจจึงแยกเป็นฟังก์ชันล้วนๆ และต้องมีเทสต์คุมทุกกรณีที่พลาดได้
+describe('นำเข้ารายชื่อบุคลากรจาก Excel/CSV', () => {
+  const departments = [{ id: 'd1', name: 'กลุ่มบริหารวิชาการ' }];
+  const roles = [{ id: 'r1', name: 'teacher', name_th: 'ครู' }, { id: 'r2', name: 'registrar', name_th: 'เจ้าหน้าที่ธุรการ' }];
+
+  test('อ่าน CSV ที่ Excel บันทึกมา (มี BOM, ขึ้นบรรทัดแบบ CRLF, มีเครื่องหมายคำพูด)', async () => {
+    const { readTable } = await import('../src/services/userImport.js');
+    const csv = '﻿รหัสประจำตัว,ชื่อ,นามสกุล\r\nkru01,"สมชาย, ก.",ใจดี\r\n';
+    const rows = readTable(Buffer.from(csv, 'utf8'), 'ครู.csv');
+    assert.equal(rows[0][0], 'รหัสประจำตัว', 'ต้องตัด BOM ออก ไม่งั้นหัวคอลัมน์แรกจับคู่ไม่ติด');
+    assert.deepEqual(rows[1], ['kru01', 'สมชาย, ก.', 'ใจดี'], 'ต้องอ่านค่าที่มีลูกน้ำในเครื่องหมายคำพูดได้');
+  });
+
+  test('แยกแถวดี/ซ้ำ/ผิด ออกจากกันได้ถูกต้อง และข้ามแถวว่าง', async () => {
+    const { planUserImport } = await import('../src/services/userImport.js');
+    const rows = [
+      ['รหัสประจำตัว', 'คำนำหน้า', 'ชื่อ', 'นามสกุล', 'ฝ่าย', 'บทบาท'],
+      ['kru01', 'นาย', 'สมชาย', 'ใจดี', 'กลุ่มบริหารวิชาการ', 'ครู'],
+      ['kru02', 'นางสาว', 'สมหญิง', 'ตั้งใจ', '', ''],           // ไม่ระบุบทบาท -> ครู
+      ['มีอยู่แล้ว', 'นาย', 'ซ้ำ', 'ของเดิม', '', 'ครู'],
+      ['kru01', 'นาย', 'ซ้ำในไฟล์', 'เอง', '', 'ครู'],
+      ['kru03', '', '', '', '', ''],                              // ข้อมูลไม่ครบ
+      ['kru04', 'นาง', 'ฝ่าย', 'ไม่มี', 'ฝ่ายที่ไม่มีจริง', 'ครู'],
+      ['kru05', 'นาย', 'บทบาท', 'ไม่มี', '', 'ผู้วิเศษ'],
+      ['', '', '', '', '', ''],                                    // แถวว่างล้วน ต้องข้ามเงียบๆ
+    ];
+    const plan = planUserImport(rows, { departments, roles, existingCodes: ['มีอยู่แล้ว'] });
+    assert.deepEqual(plan.summary, { ok: 2, skip: 1, error: 4 });
+    assert.deepEqual(plan.items.map((i) => i.status), ['ok', 'ok', 'skip', 'error', 'error', 'error', 'error']);
+    assert.match(plan.items[2].reason, /มีรหัสประจำตัวนี้ในระบบอยู่แล้ว/);
+    assert.match(plan.items[3].reason, /ซ้ำกับแถวก่อนหน้าในไฟล์เดียวกัน/);
+    assert.match(plan.items[5].reason, /ไม่พบฝ่าย/);
+    assert.match(plan.items[6].reason, /ไม่พบบทบาท/);
+    // ไม่ระบุบทบาทต้องได้ "ครู" เป็นค่าตั้งต้น ไม่ใช่ error
+    assert.equal(plan.items[1].roleId, 'r1');
+    // เลขแถวต้องตรงกับที่เห็นใน Excel จริง ไม่งั้นแอดมินหาแถวที่ผิดไม่เจอ
+    assert.deepEqual(plan.items.map((i) => i.rowNumber), [2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  test('หัวตารางที่ตั้งชื่อต่างกันเล็กน้อยต้องยังจับคู่ได้ และบอกให้รู้ถ้าขาดคอลัมน์บังคับ', async () => {
+    const { planUserImport, mapHeaders } = await import('../src/services/userImport.js');
+    const m = mapHeaders(['รหัส', 'ชื่อ', 'สกุล', 'สังกัด', 'สิทธิ์']);
+    assert.equal(m.employeeCode, 0);
+    assert.equal(m.lastName, 2);
+    assert.equal(m.department, 3);
+    assert.equal(m.role, 4);
+    assert.throws(() => planUserImport([['ชื่อ', 'นามสกุล'], ['ก', 'ข']], { departments, roles, existingCodes: [] }),
+      /หาหัวตารางไม่เจอ|ไม่พบคอลัมน์/);
+  });
+
+  test('รหัสผ่านและ PIN ที่สุ่มให้ต้องใช้ได้จริงและไม่ซ้ำกัน', async () => {
+    const { generatePassword, generatePin } = await import('../src/services/userImport.js');
+    const pins = new Set();
+    const pws = new Set();
+    for (let i = 0; i < 200; i++) { pins.add(generatePin()); pws.add(generatePassword()); }
+    assert.ok(pws.size > 190, 'รหัสผ่านต้องไม่ซ้ำกันเป็นกลุ่มก้อน');
+    assert.ok(pins.size > 150, 'PIN ต้องกระจายตัว');
+    assert.ok([...pins].every((p) => /^\d{6}$/.test(p)), 'PIN ต้องเป็นตัวเลข 6 หลักเสมอ (ระบบใช้ยืนยันการลงนาม)');
+    // ตัดอักขระที่อ่านสับสน (0/O/1/l/I) ออก เพราะแอดมินต้องพิมพ์แจกครูด้วยมือ
+    assert.ok([...pws].every((p) => !/[0O1lI]/.test(p)), 'รหัสผ่านต้องไม่มีอักขระที่อ่านสับสน');
+  });
+});
+
 // ค่าที่หน้าเว็บส่งมาเป็น <select>/<input type=date> ก็จริง แต่ต้องตรวจฝั่งเซิร์ฟเวอร์เสมอ —
 // ค่าที่หลุดเข้ามาได้สร้างปัญหาเงียบๆ ที่ร้ายแรงกว่าที่คิด โดยเฉพาะชั้นความลับ
 describe('ตรวจค่าที่กรอกเข้ามาตอนลงทะเบียนหนังสือ', () => {
