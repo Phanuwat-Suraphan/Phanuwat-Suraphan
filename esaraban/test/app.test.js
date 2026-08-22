@@ -962,6 +962,79 @@ describe('ลา/ไปราชการ: สิทธิ์ต้องบั�
   });
 });
 
+// แถบล่างของเอกสารมี 3 ช่องเรียงกัน (ทราบ / กรอบตราปั๊ม ผอ. / ความเห็นธุรการ) ขอบบนตรงกันทั้งสามช่อง
+// ถ้าใครไปแก้ตำแหน่งหรือความกว้างของช่องใดช่องหนึ่ง แล้วช่องมาทับกันหรือล้นออกนอกหน้ากระดาษ จะไม่มี
+// อะไรฟ้องเลยจนกว่าจะมีคนพิมพ์เอกสารจริงออกมาแล้วอ่านความเห็นทับกันไม่ออก — เทสต์นี้กันไว้ตรงนั้น
+describe('ตราประทับ: สามช่องแถบล่างต้องไม่ทับกันและไม่ล้นหน้ากระดาษ', () => {
+  const PAGE_W = 595; // A4 กว้าง (pt) ต้องตรงกับ PAGE_WIDTH_PT ใน pdfStamp.js
+  const BORDER_AND_PADDING = 18; // กรอบ 2pt + padding 7pt ทั้งสองด้านของกล่อง ผอ.
+
+  test('ทราบ → ตรา ผอ. → ความเห็นธุรการ เรียงจากซ้ายไปขวา ไม่ทับกัน และอยู่ในหน้ากระดาษ', async () => {
+    const s = await import('../src/services/pdfStamp.js');
+    const slots = [
+      { name: 'ทราบ', left: s.DEFAULT_ACK_MARK_X_PERCENT / 100 * PAGE_W, width: s.ACK_MARK_WIDTH_PT },
+      { name: 'ตรา ผอ.', left: s.DEFAULT_DECISION_X_PERCENT / 100 * PAGE_W, width: s.DECISION_BOX_WIDTH_PT + BORDER_AND_PADDING },
+      { name: 'ความเห็นธุรการ', left: s.DEFAULT_REGISTRAR_X_PERCENT / 100 * PAGE_W, width: s.REGISTRAR_BOX_WIDTH_PT },
+    ];
+    for (let i = 0; i < slots.length; i++) {
+      const a = slots[i];
+      assert.ok(a.left >= 0, `${a.name} ล้นออกนอกขอบซ้าย`);
+      assert.ok(a.left + a.width <= PAGE_W, `${a.name} ล้นออกนอกขอบขวา (ถึง ${Math.round(a.left + a.width)}pt จากหน้ากว้าง ${PAGE_W}pt)`);
+      if (i > 0) {
+        const prev = slots[i - 1];
+        assert.ok(prev.left + prev.width <= a.left,
+          `${prev.name} ทับ ${a.name} (${prev.name} จบที่ ${Math.round(prev.left + prev.width)}pt แต่ ${a.name} เริ่มที่ ${Math.round(a.left)}pt)`);
+      }
+    }
+    // ความเห็นธุรการต้องอยู่ "มุมขวา" จริงๆ ตามที่โรงเรียนขอ ไม่ใช่ลอยอยู่กลางหน้า
+    const reg = slots[2];
+    assert.ok(reg.left + reg.width >= PAGE_W * 0.86, 'ความเห็นธุรการต้องชิดขอบขวาของหน้า');
+  });
+
+  test('ขอบบนของทั้งสามช่องเป็นค่าเดียวกัน (บรรทัดบนสุดของความเห็นธุรการตรงกับกรอบตราปั๊ม ผอ.)', async () => {
+    const { DECISION_MAX_TOP_PERCENT } = await import('../src/services/pdfStamp.js');
+    const documentsSrc = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
+    // ตำแหน่งเริ่มต้นของตรา "ทราบ" ต้องผูกกับค่าเดียวกัน ไม่ใช่ตัวเลขที่พิมพ์ทิ้งไว้แยกกัน
+    assert.match(documentsSrc, /const MARK_BASE_Y = DECISION_MAX_TOP_PERCENT;/,
+      'MARK_BASE_Y ต้องอ้างอิง DECISION_MAX_TOP_PERCENT ไม่ใช่ตัวเลขคงที่แยกของตัวเอง');
+    assert.equal(typeof DECISION_MAX_TOP_PERCENT, 'number');
+  });
+
+  test('กล่องตัวอย่างบนเว็บต้องได้ตำแหน่งจริง ไม่ใช่ top:undefined%', () => {
+    // var ถูก hoist ขึ้นบนสุดของสโคปก็จริง แต่ "ค่า" ยังเป็น undefined จนกว่าจะรันบรรทัดที่กำหนดค่า
+    // ถ้า var DECISION_MAX_TOP อยู่ทีหลังบรรทัดที่เอาไปต่อสตริง จะได้ style="top:undefined%" ซึ่ง
+    // เบราว์เซอร์ทิ้งทั้งบรรทัด กล่องจะไปกองท้ายพื้นที่ตัวอย่างแทนตำแหน่งที่จะประทับจริง แล้วผู้ใช้จะ
+    // เห็นตัวอย่างไม่ตรงกับไฟล์ที่ออกมา โดยไม่มีอะไรฟ้องเลย (บั๊กนี้เคยหลุดมาแล้วกับกล่องความเห็น ผอ.)
+    const src = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
+    const declaredAt = src.indexOf('var DECISION_MAX_TOP =');
+    assert.ok(declaredAt > 0, 'ไม่พบการประกาศ var DECISION_MAX_TOP');
+    for (const name of ['MARK_HTML', 'DECISION_HTML', 'REGISTRAR_HTML']) {
+      const usedAt = src.indexOf(`var ${name} =`);
+      assert.ok(usedAt > 0, `ไม่พบ ${name}`);
+      assert.ok(declaredAt < usedAt,
+        `ต้องประกาศ var DECISION_MAX_TOP ก่อน ${name} ไม่งั้น ${name} จะได้ top:undefined%`);
+    }
+  });
+
+  test('ทุกกล่องส่งฟังก์ชัน build ให้ตัวเลื่อนขึ้นอัตโนมัติ ไม่ใช่ HTML ตายตัว', () => {
+    // overlayHtmlOnFirstPage เรียก buildHtml(shiftUpPt) เพื่อ render ใหม่เมื่อกล่องล้นไปหน้า 2 —
+    // ถ้ากล่องไหนส่ง string ตายตัวมาแทน ตัวเลื่อนจะไม่ทำงาน แล้วลายเซ็นจะหายจากเอกสารจริงแบบเงียบๆ
+    const src = fs.readFileSync(new URL('../src/services/pdfStamp.js', import.meta.url), 'utf8');
+    const calls = src.match(/overlayHtmlOnFirstPage\([^)]*\)/g) || [];
+    assert.ok(calls.length >= 4, `คาดว่ามีกล่องอย่างน้อย 4 แบบ แต่พบ ${calls.length}`);
+    for (const call of calls) {
+      if (call.includes('originalBuffer, buildHtml')) continue; // นิยามฟังก์ชันเอง
+      assert.ok(call.includes('originalBuffer, build'), `เรียก overlayHtmlOnFirstPage โดยไม่ส่งฟังก์ชัน build: ${call}`);
+    }
+    // และทุก build ต้องใช้ shiftUpPt จริง ไม่ใช่รับพารามิเตอร์มาแล้วทิ้ง
+    const builds = src.match(/const build = \(shiftUpPt\) =>[\s\S]*?<\/html>`/g) || [];
+    assert.equal(builds.length, 4, `คาดว่ามี build 4 ตัว แต่พบ ${builds.length}`);
+    for (const b of builds) {
+      assert.ok(b.includes('topPt - shiftUpPt'), 'build ตัวหนึ่งรับ shiftUpPt มาแล้วไม่ได้ใช้เลื่อนกล่องขึ้น');
+    }
+  });
+});
+
 // โฮสต์ฟรีทุกเจ้าใช้ดิสก์ชั่วคราว ฐานข้อมูลจึงหายทุกครั้งที่ deploy — ระบบสำรองขึ้น Google Drive
 // คือสิ่งเดียวที่กันทะเบียนหนังสือทั้งเล่มหาย ถ้าสำเนาที่สร้างขึ้นมาใช้กู้คืนไม่ได้จริง จะไม่มีใครรู้
 // จนถึงวันที่ต้องใช้มันจริงๆ

@@ -18,6 +18,21 @@ const CHROME_BIN = process.env.CHROME_BIN || 'chromium';
 // route/ตัวอย่างบนเว็บใช้ค่าเดียวกัน จะได้ไม่ลากไปวางในตำแหน่งที่ประทับจริงแล้วข้อมูลหาย
 export const DECISION_MAX_TOP_PERCENT = 72;
 
+// แถบล่างของเอกสารเรียงกัน 3 ช่องตามที่โรงเรียนขอ ขอบบนตรงกันทั้งสามช่อง (= DECISION_MAX_TOP_PERCENT):
+//
+//   [ ทราบ ]   [ กรอบตราปั๊ม ผอ. ]   [ ความเห็นธุรการ ]
+//     ซ้าย            กลาง               ขวาล่างสุด
+//
+// "ความเห็นธุรการอยู่มุมขวาล่าง บรรทัดบนสุดตรงกับกรอบตราปั๊ม ผอ. และเซ็นทราบอยู่ข้างตราปั๊ม ผอ."
+// กล่อง ผอ. จึงขยับจากมุมขวา (เดิม 58%) มาอยู่กลางแถบ เพื่อเปิดมุมขวาล่างให้ความเห็นธุรการ
+// ทั้งสามช่องยังลากย้ายตำแหน่งเองได้ก่อนกดปุ่มตามปกติ ค่าพวกนี้เป็นแค่ตำแหน่งตั้งต้น
+export const DECISION_BOX_WIDTH_PT = 190;
+export const REGISTRAR_BOX_WIDTH_PT = 190;
+export const ACK_MARK_WIDTH_PT = 112;
+export const DEFAULT_ACK_MARK_X_PERCENT = 2;
+export const DEFAULT_DECISION_X_PERCENT = 22;
+export const DEFAULT_REGISTRAR_X_PERCENT = 58;
+
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -133,12 +148,12 @@ export async function stampPdf({ originalBuffer, schoolName, docNumberDisplay, d
 // ใช้กับทุกคนในสาย workflow ที่ "เห็น" เอกสารนี้แล้ว (อนุมัติ/ส่งต่อ/รับทราบ/ไม่อนุมัติ) — มีกี่คนก็ประทับ
 // ได้กี่ครั้ง เพราะแต่ละครั้งซ้อนทับไฟล์ล่าสุดที่มีเครื่องหมายของคนก่อนหน้าอยู่แล้ว (ดู overlayHtmlOnFirstPage)
 export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, prefix, firstName, lastName, dateThaiLong, xPercent, yPercent, actingForLabel }) {
-  const leftPt = Math.max(0, Math.min(90, xPercent ?? 8)) / 100 * PAGE_WIDTH_PT;
-  const topPt = Math.max(0, Math.min(94, yPercent ?? 55)) / 100 * PAGE_HEIGHT_PT;
+  const leftPt = Math.max(0, Math.min(90, xPercent ?? DEFAULT_ACK_MARK_X_PERCENT)) / 100 * PAGE_WIDTH_PT;
+  const topPt = Math.max(0, Math.min(94, yPercent ?? DECISION_MAX_TOP_PERCENT)) / 100 * PAGE_HEIGHT_PT;
   const build = (shiftUpPt) => `<!doctype html><html><head><meta charset="utf-8"><style>
     @page { size: ${PAGE_WIDTH_PT}pt ${PAGE_HEIGHT_PT}pt; margin: 0; }
     body { margin: 0; font-family: "Noto Sans Thai", sans-serif; -webkit-print-color-adjust: exact; }
-    .mark { position: absolute; left: ${leftPt}pt; top: ${Math.max(0, topPt - shiftUpPt)}pt; width: 130pt; color: #2222aa; text-align: center; }
+    .mark { position: absolute; left: ${leftPt}pt; top: ${Math.max(0, topPt - shiftUpPt)}pt; width: ${ACK_MARK_WIDTH_PT}pt; color: #2222aa; text-align: center; }
     .mark .word { font-size: 20pt; font-weight: 700; margin-bottom: 2pt; }
     .mark img { max-height: 30pt; max-width: 110pt; }
     .mark .name { font-size: 7pt; margin-top: 1pt; }
@@ -149,6 +164,45 @@ export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, p
       ${signatureDataUrl ? `<img src="${esc(signatureDataUrl)}" />` : ''}
       <div class="name">(${esc(prefix || '')}${esc(firstName)} ${esc(lastName)})</div>
       ${actingForLabel ? `<div class="acting">รักษาการแทน${esc(actingForLabel)}</div>` : ''}
+      <div class="name">${esc(dateThaiLong)}</div>
+    </div>
+  </body></html>`;
+  return overlayHtmlOnFirstPage(originalBuffer, build);
+}
+
+/**
+ * ความเห็นของธุรการที่เสนอขึ้นไปให้ผู้อำนวยการ — วางมุมขวาล่างของเอกสาร ขอบบนตรงกับกรอบตราปั๊ม ผอ.
+ *
+ * รูปแบบตามที่โรงเรียนใช้จริง เรียงจากบนลงล่าง:
+ *   บรรทัดแรก  "เรียนผู้อำนวยการโรงเรียน"
+ *   บรรทัดถัดมา ความเห็นที่ธุรการพิมพ์เอง (ขึ้นบรรทัดใหม่ได้ ยาวแล้วตัดคำเอง)
+ *   บรรทัดท้าย  ลายเซ็น แล้วต่อด้วยชื่อในวงเล็บ และ "ตำแหน่ง........"
+ *
+ * ไม่มีกรอบ ต่างจากกล่อง ผอ. เพราะของจริงธุรการเขียนด้วยลายมือลงบนที่ว่างของเอกสาร ไม่ใช่ตรายาง
+ * (แนวเดียวกับ stampAcknowledgeMark) — ส่วนหัว "เรียน..." ชิดซ้าย ให้อ่านเป็นข้อความ ส่วนบล็อกลงนาม
+ * จัดกึ่งกลางตามธรรมเนียมหนังสือราชการ
+ */
+export async function stampRegistrarComment({ originalBuffer, comment, signatureDataUrl, prefix, firstName, lastName, position, dateThaiLong, xPercent, yPercent }) {
+  const leftPt = Math.max(0, Math.min(90, xPercent ?? DEFAULT_REGISTRAR_X_PERCENT)) / 100 * PAGE_WIDTH_PT;
+  // ใช้เพดานเดียวกับกล่อง ผอ. — ทั้งกันส่วนท้ายตกหน้า 2 และทำให้ขอบบนตรงกันตามที่โรงเรียนขอ
+  const topPt = Math.max(0, Math.min(DECISION_MAX_TOP_PERCENT, yPercent ?? DECISION_MAX_TOP_PERCENT)) / 100 * PAGE_HEIGHT_PT;
+  const build = (shiftUpPt) => `<!doctype html><html><head><meta charset="utf-8"><style>
+    @page { size: ${PAGE_WIDTH_PT}pt ${PAGE_HEIGHT_PT}pt; margin: 0; }
+    body { margin: 0; font-family: "Noto Sans Thai", sans-serif; -webkit-print-color-adjust: exact; }
+    .reg { position: absolute; left: ${leftPt}pt; top: ${Math.max(0, topPt - shiftUpPt)}pt; width: ${REGISTRAR_BOX_WIDTH_PT}pt; color: #2222aa; font-size: 8pt; line-height: 1.55; }
+    .reg .lead { font-weight: 700; }
+    .reg .body { margin-top: 1pt; white-space: pre-wrap; word-break: break-word; }
+    .reg .sig { text-align: center; margin-top: 4pt; }
+    .reg .sig img { max-height: 32pt; max-width: 110pt; }
+    .reg .name { text-align: center; }
+    .reg .fill { display: inline-block; min-width: 70pt; border-bottom: 0.6pt dotted #2222aa; text-align: center; padding: 0 2pt; }
+  </style></head><body>
+    <div class="reg">
+      <div class="lead">เรียนผู้อำนวยการโรงเรียน</div>
+      <div class="body">${esc(comment || '')}</div>
+      ${signatureDataUrl ? `<div class="sig"><img src="${esc(signatureDataUrl)}" /></div>` : ''}
+      <div class="name">(${esc(prefix || '')}${esc(firstName)} ${esc(lastName)})</div>
+      <div class="name">ตำแหน่ง<span class="fill">${esc(position || '')}</span></div>
       <div class="name">${esc(dateThaiLong)}</div>
     </div>
   </body></html>`;
@@ -181,7 +235,7 @@ export async function stampDirectorDecision({ originalBuffer, schoolName, decisi
   // qpdf --overlay --to=1 ซ้อนให้แค่หน้า 1 → ลายเซ็น/ชื่อ/ตำแหน่ง/วันที่ หายไปจากเอกสารจริงแบบเงียบๆ
   // (วัดจริงแล้ว: 72% ยังพอดี 1 หน้า, 74% ขึ้นไปกลายเป็น 2 หน้าทันที) ที่ 72% ขอบล่างกล่องก็ชิดท้าย
   // กระดาษพอดีอยู่แล้ว จึงยังได้ตำแหน่ง "ขวาล่าง" ตามตราจริงโดยไม่เสี่ยงข้อมูลหาย
-  const leftPt = Math.max(0, Math.min(80, xPercent ?? 58)) / 100 * PAGE_WIDTH_PT;
+  const leftPt = Math.max(0, Math.min(80, xPercent ?? DEFAULT_DECISION_X_PERCENT)) / 100 * PAGE_WIDTH_PT;
   const topPt = Math.max(0, Math.min(DECISION_MAX_TOP_PERCENT, yPercent ?? DECISION_MAX_TOP_PERCENT)) / 100 * PAGE_HEIGHT_PT;
 
   let titleHtml, positionHtml;
@@ -199,10 +253,10 @@ export async function stampDirectorDecision({ originalBuffer, schoolName, decisi
   // (ตรวจสอบย้อนหลังได้ว่าใครเซ็นแทนใคร) โดยไม่ไปแก้ถ้อยคำทางการของตรายางที่ใช้จริง
   if (actingForLabel) positionHtml += `<div class="name" style="font-size:6.5pt;font-style:italic">(รักษาการแทน${esc(actingForLabel)})</div>`;
 
-  const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+  const build = (shiftUpPt) => `<!doctype html><html><head><meta charset="utf-8"><style>
     @page { size: ${PAGE_WIDTH_PT}pt ${PAGE_HEIGHT_PT}pt; margin: 0; }
     body { margin: 0; font-family: "Noto Sans Thai", sans-serif; -webkit-print-color-adjust: exact; }
-    .box { position: absolute; left: ${leftPt}pt; top: ${topPt}pt; width: 190pt; border: 2px solid #2222aa; color: #2222aa; padding: 7pt; font-size: 8pt; line-height: 1.55; border-radius: 4pt; }
+    .box { position: absolute; left: ${leftPt}pt; top: ${Math.max(0, topPt - shiftUpPt)}pt; width: ${DECISION_BOX_WIDTH_PT}pt; border: 2px solid #2222aa; color: #2222aa; padding: 7pt; font-size: 8pt; line-height: 1.55; border-radius: 4pt; }
     .box .title { font-weight: 700; text-align: center; margin-bottom: 4pt; }
     .box .opt { margin: 1.5pt 0; }
     .box .cb { display: inline-block; width: 7pt; height: 7pt; border: 0.8pt solid #2222aa; position: relative; vertical-align: -1pt; margin-right: 3.5pt; }

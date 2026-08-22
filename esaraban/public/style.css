@@ -528,6 +528,32 @@ tbody tr:last-child td { border-bottom: none; }
   display: inline-block; min-width: 70px; border-bottom: 1px dotted #2222aa;
   text-align: center; padding: 0 2px;
 }
+/* ความเห็นธุรการเสนอ ผอ. — มุมขวาล่าง ขอบบนตรงกับกรอบตราปั๊ม ผอ. ไม่มีกรอบเหมือน .doc-decision-box
+   เพราะของจริงธุรการเขียนด้วยลายมือลงบนที่ว่างของเอกสาร ไม่ใช่ตรายาง (ดู stampRegistrarComment) */
+.doc-registrar-note {
+  position: absolute;
+  width: 220px;
+  background: rgba(255, 255, 255, .82);
+  color: #2222aa;
+  padding: .35rem .45rem;
+  font-size: .8rem;
+  line-height: 1.55;
+  border-radius: 4px;
+  z-index: 4;
+  font-family: "Noto Sans Thai", sans-serif;
+  user-select: none;
+  touch-action: none;
+  cursor: move;
+}
+.doc-registrar-note .reg-lead { font-weight: 700; }
+.doc-registrar-note .reg-body { white-space: pre-wrap; word-break: break-word; }
+.doc-registrar-note .sig { text-align: center; margin-top: .3rem; }
+.doc-registrar-note .sig img { max-height: 34px; max-width: 100px; }
+.doc-registrar-note .reg-name { text-align: center; }
+.doc-registrar-note .fill {
+  display: inline-block; min-width: 80px; border-bottom: 1px dotted #2222aa;
+  text-align: center; padding: 0 2px;
+}
 .doc-decision-box .sig { text-align: center; margin-top: .3rem; }
 .doc-decision-box .sig img { max-height: 40px; max-width: 130px; }
 .chip-row { display: flex; gap: .4rem; flex-wrap: wrap; }
