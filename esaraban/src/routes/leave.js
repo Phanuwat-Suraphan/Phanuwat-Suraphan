@@ -1,11 +1,22 @@
-import { router, html, json } from '../router.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { Readable } from 'node:stream';
+import { router, html, json, contentDispositionHeader } from '../router.js';
 import { layout, esc, fmtDate, fmtThaiDateShort, fmtThaiDateLong } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
-import { db } from '../db.js';
+import { db, uuid, audit, beYear } from '../db.js';
 import {
   LEAVE_TYPE_LABEL, decisionVerb, createLeaveRequest, getLeaveRequest, listMyLeaveRequests, listPendingApprovals,
   approveLeaveRequest, rejectLeaveRequest, cancelLeaveRequest, canSeeLeaveRequest,
+  listLeaveSignatures, listLeaveAttachments, getLeaveAttachment, insertLeaveAttachment,
+  assertAllowedLeaveFile, MAX_LEAVE_FILE_BYTES, httpError,
 } from '../services/leave.js';
+import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream } from '../services/googleDrive.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
 
 const STATUS_BADGE = { pending: 'badge-warning', approved: 'badge-success', rejected: 'badge-danger', cancelled: 'badge-muted' };
 // ป้ายสถานะใช้คำ "อนุมัติ" หรือ "อนุญาต" ตามประเภทการลา (ไปราชการ = อนุมัติ, ลาส่วนตัว = อนุญาต)
@@ -142,6 +153,62 @@ router.get('/leave/:id', requirePage((ctx) => {
   const canDecide = req.status === 'pending' && req.requester_id !== ctx.user.id
     && (req.approver_id === ctx.user.id || ctx.user.roleCodes.includes('admin'));
   const canCancel = req.status === 'pending' && req.requester_id === ctx.user.id;
+  const canAttach = req.status === 'pending' && (req.requester_id === ctx.user.id || ctx.user.roleCodes.includes('admin'));
+  const attachments = listLeaveAttachments(req.id);
+  const signatures = listLeaveSignatures(req.id);
+
+  const STEP_LABEL = {
+    requested: 'ผู้ขอลงนามรับรองข้อความในใบลา',
+    approved: `ผู้${decisionVerb(req.leave_type)}ลงนาม${decisionVerb(req.leave_type)}`,
+    rejected: `ผู้${decisionVerb(req.leave_type)}ลงนามไม่${decisionVerb(req.leave_type)}`,
+    cancelled: 'ผู้ขอยกเลิกคำขอ',
+  };
+  // ลายเซ็นที่แสดงเป็น "สำเนา ณ ขณะลงนาม" ที่ตรึงไว้ในตาราง leave_signatures ไม่ใช่ค่าปัจจุบันของโปรไฟล์
+  // ถ้าดึงจากโปรไฟล์ วันไหนเจ้าตัวเปลี่ยน/ลบลายเซ็น หลักฐานบนใบลาที่ลงนามไปแล้วจะเปลี่ยน/หายย้อนหลังตามไปด้วย
+  const signatureHtml = signatures.length ? `
+    <div class="card">
+      <h3 class="mt-0">🖋️ ลายเซ็นรับรอง (${signatures.length} ขั้นตอน)</h3>
+      <p class="text-muted" style="margin-top:-.4rem;font-size:.85rem">
+        เก็บเป็นภาพ ณ ขณะที่ลงนามจริง ไม่เปลี่ยนตามโปรไฟล์ที่แก้ไขภายหลัง — ใช้อ้างอิงเป็นหลักฐานได้
+      </p>
+      <div class="stack">
+        ${signatures.map((sg) => `
+          <div style="border:1px solid var(--border);border-radius:8px;padding:.7rem">
+            <div style="font-weight:600;font-size:.9rem">${esc(STEP_LABEL[sg.step] || sg.step)}</div>
+            <div class="text-muted" style="font-size:.8rem">${fmtDate(sg.signed_at)}</div>
+            ${sg.note ? `<div style="margin-top:.3rem">${esc(sg.note)}</div>` : ''}
+            <div style="text-align:center;margin-top:.5rem;color:var(--primary)">
+              ${sg.signature_image
+                ? `<img src="${esc(sg.signature_image)}" alt="ลายเซ็น ${esc(sg.signer_name)}" style="max-height:56px;max-width:180px" />`
+                : '<div class="text-muted" style="font-size:.8rem">(ไม่ได้บันทึกลายเซ็นไว้ในโปรไฟล์ขณะลงนาม)</div>'}
+              <div style="border-top:1px solid var(--primary);padding-top:.25rem;margin-top:.2rem;font-size:.82rem">
+                <div>(${esc(sg.signer_name)})</div>
+                ${sg.signer_position ? `<div>${esc(sg.signer_position)}</div>` : ''}
+              </div>
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>` : '';
+
+  const evidenceHtml = `
+    <div class="card">
+      <div class="card-header"><h3 class="mt-0">📎 หลักฐานแนบ (${attachments.length})</h3></div>
+      ${req.leave_type === 'sick' && !attachments.length && canAttach
+        ? '<div class="alert alert-warning">ลาป่วย — ควรแนบใบนัดแพทย์/ใบรับรองแพทย์เป็นหลักฐานประกอบ</div>' : ''}
+      ${attachments.length ? `<div class="stack">${attachments.map((a) => `
+        <div class="flex items-center justify-between gap-2 flex-wrap" style="padding:.4rem 0;border-bottom:1px solid var(--border)">
+          <span>${a.mime_type === 'application/pdf' ? '📄' : '🖼️'} ${esc(a.filename)}
+            <span class="text-muted" style="font-size:.78rem">(${Math.round(a.filesize / 1024)} KB · ${fmtDate(a.created_at)})</span></span>
+          <a class="btn btn-sm btn-outline" href="/leave-files/${a.id}" target="_blank" rel="noopener">เปิดดู</a>
+        </div>`).join('')}</div>` : '<p class="text-muted">ยังไม่มีหลักฐานแนบ</p>'}
+      ${canAttach ? `
+      <form id="leaveAttachForm" style="margin-top:.8rem">
+        <input type="file" id="leaveAttachInput" accept="application/pdf,image/jpeg,image/png" />
+        <div class="help-text">แนบใบนัดแพทย์/ใบรับรองแพทย์ หรือหลักฐานประกอบอื่นๆ — รองรับ PDF, JPG, PNG ขนาดไม่เกิน 10MB (ถ่ายจากมือถือได้เลย)</div>
+        <button class="btn btn-outline btn-sm" style="margin-top:.5rem" type="submit">แนบหลักฐาน</button>
+      </form>
+      <div class="help-text">แนบได้เฉพาะตอนที่ยังไม่ตัดสิน — หลังจากนั้นชุดหลักฐานจะถูกตรึงไว้ตรงกับที่ผู้${esc(decisionVerb(req.leave_type))}เห็นตอนลงนาม</div>` : ''}
+    </div>`;
 
   const content = `
     <h2>${esc(LEAVE_TYPE_LABEL[req.leave_type])}</h2>
@@ -167,7 +234,14 @@ router.get('/leave/:id', requirePage((ctx) => {
       </div>` : ''}
       ${canCancel ? `<button class="btn btn-outline btn-sm" style="margin-top:1rem" onclick="cancelRequest()">ยกเลิกคำขอ</button>` : ''}
     </div>
+    ${evidenceHtml}
+    ${signatureHtml}
     <script>
+      var attachForm = document.getElementById('leaveAttachForm');
+      if (attachForm) attachForm.addEventListener('submit', function (e) {
+        e.preventDefault();
+        window.submitWithFile(this, 'leaveAttachInput', '/leave/${req.id}/attachments', {});
+      });
       function decide(action) {
         var note = prompt(action === 'reject' ? 'ระบุเหตุผลที่ไม่${esc(decisionVerb(req.leave_type))}' : 'หมายเหตุ (ถ้ามี)');
         if (note === null) return;
@@ -211,4 +285,67 @@ router.post('/leave/:id/reject', requireApi(async (ctx) => {
 router.post('/leave/:id/cancel', requireApi(async (ctx) => {
   cancelLeaveRequest({ id: ctx.params.id, actorUser: ctx.user });
   json(ctx, 200, { ok: true });
+}));
+
+// ---------------- ไฟล์หลักฐานแนบใบลา ----------------
+// สิทธิ์เข้าถึงผูกกับใบลาเสมอ (canSeeLeaveRequest) — ใบลาป่วยมีข้อมูลสุขภาพซึ่งเป็นเรื่องส่วนตัว
+// คนที่ไม่เกี่ยวข้องต้องเปิดไม่ได้ทั้งตัวใบลาและไฟล์แนบ ไม่ใช่แค่ซ่อนลิงก์ไว้ในหน้าเว็บ
+router.post('/leave/:id/attachments', requireApi(async (ctx) => {
+  const req = getLeaveRequest(ctx.params.id);
+  if (!req || !canSeeLeaveRequest(req, ctx.user)) throw httpError(404, 'ไม่พบใบลานี้');
+  // แนบได้เฉพาะเจ้าของใบลา (หรือแอดมิน) และเฉพาะตอนที่ยังไม่ตัดสิน — หลังอนุมัติแล้วห้ามเพิ่มหลักฐาน
+  // ย้อนหลัง ไม่งั้นชุดหลักฐานที่ผู้อนุมัติเห็นตอนลงนามกับที่เก็บไว้จะไม่ตรงกัน
+  if (req.requester_id !== ctx.user.id && !ctx.user.roleCodes.includes('admin')) {
+    throw httpError(403, 'แนบหลักฐานได้เฉพาะเจ้าของใบลาเท่านั้น');
+  }
+  if (req.status !== 'pending') throw httpError(409, 'ใบลานี้ตัดสินไปแล้ว แนบหลักฐานเพิ่มไม่ได้');
+
+  const { fileName, fileType, fileDataBase64 } = ctx.body;
+  if (!fileDataBase64) throw httpError(400, 'ไม่พบไฟล์');
+  const buffer = Buffer.from(fileDataBase64, 'base64');
+  const ext = assertAllowedLeaveFile({ mimeType: fileType, buffer });
+
+  const id = uuid();
+  const hash = crypto.createHash('sha256').update(buffer).digest('hex');
+  const safeName = `${id}.${ext}`;
+  if (isGoogleDriveEnabled()) {
+    const folderId = await ensureCategoryFolder({ yearBe: beYear(new Date()), typeName: 'ใบลา-หลักฐานแนบ' });
+    const driveFileId = await uploadFile({ buffer, filename: `${id}__${fileName || safeName}`, mimeType: fileType, folderId });
+    insertLeaveAttachment({ id, leaveRequestId: req.id, filename: fileName || safeName, storageProvider: 'google_drive',
+      driveFileId, filesize: buffer.length, mimeType: fileType, hash, uploadedBy: ctx.user.id });
+  } else {
+    fs.writeFileSync(path.join(UPLOAD_DIR, safeName), buffer);
+    insertLeaveAttachment({ id, leaveRequestId: req.id, filename: fileName || safeName, storageProvider: 'local',
+      filepath: safeName, filesize: buffer.length, mimeType: fileType, hash, uploadedBy: ctx.user.id });
+  }
+  audit({ userId: ctx.user.id, action: 'leave_attachment_uploaded', tableName: 'leave_attachments', recordId: id, detail: { leaveRequestId: req.id, filename: fileName } });
+  json(ctx, 201, { id });
+}));
+
+router.get('/leave-files/:attId', requirePage(async (ctx) => {
+  const att = getLeaveAttachment(ctx.params.attId);
+  if (!att) throw httpError(404, 'ไม่พบไฟล์');
+  const req = getLeaveRequest(att.leave_request_id);
+  if (!req || !canSeeLeaveRequest(req, ctx.user)) throw httpError(404, 'ไม่พบไฟล์');
+
+  let buffer;
+  if (att.storage_provider === 'google_drive') {
+    const stream = await downloadFileStream(att.drive_file_id);
+    if (!stream) throw httpError(404, 'เปิดไฟล์บน Google Drive ไม่ได้');
+    const chunks = [];
+    for await (const chunk of Readable.fromWeb(stream)) chunks.push(chunk);
+    buffer = Buffer.concat(chunks);
+  } else {
+    const full = path.join(UPLOAD_DIR, att.filepath);
+    if (!fs.existsSync(full)) throw httpError(404, 'ไม่พบไฟล์บนเซิร์ฟเวอร์');
+    buffer = fs.readFileSync(full);
+  }
+  audit({ userId: ctx.user.id, action: 'leave_attachment_viewed', tableName: 'leave_attachments', recordId: att.id });
+  ctx.res.writeHead(200, {
+    'Content-Type': att.mime_type,
+    'Content-Length': buffer.length,
+    'Content-Disposition': contentDispositionHeader(att.filename, 'leave-evidence'),
+    'X-Content-Type-Options': 'nosniff',
+  });
+  ctx.res.end(buffer);
 }));

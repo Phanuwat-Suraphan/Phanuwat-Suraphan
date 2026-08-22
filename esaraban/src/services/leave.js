@@ -62,6 +62,10 @@ export function createLeaveRequest({ requesterId, leaveType, startDate, endDate,
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
   `).run(id, requesterId, leaveType, startDate, endDate, daysCount, reason.trim(), destination?.trim() || null, contactInfo?.trim() || null, approverId, delegateId || null, now, now);
 
+  // ผู้ขอลงนามรับรองข้อความในใบลาของตัวเองตั้งแต่ตอนยื่น — เป็นขั้นตอนแรกของหลักฐาน
+  // (ใบลากระดาษก็ให้เจ้าตัวเซ็นชื่อท้ายใบก่อนเสนอเหมือนกัน)
+  recordLeaveSignature({ leaveRequestId: id, userId: requesterId, step: 'requested' });
+
   const requester = db.prepare('SELECT * FROM users WHERE id = ?').get(requesterId);
   notifyUser({
     userId: approverId,
@@ -72,6 +76,34 @@ export function createLeaveRequest({ requesterId, leaveType, startDate, endDate,
   });
   audit({ userId: requesterId, action: 'leave_request_created', tableName: 'leave_requests', recordId: id, detail: { leaveType, startDate, endDate, daysCount } });
   return { id, daysCount };
+}
+
+/**
+ * บันทึกลายเซ็นรับรองของขั้นตอนหนึ่งบนใบลา — เก็บ "สำเนา ณ ขณะลงนาม" ไม่ใช่ชี้ไปที่โปรไฟล์ผู้ใช้
+ *
+ * ใบลาเป็นหลักฐานทางราชการที่ต้องเก็บไว้ตรวจสอบย้อนหลังได้ ถ้าดึงลายเซ็นจาก users ตอนแสดงผล
+ * วันไหนเจ้าตัวเปลี่ยนหรือลบลายเซ็นในโปรไฟล์ ลายเซ็นบนใบลาที่ลงนามไปแล้วทั้งหมดจะเปลี่ยน/หายย้อนหลัง
+ * ตามไปด้วย (ยืนยันแล้วว่าเกิดขึ้นจริงกับขั้นตอนของหนังสือ) — ชื่อกับตำแหน่งก็เก็บสำเนาด้วยเหตุผลเดียวกัน
+ * เพราะคนย้ายฝ่าย/เปลี่ยนตำแหน่งได้
+ */
+export function recordLeaveSignature({ leaveRequestId, userId, step, note }) {
+  const u = db.prepare('SELECT prefix, first_name, last_name, position, signature_image FROM users WHERE id = ?').get(userId);
+  if (!u) return;
+  db.prepare(`
+    INSERT INTO leave_signatures (id, leave_request_id, user_id, step, signer_name, signer_position, signature_image, note, signed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(uuid(), leaveRequestId, userId, step,
+    `${u.prefix || ''}${u.first_name} ${u.last_name}`, u.position || null, u.signature_image || null, note || null, nowIso());
+}
+
+/** ลายเซ็นรับรองทั้งหมดบนใบลา เรียงตามเวลาที่ลงนาม — ใช้แสดงเป็นหลักฐานว่าผ่านมือใครมาบ้าง */
+export function listLeaveSignatures(leaveRequestId) {
+  return db.prepare('SELECT * FROM leave_signatures WHERE leave_request_id = ? ORDER BY signed_at').all(leaveRequestId);
+}
+
+/** ไฟล์หลักฐานที่แนบมากับใบลา (ใบนัดแพทย์ ฯลฯ) */
+export function listLeaveAttachments(leaveRequestId) {
+  return db.prepare('SELECT * FROM leave_attachments WHERE leave_request_id = ? ORDER BY created_at').all(leaveRequestId);
 }
 
 export function getLeaveRequest(id) {
@@ -132,6 +164,7 @@ export function approveLeaveRequest({ id, note, actorUser }) {
   assertPendingAndOwnedByApprover(req, actorUser);
   db.prepare(`UPDATE leave_requests SET status = 'approved', decision_note = ?, decided_at = ?, updated_at = ? WHERE id = ?`)
     .run(note?.trim() || null, nowIso(), nowIso(), id);
+  recordLeaveSignature({ leaveRequestId: id, userId: actorUser.id, step: 'approved', note });
   notifyUser({ userId: req.requester_id, linkUrl: `/leave/${id}`, title: `คำขอ${LEAVE_TYPE_LABEL[req.leave_type]}ได้รับการ${decisionVerb(req.leave_type)}`, message: `${fmtThaiDateShort(req.start_date)} ถึง ${fmtThaiDateShort(req.end_date)}`, priority: 'success' });
   audit({ userId: actorUser.id, action: 'leave_request_approved', tableName: 'leave_requests', recordId: id });
 
@@ -151,6 +184,7 @@ export function rejectLeaveRequest({ id, note, actorUser }) {
   if (!note?.trim()) throw httpError(400, `กรุณาระบุเหตุผลที่ไม่${decisionVerb(req.leave_type)}`);
   db.prepare(`UPDATE leave_requests SET status = 'rejected', decision_note = ?, decided_at = ?, updated_at = ? WHERE id = ?`)
     .run(note.trim(), nowIso(), nowIso(), id);
+  recordLeaveSignature({ leaveRequestId: id, userId: actorUser.id, step: 'rejected', note });
   notifyUser({ userId: req.requester_id, linkUrl: `/leave/${id}`, title: `คำขอ${LEAVE_TYPE_LABEL[req.leave_type]}ไม่ได้รับการ${decisionVerb(req.leave_type)}`, message: note.trim(), priority: 'warning' });
   audit({ userId: actorUser.id, action: 'leave_request_rejected', tableName: 'leave_requests', recordId: id, detail: { note } });
 }
@@ -161,5 +195,39 @@ export function cancelLeaveRequest({ id, actorUser }) {
   if (req.requester_id !== actorUser.id) throw httpError(403, 'ยกเลิกได้เฉพาะคำขอของตัวเองเท่านั้น');
   if (req.status !== 'pending') throw httpError(409, 'ยกเลิกได้เฉพาะคำขอที่ยังรออนุมัติเท่านั้น');
   db.prepare(`UPDATE leave_requests SET status = 'cancelled', updated_at = ? WHERE id = ?`).run(nowIso(), id);
+  recordLeaveSignature({ leaveRequestId: id, userId: actorUser.id, step: 'cancelled' });
   audit({ userId: actorUser.id, action: 'leave_request_cancelled', tableName: 'leave_requests', recordId: id });
+}
+
+// ---------------- ไฟล์หลักฐานแนบใบลา ----------------
+//
+// ลาป่วยแนบใบนัดแพทย์ ลาประเภทอื่นแนบหลักฐานประกอบได้ตามที่โรงเรียนขอ — เก็บแบบเดียวกับไฟล์แนบหนังสือ
+// ทุกอย่าง รวมถึงขึ้น Google Drive เมื่อเปิดใช้ เพื่อให้ไม่หายตอนโฮสต์ล้างดิสก์ (โฮสต์ฟรีล้างทุกครั้งที่ deploy)
+export const MAX_LEAVE_FILE_BYTES = 10 * 1024 * 1024;
+
+// รับได้ทั้ง PDF และรูปถ่าย เพราะใบนัดแพทย์ส่วนใหญ่ครูถ่ายจากมือถือส่งมา ไม่ได้สแกนเป็น PDF
+const ALLOWED = {
+  'application/pdf': { ext: 'pdf', magic: (b) => b.subarray(0, 5).toString('latin1') === '%PDF-' },
+  'image/jpeg': { ext: 'jpg', magic: (b) => b[0] === 0xff && b[1] === 0xd8 },
+  'image/png': { ext: 'png', magic: (b) => b.subarray(1, 4).toString('latin1') === 'PNG' },
+};
+
+export function assertAllowedLeaveFile({ mimeType, buffer }) {
+  const spec = ALLOWED[mimeType];
+  if (!spec) throw httpError(400, 'รองรับเฉพาะไฟล์ PDF, JPG และ PNG เท่านั้น');
+  if (buffer.length > MAX_LEAVE_FILE_BYTES) throw httpError(413, `ไฟล์ใหญ่เกิน ${MAX_LEAVE_FILE_BYTES / 1024 / 1024}MB`);
+  // ตรวจ magic number ไม่ใช่เชื่อ mime type ที่ฝั่งเว็บบอกมา — เปลี่ยนได้ง่ายและไม่ใช่หลักฐานว่าไฟล์เป็นอะไรจริง
+  if (!spec.magic(buffer)) throw httpError(400, 'เนื้อไฟล์ไม่ตรงกับชนิดที่แจ้ง (ตรวจ file signature ไม่ผ่าน)');
+  return spec.ext;
+}
+
+export function insertLeaveAttachment({ id, leaveRequestId, filename, storageProvider, filepath, driveFileId, filesize, mimeType, hash, uploadedBy }) {
+  db.prepare(`
+    INSERT INTO leave_attachments (id, leave_request_id, filename, storage_provider, filepath, drive_file_id, filesize, mime_type, hash_sha256, uploaded_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, leaveRequestId, filename, storageProvider, filepath || null, driveFileId || null, filesize, mimeType, hash || null, uploadedBy, nowIso());
+}
+
+export function getLeaveAttachment(id) {
+  return db.prepare('SELECT * FROM leave_attachments WHERE id = ?').get(id);
 }

@@ -976,6 +976,79 @@ describe('ลา/ไปราชการ: สิทธิ์ต้องบั�
   });
 });
 
+// ใบลาและลายเซ็นรับรองเป็นหลักฐานทางราชการที่ต้องตรวจสอบย้อนหลังได้ ถ้าลายเซ็นที่แสดงถูกดึงจากโปรไฟล์
+// ผู้ใช้แบบสดๆ วันไหนเจ้าตัวเปลี่ยนหรือลบลายเซ็น หลักฐานบนใบลา/หนังสือที่ลงนามไปแล้วทั้งหมดจะเปลี่ยน
+// หรือหายย้อนหลังตามไปด้วยโดยไม่มีอะไรฟ้อง — ยืนยันแล้วว่าเดิมเกิดขึ้นจริง
+describe('หลักฐานการลงนาม: ต้องตรึงไว้ ณ ขณะลงนาม ห้ามเปลี่ยนตามโปรไฟล์', () => {
+  test('ขั้นตอนของหนังสือเก็บสำเนาลายเซ็น/ชื่อ/ตำแหน่งไว้เอง ไม่ join จาก users ตอนแสดงผล', () => {
+    const cols = db.prepare('PRAGMA table_info(workflow_steps)').all().map((c) => c.name);
+    for (const c of ['signature_image', 'signer_name', 'signer_position']) {
+      assert.ok(cols.includes(c), `workflow_steps ต้องมีคอลัมน์ ${c} ไว้เก็บสำเนา ณ ขณะลงนาม`);
+    }
+    const wf = fs.readFileSync(new URL('../src/services/workflow.js', import.meta.url), 'utf8');
+    // ไทม์ไลน์ต้องไม่ดึง signature_image จาก users อีก
+    const q = wf.slice(wf.indexOf('export function getWorkflowSteps'), wf.indexOf('export function currentStep'));
+    assert.ok(!/u\.signature_image/.test(q), 'getWorkflowSteps ต้องไม่ดึงลายเซ็นจาก users มาแสดงสดๆ');
+    // และทุกจุดที่ตัดสินใจต้องตรึงสำเนาไว้
+    assert.equal((wf.match(/snapshotSignature\(stepId, actorUser\.id\);/g) || []).length, 4,
+      'ต้องตรึงลายเซ็นทั้ง 4 จุดที่ตัดสินใจ (อนุมัติ/รับทราบ/ไม่อนุมัติ/ส่งกลับแก้ไข)');
+  });
+
+  test('ลายเซ็นบนหนังสือไม่หายเมื่อเจ้าตัวลบลายเซ็นในโปรไฟล์', () => {
+    const doc = makeDoc({ title: 'ทดสอบตรึงลายเซ็นบนหนังสือ' });
+    const stepId = assignStep({ documentId: doc.id, assigneeId: seed.userIds.head_acad, actorUser: registrarUser });
+    db.prepare('UPDATE users SET signature_image = ? WHERE id = ?').run('data:image/png;base64,AAAA', seed.userIds.head_acad);
+    acknowledgeAndComplete({ stepId, actorUser: loadUserForTest(seed.userIds.head_acad) });
+
+    const before = db.prepare('SELECT signature_image, signer_name FROM workflow_steps WHERE id = ?').get(stepId);
+    assert.equal(before.signature_image, 'data:image/png;base64,AAAA', 'ต้องตรึงภาพลายเซ็นไว้ตอนลงนาม');
+    assert.match(before.signer_name, /หัวหน้าฝ่าย/);
+
+    db.prepare('UPDATE users SET signature_image = NULL WHERE id = ?').run(seed.userIds.head_acad);
+    const after = db.prepare('SELECT signature_image FROM workflow_steps WHERE id = ?').get(stepId);
+    assert.equal(after.signature_image, 'data:image/png;base64,AAAA',
+      'เจ้าตัวลบลายเซ็นในโปรไฟล์แล้ว หลักฐานบนหนังสือที่ลงนามไปแล้วต้องไม่หาย');
+  });
+
+  test('ใบลาเก็บลายเซ็นรับรองทุกขั้นตอน และไม่หายเมื่อลบลายเซ็นในโปรไฟล์', async () => {
+    const leave = await import('../src/services/leave.js');
+    const requester = loadUserForTest(seed.userIds.teacher001);
+    const approver = loadUserForTest(seed.userIds.director01);
+    db.prepare('UPDATE users SET signature_image = ? WHERE id IN (?, ?)')
+      .run('data:image/png;base64,BBBB', requester.id, approver.id);
+
+    const { id } = leave.createLeaveRequest({
+      requesterId: requester.id, leaveType: 'sick', startDate: '2026-10-01', endDate: '2026-10-01',
+      reason: 'ทดสอบหลักฐานใบลา', approverId: approver.id,
+    });
+    let sigs = leave.listLeaveSignatures(id);
+    assert.equal(sigs.length, 1, 'ตอนยื่นต้องมีลายเซ็นผู้ขอทันที');
+    assert.equal(sigs[0].step, 'requested');
+
+    leave.approveLeaveRequest({ id, note: 'อนุญาต', actorUser: approver });
+    sigs = leave.listLeaveSignatures(id);
+    assert.deepEqual(sigs.map((s) => s.step), ['requested', 'approved'], 'ต้องเก็บลายเซ็นครบทุกขั้นตอน');
+    assert.ok(sigs.every((s) => s.signature_image === 'data:image/png;base64,BBBB'));
+    assert.ok(sigs.every((s) => s.signer_name && s.signer_position), 'ต้องเก็บสำเนาชื่อและตำแหน่งด้วย');
+    assert.equal(sigs[1].note, 'อนุญาต');
+
+    db.prepare('UPDATE users SET signature_image = NULL WHERE id IN (?, ?)').run(requester.id, approver.id);
+    assert.ok(leave.listLeaveSignatures(id).every((s) => s.signature_image === 'data:image/png;base64,BBBB'),
+      'ลบลายเซ็นในโปรไฟล์แล้ว หลักฐานบนใบลาต้องไม่หาย');
+  });
+
+  test('ไฟล์หลักฐานแนบใบลา: รับเฉพาะชนิดที่อนุญาตและเนื้อไฟล์ต้องตรงกับชนิดที่แจ้ง', async () => {
+    const { assertAllowedLeaveFile } = await import('../src/services/leave.js');
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUg', 'base64');
+    const pdf = Buffer.from('%PDF-1.4\ntrailer<<>>\n%%EOF\n', 'latin1');
+    assert.equal(assertAllowedLeaveFile({ mimeType: 'application/pdf', buffer: pdf }), 'pdf');
+    assert.equal(assertAllowedLeaveFile({ mimeType: 'image/png', buffer: png }), 'png');
+    // บอกว่าเป็น PDF แต่เนื้อไฟล์เป็น PNG — ต้องไม่ผ่าน (เชื่อ mime type ที่ฝั่งเว็บส่งมาไม่ได้)
+    assert.throws(() => assertAllowedLeaveFile({ mimeType: 'application/pdf', buffer: png }), /file signature/);
+    assert.throws(() => assertAllowedLeaveFile({ mimeType: 'application/x-msdownload', buffer: png }), /รองรับเฉพาะ/);
+  });
+});
+
 // หน้ารายการทะเบียนหนังสือกรองสิทธิ์ตั้งแต่ใน SQL เพื่อให้นับจำนวนและแบ่งหน้าได้ถูก แต่การตรวจสิทธิ์
 // รายฉบับยังใช้ canUserSeeDocument เหมือนเดิม — สองตัวนี้ต้องให้ผลตรงกันเป๊ะเสมอ ถ้าเงื่อนไข SQL หลวมกว่า
 // คือเปิดเผยหนังสือลับให้คนที่ไม่มีสิทธิ์เห็น ถ้าแคบกว่าคือซ่อนหนังสือที่ควรเห็นจนหาไม่เจอ ทั้งสองแบบ

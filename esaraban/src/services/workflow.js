@@ -133,9 +133,27 @@ export function canUserSeeDocument(user, doc) {
   return true;
 }
 
+/**
+ * SQL สำหรับตรึงสำเนาลายเซ็น/ชื่อ/ตำแหน่งของผู้ลงนามไว้ในตัวขั้นตอน ณ ขณะที่ตัดสินใจ
+ *
+ * ห้ามไปดึงจาก users ตอนแสดงผล เพราะถ้าเจ้าตัวเปลี่ยนหรือลบลายเซ็นในโปรไฟล์วันหลัง ลายเซ็นบนหนังสือ
+ * ที่ลงนามไปแล้วทุกฉบับจะเปลี่ยน/หายย้อนหลังตามไปด้วย แล้วใช้เป็นหลักฐานไม่ได้เลย
+ */
+const SIGNATURE_SNAPSHOT_SQL = `
+  signature_image = (SELECT u.signature_image FROM users u WHERE u.id = :signer),
+  signer_name = (SELECT COALESCE(u.prefix,'') || u.first_name || ' ' || u.last_name FROM users u WHERE u.id = :signer),
+  signer_position = (SELECT u.position FROM users u WHERE u.id = :signer)
+`;
+
+function snapshotSignature(stepId, signerId) {
+  db.prepare(`UPDATE workflow_steps SET ${SIGNATURE_SNAPSHOT_SQL} WHERE id = :step`).run({ step: stepId, signer: signerId });
+}
+
 export function getWorkflowSteps(documentId) {
   return db.prepare(`
-    SELECT ws.*, u.first_name, u.last_name, u.prefix, u.position, u.signature_image
+    -- ws.signature_image / ws.signer_name / ws.signer_position คือสำเนา ณ ขณะลงนาม (ใช้แสดงเป็นหลักฐาน)
+    -- ส่วนคอลัมน์จาก users เป็นค่าปัจจุบัน ใช้แสดงว่า "ตอนนี้คนนี้คือใคร" เท่านั้น
+    SELECT ws.*, u.first_name, u.last_name, u.prefix, u.position
     FROM workflow_steps ws JOIN users u ON u.id = ws.assignee_id
     WHERE ws.document_id = ? ORDER BY ws.step_order ASC
   `).all(documentId);
@@ -218,6 +236,7 @@ export function approveAndForward({ stepId, nextAssigneeId, comment, actorUser }
 
   db.prepare(`UPDATE workflow_steps SET status = 'approved', instruction = COALESCE(instruction,'') || ?, decided_at = ? WHERE id = ?`)
     .run(comment ? `\n[เกษียณ] ${comment}` : '', nowIso(), stepId);
+  snapshotSignature(stepId, actorUser.id);
 
   const nextOrder = step.step_order + 1;
   const nextId = uuid();
@@ -243,6 +262,7 @@ export function acknowledgeAndComplete({ stepId, comment, actorUser }) {
 
   db.prepare(`UPDATE workflow_steps SET status = 'acknowledged', instruction = COALESCE(instruction,'') || ?, decided_at = ? WHERE id = ?`)
     .run(comment ? `\n[รับทราบ] ${comment}` : '', nowIso(), stepId);
+  snapshotSignature(stepId, actorUser.id);
   db.prepare(`UPDATE documents SET status = 'completed', updated_at = ? WHERE id = ?`).run(nowIso(), step.document_id);
 
   notifyUser({
@@ -263,6 +283,7 @@ export function rejectStep({ stepId, reason, actorUser }) {
 
   db.prepare(`UPDATE workflow_steps SET status = 'rejected', instruction = COALESCE(instruction,'') || ?, decided_at = ? WHERE id = ?`)
     .run(`\n[ไม่อนุมัติ] ${reason}`, nowIso(), stepId);
+  snapshotSignature(stepId, actorUser.id);
   db.prepare(`UPDATE documents SET status = 'rejected', updated_at = ? WHERE id = ?`).run(nowIso(), step.document_id);
 
   notifyUser({
@@ -280,6 +301,7 @@ export function returnStep({ stepId, reason, actorUser }) {
 
   db.prepare(`UPDATE workflow_steps SET status = 'returned', instruction = COALESCE(instruction,'') || ?, decided_at = ? WHERE id = ?`)
     .run(`\n[ส่งกลับแก้ไข] ${reason}`, nowIso(), stepId);
+  snapshotSignature(stepId, actorUser.id);
   db.prepare(`UPDATE documents SET status = 'returned', updated_at = ? WHERE id = ?`).run(nowIso(), step.document_id);
 
   notifyUser({

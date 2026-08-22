@@ -246,6 +246,41 @@ export function migrate() {
 
   -- บอร์ดประกาศ/ประชาสัมพันธ์ — โมดูลแยกต่างหากจากงานสารบรรณ (ไม่มี running number/workflow)
   -- ใช้แจ้งข่าวสารทั่วไปให้บุคลากรทั้งโรงเรียน แนบไฟล์ได้ 1 ไฟล์ต่อประกาศ
+  -- ไฟล์หลักฐานแนบใบลา (ใบนัดแพทย์สำหรับลาป่วย, หลักฐานประกอบสำหรับลาประเภทอื่น)
+  -- เก็บแบบเดียวกับไฟล์แนบหนังสือทุกอย่าง รวมถึงขึ้น Google Drive เมื่อเปิดใช้ เพื่อให้ไม่หายตอนโฮสต์ล้างดิสก์
+  CREATE TABLE IF NOT EXISTS leave_attachments (
+    id TEXT PRIMARY KEY,
+    leave_request_id TEXT NOT NULL REFERENCES leave_requests(id),
+    filename TEXT NOT NULL,
+    storage_provider TEXT NOT NULL DEFAULT 'local', -- local | google_drive
+    filepath TEXT,
+    drive_file_id TEXT,
+    filesize INTEGER NOT NULL,
+    mime_type TEXT NOT NULL,
+    hash_sha256 TEXT,
+    uploaded_by TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_leave_attachments_req ON leave_attachments(leave_request_id);
+
+  -- ลายเซ็นรับรองของทุกขั้นตอนบนใบลา — เก็บ "ภาพลายเซ็น ณ ขณะที่ลงนาม" ไม่ใช่ชี้ไปที่โปรไฟล์ผู้ใช้
+  --
+  -- สำคัญมาก: ถ้าชี้ไปที่ users.signature_image วันไหนเจ้าตัวเปลี่ยนหรือลบลายเซ็นในโปรไฟล์
+  -- ลายเซ็นบนใบลาที่ลงนามไปแล้วทั้งหมดจะเปลี่ยน/หายตามไปด้วยย้อนหลัง ซึ่งทำให้ใช้เป็นหลักฐานไม่ได้เลย
+  -- ชื่อและตำแหน่งก็เก็บสำเนาไว้ด้วยเหตุผลเดียวกัน (คนย้ายฝ่าย/เปลี่ยนตำแหน่งได้)
+  CREATE TABLE IF NOT EXISTS leave_signatures (
+    id TEXT PRIMARY KEY,
+    leave_request_id TEXT NOT NULL REFERENCES leave_requests(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    step TEXT NOT NULL,          -- requested | approved | rejected | cancelled
+    signer_name TEXT NOT NULL,   -- สำเนาชื่อ ณ ขณะลงนาม
+    signer_position TEXT,        -- สำเนาตำแหน่ง ณ ขณะลงนาม
+    signature_image TEXT,        -- สำเนาภาพลายเซ็น ณ ขณะลงนาม (NULL ถ้าตอนนั้นยังไม่ได้บันทึกลายเซ็นไว้)
+    note TEXT,
+    signed_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_leave_signatures_req ON leave_signatures(leave_request_id);
+
   CREATE TABLE IF NOT EXISTS announcements (
     id TEXT PRIMARY KEY,
     category TEXT NOT NULL DEFAULT 'ประกาศ', -- ประกาศ | ประชาสัมพันธ์
@@ -409,6 +444,25 @@ export function migrate() {
     db.exec('ALTER TABLE attachments ADD COLUMN stamped_drive_file_id TEXT');
     db.exec('ALTER TABLE attachments ADD COLUMN stamped_at TEXT');
   }
+  // ขั้นตอน workflow ของหนังสือมีปัญหาเดียวกับใบลา — เดิมไทม์ไลน์ join เอาลายเซ็นจาก users มาแสดงสดๆ
+  // พอเจ้าตัวเปลี่ยน/ลบลายเซ็นในโปรไฟล์ ลายเซ็นบนหนังสือที่ลงนามไปแล้วทุกฉบับก็เปลี่ยน/หายย้อนหลังตามไปด้วย
+  // (ยืนยันแล้วว่าเกิดขึ้นจริง) จึงเก็บสำเนา ณ ขณะลงนามไว้ในตัวขั้นตอนเอง
+  const stepCols = db.prepare("PRAGMA table_info(workflow_steps)").all().map((c) => c.name);
+  if (!stepCols.includes('signature_image')) {
+    db.exec('ALTER TABLE workflow_steps ADD COLUMN signature_image TEXT');
+    db.exec('ALTER TABLE workflow_steps ADD COLUMN signer_name TEXT');
+    db.exec('ALTER TABLE workflow_steps ADD COLUMN signer_position TEXT');
+    // เติมย้อนหลังให้ขั้นตอนที่ลงนามไปแล้วก่อนมีคอลัมน์นี้ — ใช้ค่าปัจจุบันของเจ้าตัวเป็นตัวตั้งต้น
+    // ดีกว่าปล่อยว่างเปล่า และหลังจากนี้จะถูกตรึงไว้ไม่เปลี่ยนตามโปรไฟล์อีก
+    db.exec(`
+      UPDATE workflow_steps SET
+        signature_image = (SELECT u.signature_image FROM users u WHERE u.id = workflow_steps.assignee_id),
+        signer_name = (SELECT COALESCE(u.prefix,'') || u.first_name || ' ' || u.last_name FROM users u WHERE u.id = workflow_steps.assignee_id),
+        signer_position = (SELECT u.position FROM users u WHERE u.id = workflow_steps.assignee_id)
+      WHERE decided_at IS NOT NULL
+    `);
+  }
+
   const delegationCols = db.prepare("PRAGMA table_info(user_delegations)").all().map((c) => c.name);
   if (!delegationCols.includes('leave_request_id')) {
     db.exec('ALTER TABLE user_delegations ADD COLUMN leave_request_id TEXT');
