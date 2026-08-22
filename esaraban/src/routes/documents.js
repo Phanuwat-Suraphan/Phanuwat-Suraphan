@@ -7,7 +7,7 @@ import {
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
   voidDocument, archiveDocument, forceDeleteDocument, httpError, assertStepBelongsToDocument,
 } from '../services/workflow.js';
-import { extractTextFromPdf, guessFieldsFromText, renderPdfFirstPageImage } from '../services/ocr.js';
+import { renderPdfFirstPageImage } from '../services/pdfPreview.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream, deleteFile } from '../services/googleDrive.js';
 import {
   stampPdf, stampDirectorDecision, stampAcknowledgeMark, stampRegistrarComment,
@@ -25,10 +25,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
 const ALLOWED_MIME = new Set(['application/pdf']);
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
-// OCR อ่านแค่ 2 หน้าแรกของ PDF เสมอ (ดู extractTextFromPdf) และไม่เก็บไฟล์ไว้เลย (ใช้ temp file
-// แล้วลบทิ้งทันที) จึงไม่มีเหตุผลผูกกับเพดาน MAX_FILE_BYTES ของไฟล์แนบถาวร — ที่ผ่านมาใช้ค่าเดียวกัน
-// ทำให้ไฟล์สแกนความละเอียดสูงทั่วไป (ซึ่งมักใหญ่กว่า 10MB แม้แค่ 1-2 หน้า) ใช้ปุ่มนี้ไม่ได้เกือบทุกครั้ง
-const MAX_OCR_BYTES = 20 * 1024 * 1024;
 // checkbox บนตราประทับความเห็นของ ผอ./ผู้รักษาการแทน — ถ้อยคำตรงกับตรายางจริงของโรงเรียน (ยืนยันจาก
 // ภาพถ่ายตราจริงและจากผู้ใช้โดยตรง) เลือกได้หลายอันพร้อมกัน ไม่ผูกกับปุ่ม workflow ที่กดส่ง (ปุ่มนั้นแค่
 // ปิด/ส่งต่อขั้นตอนเท่านั้น) ผู้ตัดสินใจติ๊กเองว่าอันไหนตรงกับความเห็นจริง
@@ -254,9 +250,6 @@ router.get('/documents/new', requirePage((ctx) => {
           <input type="file" id="fileInput" accept="application/pdf" onchange="attachFilePreview(this,'filePreview')" />
           <div id="filePreview" class="help-text"></div>
           <div class="help-text">รองรับเฉพาะไฟล์ PDF ขนาดไม่เกิน 10MB (ระบบจะตรวจ magic number และคำนวณ SHA-256 hash)</div>
-          <button type="button" class="btn btn-outline btn-sm" style="margin-top:.5rem" onclick="runOcrExtract(this)">🔍 อ่านข้อมูลจากไฟล์อัตโนมัติ (OCR)</button>
-          <div class="help-text">ใช้ Tesseract OCR อ่านตัวอักษรจากไฟล์ที่แนบไว้ด้านบน (เฉพาะ 2 หน้าแรก รองรับไฟล์สแกนขนาดใหญ่ถึง 20MB) แล้วลองกรอกฟิลด์ให้อัตโนมัติ — <strong>เป็นการเดาเบื้องต้นเท่านั้น กรุณาตรวจสอบความถูกต้องทุกครั้งก่อนบันทึก</strong></div>
-          <div id="ocrResult"></div>
         </div>
         <div class="form-grid cols-2">
           <div class="field">
@@ -357,7 +350,6 @@ router.get('/documents/new', requirePage((ctx) => {
           window.restoreBtn(btn);
         }
       });
-      window.runOcrExtract = function(btn){ ocrExtractInto(btn, 'fileInput', 'ocrResult', document.getElementById('docForm')); };
     </script>`;
   html(ctx, 200, layout({ user: ctx.user, title: 'สร้างเอกสารใหม่', path: '/documents/new', content }));
 }));
@@ -397,21 +389,6 @@ async function saveAttachment({ documentId, fileName, fileType, fileDataBase64, 
   audit({ userId: uploadedBy, action: 'attachment_uploaded', tableName: 'attachments', recordId: id, detail: { documentId, hash, storageProvider, duplicateOf: dup ? dup.doc_number_display : null } });
   return { id, duplicateWarning: dup ? `พบไฟล์นี้ซ้ำกับเอกสาร ${dup.doc_number_display} (Hash ตรงกัน)` : null };
 }
-
-// ---------------- OCR auto-fill (Tesseract, best-effort — ผู้ใช้ต้องตรวจสอบก่อนบันทึกเสมอ) ----------------
-router.post('/documents/ocr-extract', requireApi(async (ctx) => {
-  const { fileType, fileDataBase64 } = ctx.body;
-  if (!fileDataBase64) throw httpError(400, 'ไม่พบไฟล์ที่จะอ่าน');
-  if (fileType !== 'application/pdf') throw httpError(400, 'อนุญาตเฉพาะไฟล์ PDF เท่านั้น');
-  const buf = Buffer.from(fileDataBase64, 'base64');
-  if (buf.length > MAX_OCR_BYTES) throw httpError(413, `ไฟล์มีขนาดใหญ่เกิน ${MAX_OCR_BYTES / 1024 / 1024}MB (OCR อ่านแค่ 2 หน้าแรกเท่านั้น ถ้าเป็นไฟล์สแกนหลายหน้า ลองครอปเฉพาะหน้าแรกมาลองใหม่ได้)`);
-  if (buf.subarray(0, 5).toString('latin1') !== '%PDF-') throw httpError(400, 'ไฟล์ไม่ใช่ PDF ที่ถูกต้อง (ตรวจสอบ file signature ไม่ผ่าน)');
-
-  const text = await extractTextFromPdf(buf);
-  const fields = guessFieldsFromText(text);
-  audit({ userId: ctx.user.id, action: 'ocr_extract_attempted', tableName: 'documents', recordId: null, detail: { textLength: text.length } });
-  json(ctx, 200, fields);
-}));
 
 // ---------------- create ----------------
 router.post('/documents', requireApi(async (ctx) => {

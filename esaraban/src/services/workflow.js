@@ -190,9 +190,6 @@ export function assignStep({ documentId, assigneeId, instruction, actorUser }) {
     title: `หนังสือใหม่ต้องดำเนินการ: ${doc.doc_number_display}`,
     message: doc.title,
     priority: doc.priority === 'most_urgent' || doc.priority === 'very_urgent' ? 'urgent' : 'info',
-    // ยิงเข้ากลุ่ม LINE เฉพาะหนังสือด่วนมาก/ด่วนที่สุด — เรื่องปกติรอให้เปิดเว็บเห็นเองได้
-    // (โควตาข้อความฟรีของ LINE Official Account มีจำกัดต่อเดือน ดู services/line.js)
-    lineAlert: doc.priority === 'most_urgent' || doc.priority === 'very_urgent',
   });
 
   audit({ userId: actorUser.id, action: 'workflow_assigned', tableName: 'workflow_steps', recordId: id, detail: { assigneeId, instruction } });
@@ -270,7 +267,7 @@ export function rejectStep({ stepId, reason, actorUser }) {
 
   notifyUser({
     userId: doc.created_by, documentId: doc.id,
-    title: `ไม่อนุมัติ: ${doc.doc_number_display}`, message: reason, priority: 'warning', lineAlert: true,
+    title: `ไม่อนุมัติ: ${doc.doc_number_display}`, message: reason, priority: 'warning',
   });
   audit({ userId: actorUser.id, action: 'workflow_rejected', tableName: 'workflow_steps', recordId: stepId, detail: { reason } });
 }
@@ -287,7 +284,7 @@ export function returnStep({ stepId, reason, actorUser }) {
 
   notifyUser({
     userId: doc.created_by, documentId: doc.id,
-    title: `ส่งกลับแก้ไข: ${doc.doc_number_display}`, message: reason, priority: 'warning', lineAlert: true,
+    title: `ส่งกลับแก้ไข: ${doc.doc_number_display}`, message: reason, priority: 'warning',
   });
   audit({ userId: actorUser.id, action: 'workflow_returned', tableName: 'workflow_steps', recordId: stepId, detail: { reason } });
 }

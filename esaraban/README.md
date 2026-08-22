@@ -94,8 +94,8 @@ Run the test suite with `npm test` (uses a throwaway SQLite file via `DB_PATH`, 
 - Retention/destruction workflow (หมวด 3 of the same ระเบียบ): retention class + auto-computed
   expiry per document, a destruction-batch proposal/approval flow requiring a named committee
   and a director/admin sign-off distinct from whoever proposed it — never a direct delete
-- Optional OCR auto-fill on the new-document form (Tesseract, shells out via `child_process` —
-  no npm package — see `deploy/*.md` for the system packages it needs) and optional Google
+- Page-1 preview image of PDF attachments (pdftoppm, shells out via `child_process` — no npm
+  package — see `deploy/*.md` for the system packages it needs) and optional Google
   Drive attachment storage (`STORAGE_PROVIDER=google_drive`) for hosts without persistent disk
 - Admin user management: create + soft-delete (self-delete and last-admin-delete both blocked);
   every user (including admin) can edit their own name/email/position and change their password
@@ -134,8 +134,12 @@ Requires HTTPS (Render provides it automatically; so does any proper reverse-pro
 These were flagged throughout the spec review as later-phase items; the schema/routes don't
 block adding them, but they are **not implemented** here:
 
-- Thai full-text search, LLM-based AI features (summarization, chat, classification — the OCR
-  auto-fill above uses plain regex heuristics on OCR text, not an AI model)
+- Thai full-text search, LLM-based AI features (summarization, chat, classification)
+- OCR auto-fill of the new-document form: was built with Tesseract, then removed — scanned Thai
+  official letters are skewed/low-contrast with the Garuda emblem and signatures over the text,
+  so it guessed the document number and date wrong more often than right. Staff had to check
+  every field anyway, which was slower than just typing it, and a button whose output cannot be
+  trusted invites people to trust it
 - PDF annotation/stamp layer, cryptographic signature engine, PKI/digital certificates (Part 6)
 - Email/LINE notifications (only in-app notifications exist)
 - Multi-tenant `school_id` scoping, Docker/CI-CD/monitoring stack (Part 9, 10) — see Part 12-20

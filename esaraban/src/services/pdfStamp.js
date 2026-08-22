@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-// httpError คัดลอกไว้ในไฟล์นี้เอง (ไม่ import จาก workflow.js) — เหตุผลเดียวกับ googleDrive.js/ocr.js
+// httpError คัดลอกไว้ในไฟล์นี้เอง (ไม่ import จาก workflow.js) — เหตุผลเดียวกับ googleDrive.js/pdfPreview.js
 export function httpError(statusCode, message) {
   return Object.assign(new Error(message), { statusCode });
 }
@@ -60,7 +60,7 @@ function esc(s) {
 }
 
 // เรียกโปรแกรมระบบ (chromium/qpdf) — เป็น system package ผ่าน apt ไม่ใช่ npm dependency จึงยังอยู่ใน
-// กติกา zero-dependency ของโปรเจกต์นี้ (แนวทางเดียวกับ tesseract/poppler-utils ใน ocr.js) ต้องติดตั้ง
+// กติกา zero-dependency ของโปรเจกต์นี้ (แนวทางเดียวกับ poppler-utils ใน pdfPreview.js) ต้องติดตั้ง
 // บนเซิร์ฟเวอร์ก่อนใช้งาน (ดู DEPLOY.md)
 function run(cmd, args) {
   return new Promise((resolve, reject) => {

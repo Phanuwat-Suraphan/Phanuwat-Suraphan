@@ -2,7 +2,7 @@ import { db, uuid, nowIso, audit, todayInBangkok } from '../db.js';
 import { fmtThaiDateShort } from '../render.js';
 import { notifyUser } from './notify.js';
 
-// httpError คัดลอกไว้ในไฟล์นี้เอง (ไม่ import จาก workflow.js) — เหตุผลเดียวกับ googleDrive.js/ocr.js/pdfStamp.js
+// httpError คัดลอกไว้ในไฟล์นี้เอง (ไม่ import จาก workflow.js) — เหตุผลเดียวกับ googleDrive.js/pdfPreview.js/pdfStamp.js
 export function httpError(statusCode, message) {
   return Object.assign(new Error(message), { statusCode });
 }

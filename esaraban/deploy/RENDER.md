@@ -5,8 +5,8 @@ this is for demoing the app, not for storing real documents long-term.
 
 ## Steps (no code changes needed)
 
-**Use Docker runtime, not Node.** Two features — OCR auto-fill and burning the "received"
-stamp/signatures into the actual PDF — need system programs (`tesseract`, `poppler-utils`,
+**Use Docker runtime, not Node.** Two features — the page-1 preview image and burning the "received"
+stamp/signatures into the actual PDF — need system programs (`poppler-utils`,
 `chromium`, `qpdf`) installed on the server. Render's **Node** runtime can't `apt install`
 anything, so those buttons fail there with a "ไม่พบโปรแกรม..." error. **Docker** runtime *can*
 install them, via the `Dockerfile` at the **root of this repo** (not inside `esaraban/` — kept
@@ -43,7 +43,7 @@ auto-detect it, point the "Blueprint config file path" field at `esaraban/render
 ### Already deployed on the Node runtime and seeing "ไม่พบโปรแกรม chromium"?
 
 That error means your existing service is running on Render's plain Node runtime, which is
-exactly the situation described above — it can't have chromium/qpdf/tesseract installed on it no
+exactly the situation described above — it can't have chromium/qpdf/poppler installed on it no
 matter what the app code does. Render doesn't let you flip an existing service from Node to
 Docker in place, so the fix is to create a **new** service on the Docker runtime (steps 1-6
 above, same repo), copy over your environment variables (`SESSION_SECRET`, `GOOGLE_*` if you set
@@ -79,7 +79,7 @@ integration needed at all since the whole disk is already persistent).
 already-documented, working VPS instructions in `DEPLOY.md`), but **could not actually run
 `docker build` to verify it end-to-end** — the sandbox this was developed in doesn't have a
 working Docker daemon available. Please treat the first real deploy as the actual test, and
-report back if the build itself, the OCR button, or the PDF-stamping buttons don't work as
+report back if the build itself, the attachment preview, or the PDF-stamping buttons don't work as
 expected so it can be debugged with real output in hand.
 
 It lives at the **root of the repo**, not inside `esaraban/`, specifically so Render's defaults
@@ -87,7 +87,7 @@ It lives at the **root of the repo**, not inside `esaraban/`, specifically so Re
 path/context/root-directory anywhere — those extra fields are exactly what caused the "no such
 file or directory" build failures during earlier attempts at this.
 
-If you deliberately don't need OCR or PDF-stamping and want the simpler/faster Node runtime
+If you deliberately don't need attachment previews or PDF-stamping and want the simpler/faster Node runtime
 instead, that's still fine — just pick **Node** in step 4 above and leave Build Command blank,
 Start Command as `npm start`. Everything else in the app works the same either way; you'll just
 get a clear "ไม่พบโปรแกรม..." error (not a crash) if anyone clicks those two specific buttons.

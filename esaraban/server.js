@@ -42,7 +42,7 @@ async function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
-    const MAX = 30 * 1024 * 1024; // 30MB — must clear the largest base64 payload we accept (OCR: 20MB file * 4/3 ≈ 26.7MB, plus JSON overhead)
+    const MAX = 16 * 1024 * 1024; // 16MB — ต้องมากกว่าไฟล์แนบใหญ่สุดที่รับ (10MB) เมื่อเข้ารหัส base64 (x4/3 ≈ 13.4MB) บวกส่วนหัว JSON
     req.on('data', (chunk) => {
       size += chunk.length;
       if (size > MAX) {

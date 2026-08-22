@@ -61,7 +61,7 @@ layers — Security List and host firewall — must allow the traffic.)
 ## 3.5 Note on the Ampere (Arm) shape
 
 The A1 shape is arm64, not x86. Everything the app needs is packaged for arm64 on Ubuntu 24.04 —
-Node.js 22 from NodeSource, `tesseract-ocr`, `poppler-utils`, `chromium`, `qpdf` — so `DEPLOY.md`
+Node.js 22 from NodeSource, `poppler-utils`, `chromium`, `qpdf` — so `DEPLOY.md`
 works unchanged. Nothing else in the app is architecture-specific: it has no npm dependencies and
 therefore no native modules to compile.
 
