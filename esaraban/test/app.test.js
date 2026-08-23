@@ -1,7 +1,7 @@
 // Zero-dependency test suite (node:test, built into Node 22 — no npm packages needed).
 // Uses a throwaway SQLite file per run (DB_PATH) so it never touches data/esaraban.db.
 // Run with: node --test test/
-import { test, describe } from 'node:test';
+import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1212,6 +1212,92 @@ describe('สิทธิ์เห็นหนังสือ: เงื่อ�
     const ownerVis = visibleDocumentsSqlFilter(owner);
     assert.ok(db.prepare(`SELECT 1 as x FROM documents d WHERE d.id = :id AND ${ownerVis.sql}`)
       .get({ id: secretDoc.id, ...ownerVis.params }), 'ผู้บันทึกต้องยังเห็นหนังสือลับของตัวเอง');
+  });
+});
+
+// ตัวกรองละเอียดของทะเบียนหนังสือ — เรียกเส้นทางจริงผ่าน router.dispatch แล้วอ่าน HTML ที่ได้ เพราะ
+// ตรรกะการกรองอยู่ในตัวเส้นทางเอง ถ้าเทสต์ระดับฟังก์ชันอย่างเดียวจะไม่ได้ตรวจสิ่งที่ผู้ใช้เห็นจริงเลย
+describe('ทะเบียนหนังสือ: ตัวกรองละเอียด', () => {
+  let router;
+  before(async () => {
+    ({ router } = await import('../src/router.js'));
+    await import('../src/routes/index.js');
+  });
+
+  // จำลอง ctx เหมือนที่ server.js ประกอบให้ แล้วเก็บ HTML ที่เส้นทางเขียนออกมา
+  async function getDocumentsPage(user, query) {
+    let status = 0;
+    let body = '';
+    const res = {
+      headersSent: false,
+      setHeader() {},
+      writeHead(code) { status = code; this.headersSent = true; return this; },
+      end(chunk) { body = chunk ? String(chunk) : ''; },
+    };
+    const ctx = { req: { method: 'GET', headers: {} }, res, url: new URL('http://x/documents'), query, user, body: {}, ip: '127.0.0.1' };
+    await router.dispatch('GET', '/documents', ctx);
+    return { status, body };
+  }
+  const rowIds = (body) => [...body.matchAll(/location\.href='\/documents\/([^']+)'/g)].map((m) => m[1]);
+
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+
+  test('กรองตามความเร็วและฝ่าย แล้วเหลือเฉพาะฉบับที่ตรงจริง', async () => {
+    const hit = makeDoc({ title: 'หนังสือด่วนที่สุดของฝ่ายวิชาการ', priority: 'most_urgent', departmentId: deptId });
+    const miss = makeDoc({ title: 'หนังสือปกติของฝ่ายวิชาการ', priority: 'normal', departmentId: deptId });
+
+    const filtered = await getDocumentsPage(reg(), { direction: 'incoming', priority: 'most_urgent', dept: deptId });
+    assert.equal(filtered.status, 200);
+    const ids = rowIds(filtered.body);
+    assert.ok(ids.includes(hit.id), 'ฉบับที่ตรงเงื่อนไขต้องอยู่ในผลลัพธ์');
+    assert.ok(!ids.includes(miss.id), 'ฉบับที่ความเร็วไม่ตรงต้องไม่ติดมาด้วย');
+
+    // และเมื่อไม่กรอง ต้องเห็นทั้งคู่ ไม่ใช่ผ่านเพราะรายการว่างเปล่าอยู่แล้ว
+    const all = rowIds((await getDocumentsPage(reg(), { direction: 'incoming' })).body);
+    assert.ok(all.includes(hit.id) && all.includes(miss.id), 'ตอนไม่กรองต้องเห็นทั้งสองฉบับ');
+  });
+
+  test('ค่ากรองที่ไม่รู้จักต้องถูกมองข้าม ไม่ใช่ทำให้รายการว่างเปล่า', async () => {
+    const baseline = rowIds((await getDocumentsPage(reg(), { direction: 'incoming' })).body).length;
+    assert.ok(baseline > 0, 'ต้องมีหนังสืออยู่ก่อน ไม่งั้นเทสต์นี้ไม่ได้ตรวจอะไร');
+    for (const bogus of [
+      { priority: 'ด่วนมากที่สุดที่สุด' },
+      { secret: "' OR 1=1 --" },
+      { from: 'ไม่ใช่วันที่' },
+      { to: '2569-13-45' },
+    ]) {
+      const res = await getDocumentsPage(reg(), { direction: 'incoming', ...bogus });
+      assert.equal(res.status, 200, `ค่ากรองมั่ว ${JSON.stringify(bogus)} ต้องไม่ทำให้หน้าพัง`);
+      assert.equal(rowIds(res.body).length, baseline,
+        `ค่ากรองมั่ว ${JSON.stringify(bogus)} ต้องถูกมองข้าม แต่จำนวนรายการเปลี่ยนไป`);
+    }
+  });
+
+  test('ช่วงวันที่นับรวมหนังสือที่ลงทะเบียนตอนบ่ายของวันสุดท้ายด้วย', async () => {
+    const today = todayInBangkok();
+    const doc = makeDoc({ title: 'หนังสือที่ลงทะเบียนวันนี้' });
+    // created_at เป็น ISO เต็มที่มีเวลาต่อท้าย ถ้าเทียบสตริงตรงๆ กับ 'YYYY-MM-DD' จะตกหล่นทั้งวัน
+    const ids = rowIds((await getDocumentsPage(reg(), { direction: 'incoming', from: today, to: today })).body);
+    assert.ok(ids.includes(doc.id), 'ตั้งช่วง "วันนี้ถึงวันนี้" ต้องเห็นหนังสือที่เพิ่งลงทะเบียน');
+  });
+
+  test('เฉพาะที่เลยกำหนด ต้องไม่รวมเรื่องที่ปิดไปแล้ว', async () => {
+    const past = '2020-01-01';
+    const open = makeDoc({ title: 'เรื่องค้างที่เลยกำหนดแล้ว', dueDate: past });
+    const closed = makeDoc({ title: 'เรื่องที่เลยกำหนดแต่ปิดไปแล้ว', dueDate: past });
+    db.prepare("UPDATE documents SET status = 'completed' WHERE id = ?").run(closed.id);
+
+    const ids = rowIds((await getDocumentsPage(reg(), { direction: 'incoming', overdue: '1' })).body);
+    assert.ok(ids.includes(open.id), 'เรื่องที่ยังไม่ปิดและเลยกำหนดต้องติดมา');
+    assert.ok(!ids.includes(closed.id), 'เรื่องที่ปิดแล้วต้องไม่ถูกนับว่าเลยกำหนดอีก');
+  });
+
+  test('ลิงก์เปลี่ยนหน้าต้องหอบตัวกรองไปด้วย ไม่ใช่หลุดกลับไปดูทั้งหมด', () => {
+    // อ่านจากซอร์สแทนการสร้างหนังสือ 51 ฉบับ — สิ่งที่ต้องกันคือการลืมใส่ตัวกรองลงใน query string
+    const src = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
+    const fn = src.slice(src.indexOf('const pageLink = (n)'), src.indexOf('const pager ='));
+    assert.match(fn, /Object\.entries\(f\)/,
+      'pageLink ต้องวนใส่ตัวกรองทุกตัวลงใน query string ไม่ใช่ใส่ทีละตัวแล้วลืมตัวใหม่ที่เพิ่มทีหลัง');
   });
 });
 

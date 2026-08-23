@@ -1,7 +1,7 @@
 import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
 import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, stampDateThai, stampTimeThai, priorityBadge, secretBadge, statusBadge, emptyState, fmtCount, LABELS } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
-import { db, uuid, nowIso, audit, RETENTION_LABEL } from '../db.js';
+import { db, uuid, nowIso, audit, todayInBangkok, RETENTION_LABEL } from '../db.js';
 import {
   createDocument, getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
@@ -88,6 +88,36 @@ router.get('/documents', requirePage((ctx) => {
     where.push('(d.title LIKE :like OR d.doc_number_display LIKE :like OR d.subject LIKE :like OR d.correspondent_name LIKE :like)');
     params.like = `%${q}%`;
   }
+
+  // ตัวกรองละเอียด — ธุรการต้องหาแบบ "หนังสือจาก สพป. ช่วง ก.ค.-ส.ค. ที่ยังไม่ปิด" ได้ ซึ่งเดิมทำไม่ได้เลย
+  // ต้องค้นทีละคำแล้วไล่อ่านเอง ค่าที่รับมาทั้งหมดผูกเป็น named parameter ไม่ต่อสตริงเข้า SQL
+  // ค่าที่ไม่รู้จักให้ตกเป็นค่าว่าง (= ไม่กรอง) แทนที่จะยิงเข้า SQL ตรงๆ — พิมพ์ ?priority=xxx มั่วๆ
+  // แล้วต้องได้ "ทุกความเร็ว" ไม่ใช่ตารางว่างเปล่าที่ชวนให้เข้าใจผิดว่าไม่มีหนังสือ
+  const pick = (value, allowed) => (allowed.includes(value) ? value : '');
+  const f = {
+    dept: ctx.query.dept || '',
+    priority: pick(ctx.query.priority, Object.keys(LABELS.PRIORITY_LABEL)),
+    secret: pick(ctx.query.secret, Object.keys(LABELS.SECRET_LABEL)),
+    from: /^\d{4}-\d{2}-\d{2}$/.test(ctx.query.from || '') ? ctx.query.from : '',
+    to: /^\d{4}-\d{2}-\d{2}$/.test(ctx.query.to || '') ? ctx.query.to : '',
+    overdue: ctx.query.overdue === '1',
+  };
+  if (f.dept) { where.push('d.department_id = :dept'); params.dept = f.dept; }
+  if (f.priority) { where.push('d.priority = :priority'); params.priority = f.priority; }
+  if (f.secret) { where.push('d.secret_level = :secret'); params.secret = f.secret; }
+  // created_at เก็บเป็น ISO เต็ม (มีเวลาต่อท้าย) การเทียบกับวันที่ล้วนต้องตัดเอาเฉพาะ 10 ตัวแรก
+  // ไม่งั้น "ถึงวันที่ 31 ส.ค." จะไม่รวมเอกสารที่ลงทะเบียนตอนบ่ายของวันที่ 31 เอง
+  if (f.from) { where.push('substr(d.created_at, 1, 10) >= :from'); params.from = f.from; }
+  if (f.to) { where.push('substr(d.created_at, 1, 10) <= :to'); params.to = f.to; }
+  if (f.overdue) {
+    // "เลยกำหนด" ต้องนับจากวันนี้ตามเวลาไทย และนับเฉพาะเรื่องที่ยังไม่ปิด ให้ตรงกับตัวเลขบนแดชบอร์ด
+    where.push(`d.due_date IS NOT NULL AND d.due_date < :today
+      AND d.status NOT IN ('completed', 'archived', 'voided', 'destroyed', 'rejected')`);
+    params.today = todayInBangkok();
+  }
+
+  const activeFilters = Object.values(f).filter(Boolean).length;
+  const filtering = activeFilters > 0 || Boolean(q) || Boolean(statusFilter);
   const whereSql = where.join(' AND ');
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM documents d WHERE ${whereSql}`).get(params).c;
@@ -123,10 +153,12 @@ router.get('/documents', requirePage((ctx) => {
 
   // แถบเลื่อนหน้า — ทะเบียนหนังสือของโรงเรียนหนึ่งปีมีหลายร้อยถึงหลักพันฉบับ ถ้าไม่มีตรงนี้ ฉบับที่เก่ากว่า
   // หน้าแรกจะเปิดดูไม่ได้เลยนอกจากจะรู้คำค้นล่วงหน้า ซึ่งขัดกับการใช้งานทะเบียนที่ต้องไล่ดูย้อนหลังได้
+  // ต้องหอบตัวกรองทุกตัวไปกับลิงก์เปลี่ยนหน้าด้วย ไม่งั้นกดหน้า 2 แล้วตัวกรองหลุดหมด กลายเป็นดูคนละชุด
   const pageLink = (n) => {
     const qs = new URLSearchParams({ direction });
     if (q) qs.set('q', q);
     if (statusFilter) qs.set('status', statusFilter);
+    for (const [k, v] of Object.entries(f)) if (v) qs.set(k, v === true ? '1' : v);
     if (n > 1) qs.set('page', String(n));
     return `/documents?${qs.toString()}`;
   };
@@ -140,31 +172,79 @@ router.get('/documents', requirePage((ctx) => {
       ${page < totalPages ? `<a class="btn btn-outline btn-sm" href="${pageLink(page + 1)}">เก่ากว่า →</a>` : '<span></span>'}
     </div>` : '';
 
+  // ฟอร์มค้นหา: แถวบนคือของที่ใช้บ่อยที่สุด (คำค้น + สถานะ) เห็นตลอด ส่วนตัวกรองละเอียดพับไว้ใน <details>
+  // เพื่อไม่ให้หน้าจอมือถือรก แต่จะกางเองอัตโนมัติเมื่อมีตัวกรองทำงานอยู่ ไม่งั้นผู้ใช้จะงงว่าทำไมรายการหาย
+  const opt = (value, label, selected) => `<option value="${esc(value)}" ${value === selected ? 'selected' : ''}>${esc(label)}</option>`;
+  const filterForm = `
+    <form method="get" style="margin-bottom:1rem">
+      <input type="hidden" name="direction" value="${direction}" />
+      <div class="flex gap-2 flex-wrap items-center">
+        <input type="text" name="q" value="${esc(q)}" placeholder="ค้นหาเลขหนังสือ/ชื่อเรื่อง/หน่วยงาน" style="max-width:280px" />
+        <select name="status" style="max-width:180px">
+          <option value="">ทุกสถานะ</option>
+          ${Object.entries(LABELS.STATUS_LABEL).map(([k, v]) => opt(k, v, statusFilter)).join('')}
+        </select>
+        <button class="btn btn-outline" type="submit">ค้นหา</button>
+        ${activeFilters || q || statusFilter
+          ? `<a class="btn btn-outline btn-sm" href="/documents?direction=${direction}">✕ ล้างตัวกรอง</a>` : ''}
+      </div>
+      <details class="field-more" style="margin-top:.75rem" ${activeFilters ? 'open' : ''}>
+        <summary>ตัวกรองละเอียด${activeFilters ? ` <span class="badge badge-info">${activeFilters}</span>` : ''}</summary>
+        <div class="form-grid cols-3" style="margin-top:.75rem">
+          <div class="field">
+            <label>ฝ่ายที่รับผิดชอบ</label>
+            <select name="dept"><option value="">ทุกฝ่าย</option>${listDeptOptions(f.dept)}</select>
+          </div>
+          <div class="field">
+            <label>ความเร็ว</label>
+            <select name="priority"><option value="">ทุกระดับ</option>
+              ${Object.entries(LABELS.PRIORITY_LABEL).map(([k, v]) => opt(k, v, f.priority)).join('')}</select>
+          </div>
+          <div class="field">
+            <label>ชั้นความลับ</label>
+            <select name="secret"><option value="">ทุกชั้น</option>
+              ${Object.entries(LABELS.SECRET_LABEL).map(([k, v]) => opt(k, v, f.secret)).join('')}</select>
+          </div>
+          <div class="field">
+            <label>ลงทะเบียนตั้งแต่วันที่</label>
+            <input type="date" name="from" value="${esc(f.from)}" />
+          </div>
+          <div class="field">
+            <label>ถึงวันที่</label>
+            <input type="date" name="to" value="${esc(f.to)}" />
+          </div>
+          <div class="field">
+            <!-- label เปล่าไว้ดันช่องติ๊กให้อยู่ระดับเดียวกับช่องวันที่ข้างๆ บนจอกว้าง (จอแคบจะเรียงลงล่างอยู่แล้ว) -->
+            <label aria-hidden="true" class="label-spacer">&nbsp;</label>
+            <label class="check-inline">
+              <input type="checkbox" name="overdue" value="1" ${f.overdue ? 'checked' : ''} />
+              เฉพาะที่เลยกำหนดและยังไม่ปิด
+            </label>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" type="submit">กรองตามเงื่อนไข</button>
+      </details>
+    </form>`;
+
   const content = `
     <div class="card-header">
       <div>
         <h2 class="mt-0">${direction === 'incoming' ? '📥 หนังสือเข้า' : '📤 หนังสือออก'}</h2>
         <p class="text-muted" style="margin:-.3rem 0 0;font-size:.85rem">
-          ${total ? `ทั้งหมด ${fmtCount(total)} ฉบับ${totalPages > 1 ? ` · หน้า ${page} จาก ${totalPages}` : ''}${overdueCount ? ` · <strong style="color:var(--danger)">เลยกำหนดในหน้านี้ ${overdueCount}</strong>` : ''}`
+          ${total ? `${filtering ? 'ตรงตามเงื่อนไข' : 'ทั้งหมด'} ${fmtCount(total)} ฉบับ${totalPages > 1 ? ` · หน้า ${page} จาก ${totalPages}` : ''}${overdueCount ? ` · <strong style="color:var(--danger)">เลยกำหนดในหน้านี้ ${overdueCount}</strong>` : ''}`
             : 'ยังไม่มีรายการ'}
         </p>
       </div>
       <a class="btn btn-primary" href="/documents/new?direction=${direction}">+ ${direction === 'incoming' ? 'รับหนังสือใหม่' : 'สร้างหนังสือส่ง'}</a>
     </div>
     <div class="card">
-      <form method="get" class="flex gap-2 flex-wrap items-center" style="margin-bottom:1rem">
-        <input type="hidden" name="direction" value="${direction}" />
-        <input type="text" name="q" value="${esc(q)}" placeholder="ค้นหาเลขหนังสือ/ชื่อเรื่อง/หน่วยงาน" style="max-width:280px" />
-        <select name="status" style="max-width:180px">
-          <option value="">ทุกสถานะ</option>
-          ${Object.entries(LABELS.STATUS_LABEL).map(([k, v]) => `<option value="${k}" ${k === statusFilter ? 'selected' : ''}>${esc(v)}</option>`).join('')}
-        </select>
-        <button class="btn btn-outline" type="submit">กรอง</button>
-      </form>
+      ${filterForm}
       ${rows.length ? `<div class="table-wrap"><table>
         <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ฝ่าย</th><th>ความเร็ว</th><th>สถานะ</th><th>ครบกำหนด</th><th>วันที่ลงทะเบียน</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table></div>${pager}`
-      : emptyState('📭', `ไม่มี${direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก'}ในรายการนี้`)}
+      : emptyState('📭', filtering
+        ? 'ไม่พบหนังสือที่ตรงกับเงื่อนไขที่เลือก — ลองลดเงื่อนไขลงหรือกด "ล้างตัวกรอง"'
+        : `ไม่มี${direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก'}ในรายการนี้`)}
     </div>`;
 
   html(ctx, 200, layout({ user: ctx.user, title: direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก', path: '/documents', content }));

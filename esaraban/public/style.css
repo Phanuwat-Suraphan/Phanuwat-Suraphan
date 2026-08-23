@@ -313,6 +313,18 @@ textarea { resize: vertical; min-height: 80px; }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
 .form-grid { display: grid; grid-template-columns: 1fr; gap: 0 1rem; }
 @media (min-width: 640px) { .form-grid.cols-2 { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 640px) { .form-grid.cols-3 { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 900px) { .form-grid.cols-3 { grid-template-columns: 1fr 1fr 1fr; } }
+/* ช่องติ๊กที่มีข้อความอยู่ข้างๆ — label ปกติเป็น block ถ้าไม่คุมจะดันข้อความลงบรรทัดใหม่ */
+.check-inline {
+  display: flex; align-items: center; gap: .45rem; font-weight: 600;
+  color: var(--text); margin: 0 0 .9rem; cursor: pointer;
+}
+.check-inline input[type=checkbox] { width: auto; margin: 0; }
+/* จอแคบไม่ต้องเว้นที่ว่างเปล่า เพราะช่องต่างๆ เรียงลงล่างอยู่แล้ว */
+.label-spacer { display: none; }
+@media (min-width: 640px) { .label-spacer { display: block; } }
+@media (min-width: 640px) { .check-inline { min-height: 2.55rem; } }
 .help-text { font-size: .82rem; line-height: 1.65; color: var(--text-muted); margin-top: .25rem; }
 
 /* ---------- Progressive disclosure: "ตัวเลือกเพิ่มเติม" (keeps forms short for first-time users) ---------- */
