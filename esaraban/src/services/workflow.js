@@ -69,7 +69,39 @@ function normalizeDate(value, label) {
 // 0001/2569 อย่างเดียวเสมอไป — บางครั้งต้องต่อเลขจากทะเบียนกระดาษเดิม/มีเลขเฉพาะจากหน่วยงานอื่นกำกับ) —
 // running_number/year_be ยังนับเดินหน้าตามปกติเบื้องหลังเสมอ (ใช้คำนวณอายุการเก็บ/นับสถิติ) ไม่ผูกกับ
 // เลขที่กำหนดเอง เฉพาะ doc_number_display (เลขที่ที่แสดง/พิมพ์/ประทับตราจริง) เท่านั้นที่ถูกแทนที่
-export function createDocument({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, externalDocNumber, externalDocDate, dueDate, retentionClass, customDocNumber, createdBy }) {
+export function createDocument(input) {
+  const clean = normalizeDocumentInput(input);
+  let result;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    result = insertDocumentRow(clean);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  auditDocumentCreated(clean, result);
+  return result;
+}
+
+/**
+ * ตรวจและปรับค่าของหนังสือหนึ่งฉบับให้พร้อมบันทึก โดยยังไม่แตะฐานข้อมูล
+ *
+ * แยกออกมาจากการเขียนจริง เพื่อให้การลงรับหลายฉบับรวดเดียวตรวจ "ทุกฉบับ" ให้ผ่านก่อน แล้วค่อยเริ่มเขียน
+ * ไม่ใช่ออกเลขรับให้ 6 ฉบับแรกไปแล้วค่อยพบว่าฉบับที่ 7 กรอกวันที่ผิด — เลขรับที่ออกไปแล้วนำกลับมาใช้ซ้ำ
+ * ไม่ได้ตามหลักงานสารบรรณ ทะเบียนจะมีเลขขาดหายเป็นรูโหว่ที่อธิบายไม่ได้ตอนตรวจ
+ */
+function normalizeDocumentInput({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, externalDocNumber, externalDocDate, dueDate, retentionClass, customDocNumber, createdBy }) {
+  title = typeof title === 'string' ? title.trim() : title;
+  correspondentName = typeof correspondentName === 'string' ? correspondentName.trim() : correspondentName;
+  if (!title) throw httpError(400, 'กรุณากรอกชื่อเรื่อง');
+  if (!correspondentName) throw httpError(400, 'กรุณากรอกชื่อหน่วยงาน/บุคคลต้นทาง-ปลายทาง');
+  if (!departmentId) throw httpError(400, 'กรุณาเลือกฝ่ายที่รับผิดชอบ');
+  // ฐานข้อมูลเปิด foreign_keys ไว้ ฝ่ายที่ไม่มีอยู่จริงจึงถูกปฏิเสธอยู่แล้ว แต่ข้อความที่ได้เป็นข้อความ
+  // ของ SQLite ล้วนๆ ซึ่งผู้ใช้อ่านไม่รู้เรื่อง — ดักเองก่อนเพื่อบอกให้ตรงว่าผิดตรงไหน
+  if (!db.prepare('SELECT 1 x FROM departments WHERE id = ?').get(departmentId)) {
+    throw httpError(400, 'ไม่พบฝ่ายที่เลือก — กรุณาเลือกฝ่ายที่รับผิดชอบใหม่');
+  }
   if (direction && !VALID_DIRECTION.has(direction)) throw httpError(400, 'ประเภทหนังสือ (เข้า/ออก) ไม่ถูกต้อง');
   if (priority && !VALID_PRIORITY.has(priority)) throw httpError(400, `ชั้นความเร็ว "${priority}" ไม่ถูกต้อง`);
   if (secretLevel && !VALID_SECRET.has(secretLevel)) throw httpError(400, `ชั้นความลับ "${secretLevel}" ไม่ถูกต้อง`);
@@ -78,37 +110,78 @@ export function createDocument({ direction, title, subject, docTypeId, departmen
     ['externalDocNumber', 'เลขที่หนังสือต้นทาง'], ['customDocNumber', 'เลขที่กำหนดเอง']]) {
     assertLength({ title, subject, correspondentName, externalDocNumber, customDocNumber }[field], field, label);
   }
-  externalDocDate = normalizeDate(externalDocDate, 'วันที่ของหนังสือต้นทาง');
-  dueDate = normalizeDate(dueDate, 'วันครบกำหนด');
+  return {
+    direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName,
+    externalDocNumber, customDocNumber, createdBy,
+    externalDocDate: normalizeDate(externalDocDate, 'วันที่ของหนังสือต้นทาง'),
+    dueDate: normalizeDate(dueDate, 'วันครบกำหนด'),
+  };
+}
 
-  let result;
+// ต้องเรียกอยู่ภายใน transaction ของผู้เรียกเสมอ — การอ่าน+บวกตัวนับเลขรับกับการ INSERT ต้องอยู่ก้อนเดียวกัน
+function insertDocumentRow({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, externalDocNumber, externalDocDate, dueDate, retentionClass, customDocNumber, createdBy }) {
+  const { runningNumber, yearBe, display: autoDisplay } = nextRunningNumber({ direction });
+  const display = customDocNumber || autoDisplay;
   let duplicateDocNumberWarning = null;
+  if (customDocNumber) {
+    const dup = db.prepare('SELECT doc_number_display FROM documents WHERE doc_number_display = ? AND deleted_at IS NULL').get(customDocNumber);
+    if (dup) duplicateDocNumberWarning = `เลขที่ "${customDocNumber}" ซ้ำกับเอกสารที่มีอยู่แล้วในระบบ — บันทึกให้แล้วตามที่กรอก แต่โปรดตรวจสอบว่าตั้งใจใช้เลขซ้ำจริงหรือไม่`;
+  }
+  const id = uuid();
+  const now = nowIso();
+  const retClass = retentionClass || 'normal_10y';
+  const retentionUntil = computeRetentionUntil(yearBe, retClass);
+  db.prepare(`
+    INSERT INTO documents (id, direction, running_number, year_be, doc_number_display, external_doc_number, external_doc_date, title, subject,
+      doc_type_id, department_id, priority, secret_level, correspondent_name, status, due_date, retention_class, retention_until, created_by, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', ?, ?, ?, ?, ?, ?)
+  `).run(id, direction, runningNumber, yearBe, display, externalDocNumber || null, externalDocDate || null, title, subject || null,
+    docTypeId, departmentId, priority || 'normal', secretLevel || 'normal', correspondentName || null, dueDate || null, retClass, retentionUntil, createdBy, now, now);
+  return { id, docNumberDisplay: display, duplicateDocNumberWarning };
+}
+
+// บันทึก audit หลัง COMMIT เสมอ ไม่ใช่ระหว่างทาง — ถ้า rollback แล้วจะได้ไม่เหลือร่องรอยของหนังสือที่ไม่มีอยู่จริง
+function auditDocumentCreated(clean, result) {
+  audit({
+    userId: clean.createdBy,
+    action: clean.direction === 'incoming' ? 'document_received' : 'document_created',
+    tableName: 'documents', recordId: result.id,
+    detail: { docNumberDisplay: result.docNumberDisplay, customDocNumber: clean.customDocNumber || null },
+  });
+}
+
+// ลงรับได้ครั้งละไม่เกินเท่านี้ — กันการยิงคำขอก้อนมหึมาเข้ามาทีเดียว และเป็นจำนวนที่มากพอสำหรับ
+// ซองหนังสือที่มาถึงโรงเรียนในหนึ่งวันจริงๆ (ปกติวันละไม่กี่ฉบับ วันประชุมใหญ่ก็ไม่เกินหลักสิบ)
+export const MAX_BULK_DOCUMENTS = 50;
+
+/**
+ * ลงรับหนังสือหลายฉบับรวดเดียว — ตรวจครบทุกฉบับก่อน แล้วออกเลขรับให้ทั้งชุดใน transaction เดียว
+ * ถ้าฉบับใดฉบับหนึ่งบันทึกไม่สำเร็จ จะไม่มีฉบับไหนถูกบันทึกเลย และตัวนับเลขรับไม่ขยับ
+ */
+export function createDocumentsBulk(items, createdBy) {
+  if (!Array.isArray(items) || items.length === 0) throw httpError(400, 'ยังไม่ได้กรอกรายการหนังสือที่จะลงรับ');
+  if (items.length > MAX_BULK_DOCUMENTS) {
+    throw httpError(400, `ลงรับได้ครั้งละไม่เกิน ${MAX_BULK_DOCUMENTS} ฉบับ (ส่งมา ${items.length} ฉบับ) — กรุณาแบ่งเป็นหลายรอบ`);
+  }
+  const cleaned = items.map((item, i) => {
+    try {
+      return normalizeDocumentInput({ ...item, createdBy });
+    } catch (e) {
+      // บอกให้ชัดว่าแถวไหนผิด ไม่งั้นผู้ใช้ที่กรอกมา 20 แถวต้องไล่หาเองว่าแถวไหนที่ทำให้ทั้งชุดไม่ผ่าน
+      throw httpError(e.statusCode || 400, `แถวที่ ${i + 1}: ${e.message}`);
+    }
+  });
+  let results;
   db.exec('BEGIN IMMEDIATE');
   try {
-    const { runningNumber, yearBe, display: autoDisplay } = nextRunningNumber({ direction });
-    const display = customDocNumber || autoDisplay;
-    if (customDocNumber) {
-      const dup = db.prepare('SELECT doc_number_display FROM documents WHERE doc_number_display = ? AND deleted_at IS NULL').get(customDocNumber);
-      if (dup) duplicateDocNumberWarning = `เลขที่ "${customDocNumber}" ซ้ำกับเอกสารที่มีอยู่แล้วในระบบ — บันทึกให้แล้วตามที่กรอก แต่โปรดตรวจสอบว่าตั้งใจใช้เลขซ้ำจริงหรือไม่`;
-    }
-    const id = uuid();
-    const now = nowIso();
-    const retClass = retentionClass || 'normal_10y';
-    const retentionUntil = computeRetentionUntil(yearBe, retClass);
-    db.prepare(`
-      INSERT INTO documents (id, direction, running_number, year_be, doc_number_display, external_doc_number, external_doc_date, title, subject,
-        doc_type_id, department_id, priority, secret_level, correspondent_name, status, due_date, retention_class, retention_until, created_by, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', ?, ?, ?, ?, ?, ?)
-    `).run(id, direction, runningNumber, yearBe, display, externalDocNumber || null, externalDocDate || null, title, subject || null,
-      docTypeId, departmentId, priority || 'normal', secretLevel || 'normal', correspondentName || null, dueDate || null, retClass, retentionUntil, createdBy, now, now);
+    results = cleaned.map(insertDocumentRow);
     db.exec('COMMIT');
-    result = { id, docNumberDisplay: display, duplicateDocNumberWarning };
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
   }
-  audit({ userId: createdBy, action: direction === 'incoming' ? 'document_received' : 'document_created', tableName: 'documents', recordId: result.id, detail: { docNumberDisplay: result.docNumberDisplay, customDocNumber: customDocNumber || null } });
-  return result;
+  cleaned.forEach((clean, i) => auditDocumentCreated(clean, results[i]));
+  return results;
 }
 
 export function getDocument(id) {

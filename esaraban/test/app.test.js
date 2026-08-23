@@ -16,7 +16,7 @@ const { login, getSessionUser, revokeOtherSessions, verifyPin } = await import('
 const { contentDispositionHeader } = await import('../src/router.js');
 const { daysUntil, fmtDate, fmtThaiDateShort, fmtThaiDateLong, stampDateThai, stampTimeThai, bangkokHour } = await import('../src/render.js');
 const {
-  createDocument, getDocument, canUserSeeDocument, currentStep,
+  createDocument, createDocumentsBulk, MAX_BULK_DOCUMENTS, getDocument, canUserSeeDocument, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep, voidDocument, archiveDocument,
   assertStepBelongsToDocument, forceDeleteDocument,
 } = await import('../src/services/workflow.js');
@@ -1212,6 +1212,93 @@ describe('สิทธิ์เห็นหนังสือ: เงื่อ�
     const ownerVis = visibleDocumentsSqlFilter(owner);
     assert.ok(db.prepare(`SELECT 1 as x FROM documents d WHERE d.id = :id AND ${ownerVis.sql}`)
       .get({ id: secretDoc.id, ...ownerVis.params }), 'ผู้บันทึกต้องยังเห็นหนังสือลับของตัวเอง');
+  });
+});
+
+// ลงรับหลายฉบับรวดเดียว — สิ่งที่ต้องกันให้ได้คือ "เลขทะเบียนขาดเป็นรู" เพราะเลขรับที่ออกไปแล้วนำกลับมา
+// ใช้ซ้ำไม่ได้ตามหลักงานสารบรรณ ถ้าฉบับที่ 7 ใน 10 ฉบับกรอกผิดแล้วระบบบันทึก 6 ฉบับแรกไปก่อน ทะเบียน
+// จะมีเลขหายไปโดยอธิบายไม่ได้ตอนตรวจ — ทั้งชุดจึงต้องสำเร็จหรือไม่สำเร็จพร้อมกันเท่านั้น
+describe('ลงรับหลายฉบับรวดเดียว', () => {
+  const bulkItem = (n, extra = {}) => ({
+    direction: 'incoming', title: `หนังสือชุด ฉบับที่ ${n}`, correspondentName: 'สพป.ทดสอบ',
+    docTypeId: typeId, departmentId: deptId, ...extra,
+  });
+  const runningNumbers = () => db.prepare(
+    "SELECT running_number FROM documents WHERE direction = 'incoming' ORDER BY running_number",
+  ).all().map((r) => r.running_number);
+
+  test('ออกเลขให้ทั้งชุดเรียงติดกันไม่ข้าม', () => {
+    const docs = createDocumentsBulk([1, 2, 3, 4].map((n) => bulkItem(n)), registrarUser.id);
+    assert.equal(docs.length, 4);
+    const nums = docs.map((d) => Number(d.docNumberDisplay.split('/')[0]));
+    assert.deepEqual(nums, [nums[0], nums[0] + 1, nums[0] + 2, nums[0] + 3], `เลขไม่เรียงติดกัน: ${nums}`);
+    for (const d of docs) assert.ok(getDocument(d.id), `หาเอกสาร ${d.docNumberDisplay} ไม่เจอ`);
+  });
+
+  test('ฉบับใดฉบับหนึ่งผิด ต้องไม่บันทึกฉบับไหนเลย และตัวนับเลขต้องไม่ขยับ', () => {
+    const before = runningNumbers();
+    const counterBefore = db.prepare(
+      "SELECT running_number FROM document_number_counters WHERE direction = 'incoming'",
+    ).get()?.running_number;
+
+    // แถวที่ 3 กรอกวันครบกำหนดเป็น พ.ศ. ซึ่ง normalizeDate ปฏิเสธ
+    assert.throws(
+      () => createDocumentsBulk([
+        bulkItem(1), bulkItem(2), bulkItem(3, { dueDate: '2569-01-01' }), bulkItem(4),
+      ], registrarUser.id),
+      /แถวที่ 3/,
+      'ต้องบอกด้วยว่าแถวไหนผิด ไม่งั้นผู้ใช้ที่กรอก 20 แถวต้องไล่หาเอง',
+    );
+
+    assert.deepEqual(runningNumbers(), before, 'มีเอกสารบางฉบับหลุดเข้าไปทั้งที่ทั้งชุดควรถูกยกเลิก');
+    const counterAfter = db.prepare(
+      "SELECT running_number FROM document_number_counters WHERE direction = 'incoming'",
+    ).get()?.running_number;
+    assert.equal(counterAfter, counterBefore, 'ตัวนับเลขรับขยับไปแล้วทั้งที่ไม่มีฉบับไหนถูกบันทึก — ทะเบียนจะมีเลขขาด');
+  });
+
+  test('เลขที่ออกหลังชุดที่ล้มเหลว ต้องต่อจากเลขเดิมพอดี ไม่มีรู', () => {
+    const ok = createDocumentsBulk([bulkItem(1), bulkItem(2)], registrarUser.id);
+    const last = Number(ok[1].docNumberDisplay.split('/')[0]);
+    assert.throws(() => createDocumentsBulk([bulkItem(3, { secretLevel: 'ไม่มีชั้นนี้' })], registrarUser.id));
+    const next = createDocumentsBulk([bulkItem(4)], registrarUser.id);
+    assert.equal(Number(next[0].docNumberDisplay.split('/')[0]), last + 1);
+  });
+
+  test('ปฏิเสธรายการว่าง ไม่ใช่อาเรย์ และเกินจำนวนสูงสุด', () => {
+    assert.throws(() => createDocumentsBulk([], registrarUser.id), /ยังไม่ได้กรอกรายการ/);
+    assert.throws(() => createDocumentsBulk('ไม่ใช่อาเรย์', registrarUser.id), /ยังไม่ได้กรอกรายการ/);
+    assert.throws(
+      () => createDocumentsBulk(Array.from({ length: MAX_BULK_DOCUMENTS + 1 }, (_, i) => bulkItem(i)), registrarUser.id),
+      new RegExp(`ไม่เกิน ${MAX_BULK_DOCUMENTS} ฉบับ`),
+    );
+  });
+
+  // ตัวตรวจชุดเดียวกับการลงทีละฉบับ ไม่ใช่ทางลัดที่ตรวจน้อยกว่า — ไม่งั้นหน้านี้จะกลายเป็นช่องให้ค่าที่
+  // ระบบตั้งใจปฏิเสธ (โดยเฉพาะชั้นความลับ ซึ่งค่าที่ไม่รู้จักเท่ากับเปิดหนังสือลับให้ทุกคนอ่าน) หลุดเข้ามาได้
+  test('ใช้ตัวตรวจชุดเดียวกับการลงทีละฉบับ', () => {
+    for (const [label, extra] of [
+      ['ชั้นความลับที่ไม่รู้จัก', { secretLevel: 'hack' }],
+      ['ชั้นความเร็วที่ไม่รู้จัก', { priority: 'ด่วนสุดๆ' }],
+      ['อายุการเก็บที่ไม่รู้จัก', { retentionClass: 'forever' }],
+      ['วันครบกำหนดที่ไม่มีอยู่จริง', { dueDate: '2026-13-45' }],
+      ['ชื่อเรื่องยาวเกินกำหนด', { title: 'ก'.repeat(501) }],
+      ['ไม่ได้กรอกชื่อเรื่อง', { title: '   ' }],
+      ['ไม่ได้กรอกหน่วยงาน', { correspondentName: '' }],
+      ['ฝ่ายที่ไม่มีอยู่จริง', { departmentId: 'ฝ่ายผี' }],
+    ]) {
+      assert.throws(() => createDocumentsBulk([bulkItem(1, extra)], registrarUser.id), undefined, `ควรปฏิเสธ: ${label}`);
+    }
+  });
+
+  test('บันทึก audit ครบทุกฉบับ', () => {
+    const docs = createDocumentsBulk([bulkItem(1), bulkItem(2), bulkItem(3)], registrarUser.id);
+    for (const d of docs) {
+      const row = db.prepare(
+        "SELECT 1 x FROM audit_logs WHERE action = 'document_received' AND record_id = ?",
+      ).get(d.id);
+      assert.ok(row, `ไม่มี audit ของเอกสาร ${d.docNumberDisplay}`);
+    }
   });
 });
 

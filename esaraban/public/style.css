@@ -340,6 +340,20 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); o
 .field-more[open] summary::before { transform: rotate(90deg); }
 .field-more summary:hover { background: var(--info-bg); }
 
+/* ---------- แถวของหน้าลงรับหลายฉบับรวดเดียว ---------- */
+/* ตั้งใจใช้การ์ดต่อแถวแทนตาราง — ตารางที่มี 5 ช่องกรอกต่อแถวบีบจนกรอกไม่ได้บนมือถือ ซึ่งเป็นเครื่องที่
+   ธุรการใช้ถ่าย/แนบไฟล์จริง ส่วนบนจอกว้าง form-grid ก็เรียงเป็น 3 คอลัมน์ให้อ่านง่ายอยู่แล้ว */
+.bulk-row {
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: .8rem .9rem .1rem; margin-bottom: .8rem; background: var(--surface);
+}
+.bulk-row-head {
+  display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
+  margin-bottom: .6rem; padding-bottom: .5rem; border-bottom: 1px dashed var(--border);
+}
+.bulk-row-head .badge { max-width: 100%; overflow-wrap: anywhere; }
+.bulk-row-head .rm { margin-left: auto; }
+
 /* ---------- Badges ---------- */
 .badge {
   display: inline-flex; align-items: center; gap: .3rem;

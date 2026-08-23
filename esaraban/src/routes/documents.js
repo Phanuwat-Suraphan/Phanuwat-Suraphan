@@ -3,7 +3,8 @@ import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, due
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, nowIso, audit, todayInBangkok, RETENTION_LABEL } from '../db.js';
 import {
-  createDocument, getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, currentStep,
+  createDocument, createDocumentsBulk, MAX_BULK_DOCUMENTS,
+  getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
   voidDocument, archiveDocument, forceDeleteDocument, httpError, assertStepBelongsToDocument,
 } from '../services/workflow.js';
@@ -235,7 +236,10 @@ router.get('/documents', requirePage((ctx) => {
             : 'ยังไม่มีรายการ'}
         </p>
       </div>
-      <a class="btn btn-primary" href="/documents/new?direction=${direction}">+ ${direction === 'incoming' ? 'รับหนังสือใหม่' : 'สร้างหนังสือส่ง'}</a>
+      <div class="flex gap-2 flex-wrap">
+        <a class="btn btn-outline" href="/documents/bulk?direction=${direction}">📎 ลงหลายฉบับรวดเดียว</a>
+        <a class="btn btn-primary" href="/documents/new?direction=${direction}">+ ${direction === 'incoming' ? 'รับหนังสือใหม่' : 'สร้างหนังสือส่ง'}</a>
+      </div>
     </div>
     <div class="card">
       ${filterForm}
@@ -491,6 +495,305 @@ router.post('/documents', requireApi(async (ctx) => {
   }
   const warn = warnParts.length ? `&warn=${encodeURIComponent(warnParts.join(' / '))}` : '';
   json(ctx, 201, { redirect: `/documents/${doc.id}?created=1${warn}` });
+}));
+
+// ---------------- ลงรับหลายฉบับรวดเดียว ----------------
+// ซองหนังสือมาถึงโรงเรียนเป็นปึกในรอบเดียว ธุรการต้องเปิดฟอร์มใหม่ทีละฉบับ กรอกหน่วยงานต้นทาง/ฝ่าย/
+// ความเร็วซ้ำเดิมทุกครั้ง แล้วรอหน้าโหลดใหม่ก่อนเริ่มฉบับถัดไป — หน้านี้ยุบให้เหลือรอบเดียว โดยเลือกไฟล์ PDF
+// ทั้งกองพร้อมกันแล้วระบบตั้งแถวให้เอง เหลือแค่แก้ชื่อเรื่องกับกดบันทึก
+//
+// ไม่ได้ตั้งสิทธิ์เข้มกว่า /documents/new เพราะหน้านี้ไม่ได้ให้อำนาจอะไรใหม่เลย — ใครที่ลงทะเบียนหนังสือ
+// ทีละฉบับได้อยู่แล้วก็ทำแบบเดียวกัน 20 รอบได้ การกันหน้านี้ไว้จึงกันได้แค่ความสะดวก ไม่ได้กันสิทธิ์
+router.get('/documents/bulk', requirePage((ctx) => {
+  const direction = ctx.query.direction === 'outgoing' ? 'outgoing' : 'incoming';
+  const isIn = direction === 'incoming';
+  const content = `
+    <div class="card-header">
+      <div>
+        <h2 class="mt-0">${isIn ? '📥 ลงรับหลายฉบับรวดเดียว' : '📤 ออกเลขส่งหลายฉบับรวดเดียว'}</h2>
+        <p class="text-muted" style="margin:-.3rem 0 0;font-size:.85rem">
+          เลือกไฟล์ PDF ทั้งกองพร้อมกัน ระบบจะตั้งแถวให้ไฟล์ละ 1 ฉบับ แล้วออกเลข${isIn ? 'รับ' : 'ส่ง'}เรียงให้ทั้งชุดในครั้งเดียว
+        </p>
+      </div>
+      <a class="btn btn-outline" href="/documents/new?direction=${direction}">ลงทีละฉบับแทน</a>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0">1. ค่าเริ่มต้นของทั้งชุด</h3>
+      <p class="help-text" style="margin-top:-.4rem">
+        หนังสือที่มาพร้อมกันมักมาจากหน่วยงานเดียวกัน กรอกตรงนี้ครั้งเดียวแล้วทุกแถวที่เพิ่มใหม่จะได้ค่านี้ไปเลย
+        (แก้รายแถวทีหลังได้)
+      </p>
+      <div class="form-grid cols-3">
+        <div class="field">
+          <label>${isIn ? 'หน่วยงาน/บุคคลต้นทาง' : 'หน่วยงาน/บุคคลปลายทาง'}</label>
+          <input type="text" id="defCorrespondent" placeholder="เช่น สพป.เชียงใหม่ เขต 1" />
+        </div>
+        <div class="field">
+          <label>ฝ่ายที่รับผิดชอบ</label>
+          <select id="defDept">${listDeptOptions(ctx.user.department_id)}</select>
+        </div>
+        <div class="field">
+          <label>ความเร็ว</label>
+          <select id="defPriority">
+            ${Object.entries(LABELS.PRIORITY_LABEL).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label>ชั้นความลับ</label>
+          <select id="defSecret">
+            ${Object.entries(LABELS.SECRET_LABEL).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label>กำหนดเสร็จ (ถ้ามี)</label>
+          <input type="date" id="defDue" />
+        </div>
+        <div class="field">
+          <label>อายุการเก็บ</label>
+          <select id="defRetention">
+            ${Object.entries(RETENTION_LABEL).map(([k, v]) => `<option value="${k}" ${k === 'normal_10y' ? 'selected' : ''}>${esc(v)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <button class="btn btn-outline btn-sm" type="button" id="applyDefaults">ใช้ค่าข้างบนกับทุกแถวที่มีอยู่แล้ว</button>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0">2. รายการหนังสือ</h3>
+      <div class="flex gap-2 flex-wrap items-center" style="margin-bottom:.9rem">
+        <input type="file" id="bulkFiles" accept="application/pdf" multiple hidden />
+        <button class="btn btn-primary" type="button" id="pickFiles">📎 เลือกไฟล์ PDF (เลือกได้หลายไฟล์)</button>
+        <button class="btn btn-outline" type="button" id="addRow">+ เพิ่มแถวว่าง (ไม่มีไฟล์)</button>
+        <span class="text-muted" style="font-size:.85rem" id="rowCount"></span>
+      </div>
+      <div id="rows"></div>
+      <div id="emptyRows">${emptyState('📥', 'ยังไม่มีรายการ — กด "เลือกไฟล์ PDF" หรือ "เพิ่มแถวว่าง" เพื่อเริ่ม')}</div>
+    </div>
+
+    <div class="card" id="submitCard" style="display:none">
+      <h3 style="margin-top:0">3. บันทึก</h3>
+      <div id="progress" class="help-text"></div>
+      <button class="btn btn-primary" type="button" id="submitAll">บันทึกและออกเลข${isIn ? 'รับ' : 'ส่ง'}ทั้งหมด</button>
+      <a class="btn btn-outline" href="/documents?direction=${direction}">ยกเลิก</a>
+    </div>
+
+    <div class="card" id="resultCard" style="display:none">
+      <h3 style="margin-top:0">✅ ผลการลงรับ</h3>
+      <div id="result"></div>
+    </div>
+
+    <script>
+    (function(){
+      var DIRECTION = ${JSON.stringify(direction)};
+      var MAX_ROWS = ${MAX_BULK_DOCUMENTS};
+      var MAX_BYTES = 10 * 1024 * 1024;
+      var rows = [];          // {file: File|null, title, correspondentName, departmentId, priority, secretLevel, dueDate, retentionClass}
+      var deptHtml = ${JSON.stringify(listDeptOptions(ctx.user.department_id))};
+      var priorityHtml = ${JSON.stringify(Object.entries(LABELS.PRIORITY_LABEL).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(''))};
+      var byId = function(id){ return document.getElementById(id); };
+      var esc = function(s){ var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; };
+
+      function defaults(){
+        return {
+          correspondentName: byId('defCorrespondent').value.trim(),
+          departmentId: byId('defDept').value,
+          priority: byId('defPriority').value,
+          secretLevel: byId('defSecret').value,
+          dueDate: byId('defDue').value,
+          retentionClass: byId('defRetention').value,
+        };
+      }
+      // ชื่อไฟล์สแกนมักเป็นชื่อเรื่องอยู่แล้ว (เช่น "ขอเชิญประชุมผู้บริหาร.pdf") ตั้งเป็นชื่อเรื่องให้เลย
+      // ธุรการจะได้แค่แก้คำ ไม่ต้องพิมพ์ใหม่ทั้งหมด — ถ้าเป็นชื่อจากเครื่องสแกน (scan0001.pdf) ก็ลบทิ้งง่าย
+      function titleFromFile(name){ return name.replace(/\\.pdf$/i, '').replace(/[_-]+/g, ' ').trim(); }
+
+      function addRows(newRows){
+        var room = MAX_ROWS - rows.length;
+        if (newRows.length > room) {
+          window.toast('เพิ่มได้อีก ' + room + ' แถวเท่านั้น (ครั้งละไม่เกิน ' + MAX_ROWS + ' ฉบับ) — ส่วนที่เกินไม่ได้เพิ่มให้', 'warning');
+          newRows = newRows.slice(0, Math.max(0, room));
+        }
+        newRows.forEach(function(r){ rows.push(r); });
+        render();
+      }
+
+      function render(){
+        var box = byId('rows');
+        box.innerHTML = rows.map(function(r, i){
+          return '<div class="bulk-row" data-i="' + i + '">'
+            + '<div class="bulk-row-head">'
+            +   '<strong>ฉบับที่ ' + (i + 1) + '</strong>'
+            +   (r.file ? '<span class="badge badge-info">📎 ' + esc(r.file.name) + '</span>'
+                        : '<span class="text-muted" style="font-size:.82rem">ไม่มีไฟล์แนบ</span>')
+            +   '<button type="button" class="btn btn-outline btn-sm rm" data-i="' + i + '">ลบแถวนี้</button>'
+            + '</div>'
+            + '<div class="form-grid cols-3">'
+            +   '<div class="field"><label>ชื่อเรื่อง *</label>'
+            +     '<input type="text" data-f="title" data-i="' + i + '" value="' + esc(r.title) + '" placeholder="ชื่อเรื่องของหนังสือฉบับนี้" /></div>'
+            +   '<div class="field"><label>' + (DIRECTION === 'incoming' ? 'หน่วยงานต้นทาง *' : 'หน่วยงานปลายทาง *') + '</label>'
+            +     '<input type="text" data-f="correspondentName" data-i="' + i + '" value="' + esc(r.correspondentName) + '" /></div>'
+            +   '<div class="field"><label>ฝ่ายที่รับผิดชอบ</label>'
+            +     '<select data-f="departmentId" data-i="' + i + '">' + deptHtml + '</select></div>'
+            +   '<div class="field"><label>ความเร็ว</label>'
+            +     '<select data-f="priority" data-i="' + i + '">' + priorityHtml + '</select></div>'
+            +   '<div class="field"><label>กำหนดเสร็จ (ถ้ามี)</label>'
+            +     '<input type="date" data-f="dueDate" data-i="' + i + '" value="' + esc(r.dueDate) + '" /></div>'
+            + '</div></div>';
+        }).join('');
+        // ค่า <select> ตั้งผ่าน .value หลังใส่ HTML ไม่ใช่ประกอบ selected ลงไปในสตริง — ปลอดภัยกว่าและ
+        // ไม่ต้องกังวลเรื่อง escape ค่าที่ผู้ใช้เลือก
+        rows.forEach(function(r, i){
+          var d = box.querySelector('[data-f="departmentId"][data-i="' + i + '"]');
+          if (d) d.value = r.departmentId;
+          var p = box.querySelector('[data-f="priority"][data-i="' + i + '"]');
+          if (p) p.value = r.priority;
+        });
+        byId('emptyRows').style.display = rows.length ? 'none' : '';
+        byId('submitCard').style.display = rows.length ? '' : 'none';
+        byId('rowCount').textContent = rows.length ? 'รวม ' + rows.length + ' ฉบับ' : '';
+      }
+
+      byId('rows').addEventListener('input', function(e){
+        var t = e.target, i = t.getAttribute('data-i'), f = t.getAttribute('data-f');
+        if (i === null || !f) return;
+        rows[Number(i)][f] = t.value;
+      });
+      byId('rows').addEventListener('change', function(e){
+        var t = e.target, i = t.getAttribute('data-i'), f = t.getAttribute('data-f');
+        if (i === null || !f) return;
+        rows[Number(i)][f] = t.value;
+      });
+      byId('rows').addEventListener('click', function(e){
+        var btn = e.target.closest('.rm');
+        if (!btn) return;
+        rows.splice(Number(btn.getAttribute('data-i')), 1);
+        render();
+      });
+
+      byId('pickFiles').addEventListener('click', function(){ byId('bulkFiles').click(); });
+      byId('bulkFiles').addEventListener('change', function(){
+        var d = defaults();
+        var picked = [], tooBig = [];
+        Array.prototype.forEach.call(this.files, function(f){
+          if (f.size > MAX_BYTES) { tooBig.push(f.name); return; }
+          picked.push({ file: f, title: titleFromFile(f.name), correspondentName: d.correspondentName,
+            departmentId: d.departmentId, priority: d.priority, secretLevel: d.secretLevel,
+            dueDate: d.dueDate, retentionClass: d.retentionClass });
+        });
+        if (tooBig.length) window.toast('ไฟล์ใหญ่เกิน 10MB ไม่ได้เพิ่มให้: ' + tooBig.join(', '), 'warning');
+        this.value = ''; // เคลียร์เพื่อให้เลือกไฟล์ชุดเดิมซ้ำได้ถ้าเผลอลบแถวไป
+        addRows(picked);
+      });
+      byId('addRow').addEventListener('click', function(){
+        var d = defaults();
+        addRows([{ file: null, title: '', correspondentName: d.correspondentName, departmentId: d.departmentId,
+          priority: d.priority, secretLevel: d.secretLevel, dueDate: d.dueDate, retentionClass: d.retentionClass }]);
+      });
+      byId('applyDefaults').addEventListener('click', function(){
+        if (!rows.length) { window.toast('ยังไม่มีแถวให้ปรับ', 'warning'); return; }
+        var d = defaults();
+        rows.forEach(function(r){
+          if (d.correspondentName) r.correspondentName = d.correspondentName;
+          r.departmentId = d.departmentId; r.priority = d.priority;
+          r.secretLevel = d.secretLevel; r.retentionClass = d.retentionClass;
+          if (d.dueDate) r.dueDate = d.dueDate;
+        });
+        render();
+        window.toast('ใช้ค่าเริ่มต้นกับทั้ง ' + rows.length + ' แถวแล้ว', 'success');
+      });
+
+      byId('submitAll').addEventListener('click', async function(){
+        var btn = this;
+        // ตรวจฝั่งหน้าเว็บก่อนเพื่อบอกตำแหน่งที่ผิดได้ทันที เซิร์ฟเวอร์ยังตรวจซ้ำทั้งหมดอยู่ดี
+        for (var i = 0; i < rows.length; i++) {
+          if (!rows[i].title.trim()) { window.toast('ฉบับที่ ' + (i + 1) + ' ยังไม่ได้กรอกชื่อเรื่อง', 'warning'); return; }
+          if (!rows[i].correspondentName.trim()) { window.toast('ฉบับที่ ' + (i + 1) + ' ยังไม่ได้กรอกหน่วยงาน', 'warning'); return; }
+        }
+        window.setBtnLoading(btn, 'กำลังออกเลข...');
+        var prog = byId('progress');
+        try {
+          // ขั้นที่ 1 — ออกเลขทั้งชุดในคำขอเดียว (ไม่ส่งไฟล์ไปด้วย เพราะไฟล์ 20 ไฟล์รวมกันเกินขนาด
+          // คำขอที่เซิร์ฟเวอร์รับได้ และถ้าล้มกลางทางจะได้เลขขาดเป็นรูโหว่ในทะเบียน)
+          prog.textContent = 'กำลังออกเลขทะเบียนทั้ง ' + rows.length + ' ฉบับ...';
+          var res = await fetch('/documents/bulk', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ direction: DIRECTION, items: rows.map(function(r){
+              return { title: r.title, correspondentName: r.correspondentName, departmentId: r.departmentId,
+                priority: r.priority, secretLevel: r.secretLevel, dueDate: r.dueDate, retentionClass: r.retentionClass };
+            }) }),
+          });
+          var data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'ออกเลขไม่สำเร็จ');
+
+          // ขั้นที่ 2 — แนบไฟล์ทีละฉบับ ถ้าฉบับไหนแนบไม่สำเร็จ เลขรับยังอยู่ ธุรการเข้าไปแนบเองทีหลังได้
+          // เก็บผลเป็นรายแถว ไม่ใช่รายชื่อไฟล์ — ไฟล์สแกนชื่อซ้ำกัน (scan0001.pdf) เกิดขึ้นบ่อยมาก
+          // ถ้าเทียบด้วยชื่อ แถวที่แนบสำเร็จจะถูกรายงานว่าล้มเหลวไปด้วย
+          var failedIdx = {}, failedNames = [];
+          for (var j = 0; j < data.documents.length; j++) {
+            var row = rows[j];
+            if (!row.file) continue;
+            prog.textContent = 'กำลังแนบไฟล์ ' + (j + 1) + '/' + data.documents.length + ' — ' + row.file.name;
+            try {
+              var b64 = await window.fileToBase64(row.file);
+              var r2 = await fetch('/documents/' + data.documents[j].id + '/attachments', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fileName: row.file.name, fileType: row.file.type || 'application/pdf', fileDataBase64: b64 }),
+              });
+              if (!r2.ok) {
+                var e2 = await r2.json().catch(function(){ return {}; });
+                failedIdx[j] = true; failedNames.push(row.file.name + ' (' + (e2.error || r2.status) + ')');
+              }
+            } catch (err) { failedIdx[j] = true; failedNames.push(row.file.name); }
+          }
+          var failed = failedNames;
+
+          prog.textContent = '';
+          byId('resultCard').style.display = '';
+          byId('result').innerHTML =
+            '<p>ออกเลขให้แล้ว <strong>' + data.documents.length + ' ฉบับ</strong></p>'
+            + '<div class="table-wrap"><table><thead><tr><th>เลขที่</th><th>ชื่อเรื่อง</th><th>ไฟล์แนบ</th></tr></thead><tbody>'
+            + data.documents.map(function(d, k){
+                var f = rows[k].file;
+                var attached = !f ? '<span class="text-muted">—</span>'
+                  : (failedIdx[k] ? '<span style="color:var(--danger)">แนบไม่สำเร็จ</span>' : '✅');
+                return '<tr><td><a href="/documents/' + d.id + '"><strong>' + esc(d.docNumberDisplay) + '</strong></a></td>'
+                  + '<td class="wrap">' + esc(rows[k].title) + '</td><td>' + attached + '</td></tr>';
+              }).join('')
+            + '</tbody></table></div>'
+            + (failed.length ? '<p style="color:var(--danger);margin-top:.8rem">แนบไฟล์ไม่สำเร็จ ' + failed.length
+                + ' ไฟล์: ' + esc(failed.join(', ')) + ' — เลขทะเบียนออกให้แล้ว เข้าไปแนบไฟล์เพิ่มในหน้าเอกสารได้เลย</p>' : '')
+            + '<a class="btn btn-primary" href="/documents?direction=' + DIRECTION + '">ไปที่ทะเบียนหนังสือ</a>';
+          byId('resultCard').scrollIntoView({ behavior: 'smooth' });
+          rows = [];
+          render();
+          window.restoreBtn(btn);
+          window.toast(failed.length ? 'บันทึกครบแล้ว แต่มีไฟล์แนบไม่สำเร็จ ' + failed.length + ' ไฟล์' : 'ลงรับครบทุกฉบับแล้ว',
+            failed.length ? 'warning' : 'success');
+        } catch (err) {
+          prog.textContent = '';
+          window.toast(err.message || 'เกิดข้อผิดพลาด', 'danger');
+          window.restoreBtn(btn);
+        }
+      });
+    })();
+    </script>`;
+  html(ctx, 200, layout({ user: ctx.user, title: 'ลงรับหลายฉบับ', path: '/documents/bulk', content }));
+}));
+
+router.post('/documents/bulk', requireApi((ctx) => {
+  const direction = ctx.body.direction === 'outgoing' ? 'outgoing' : 'incoming';
+  const items = Array.isArray(ctx.body.items) ? ctx.body.items : [];
+  const docTypeId = defaultDocTypeId();
+  // เลขที่กำหนดเองตั้งใจไม่รับในโหมดนี้ — ทั้งชุดใช้เลขเรียงอัตโนมัติของระบบเสมอ ถ้าต้องพิมพ์เลขเองให้ลงทีละฉบับ
+  const docs = createDocumentsBulk(items.map((it) => ({
+    direction, docTypeId,
+    title: it.title, correspondentName: it.correspondentName, departmentId: it.departmentId,
+    priority: it.priority, secretLevel: it.secretLevel, dueDate: it.dueDate, retentionClass: it.retentionClass,
+  })), ctx.user.id);
+  json(ctx, 201, {
+    documents: docs.map((d) => ({ id: d.id, docNumberDisplay: d.docNumberDisplay })),
+  });
 }));
 
 router.post('/documents/:id/attachments', requireApi(async (ctx) => {
