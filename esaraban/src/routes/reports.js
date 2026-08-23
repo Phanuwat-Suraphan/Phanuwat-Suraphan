@@ -2,17 +2,24 @@ import { router, html } from '../router.js';
 import { layout, esc, fmtDate, statusBadge, LABELS } from '../render.js';
 import { requirePage } from '../middleware.js';
 import { db, audit } from '../db.js';
+import { visibleDocumentsSqlFilter, canUserSeeDocument } from '../services/workflow.js';
 
 router.get('/reports', requirePage((ctx) => {
-  const byStatus = db.prepare(`SELECT status, COUNT(*) c FROM documents WHERE deleted_at IS NULL GROUP BY status`).all();
-  const byDept = db.prepare(`
+  // ตัวเลขทุกตัวนับเฉพาะเอกสารที่ผู้ใช้คนนี้มีสิทธิ์เห็น — ไม่งั้นครูจะเห็น "เอกสารทั้งหมด 639 ฉบับ"
+  // ทั้งที่เปิดดูได้จริงแค่ 180 ฉบับ ซึ่งทั้งชวนสับสนและบอกใบ้ปริมาณงานลับที่ตัวเองไม่เกี่ยวข้อง
+  const visible = visibleDocumentsSqlFilter(ctx.user);
+  const scoped = (sql) => db.prepare(sql.replace('{{visible}}', visible.sql)).all(visible.params);
+  const byStatus = scoped(`SELECT d.status, COUNT(*) c FROM documents d
+    WHERE d.deleted_at IS NULL AND {{visible}} GROUP BY d.status`);
+  const byDept = scoped(`
     SELECT dep.name, COUNT(*) c FROM documents d JOIN departments dep ON dep.id = d.department_id
-    WHERE d.deleted_at IS NULL GROUP BY dep.name ORDER BY c DESC`).all();
-  const byDirection = db.prepare(`SELECT direction, COUNT(*) c FROM documents WHERE deleted_at IS NULL GROUP BY direction`).all();
-  const totalDocs = db.prepare('SELECT COUNT(*) c FROM documents WHERE deleted_at IS NULL').get().c;
-  const avgCompletionHours = db.prepare(`
-    SELECT AVG((julianday(updated_at) - julianday(created_at)) * 24) h FROM documents
-    WHERE status IN ('completed','archived') AND deleted_at IS NULL`).get().h;
+    WHERE d.deleted_at IS NULL AND {{visible}} GROUP BY dep.name ORDER BY c DESC`);
+  const byDirection = scoped(`SELECT d.direction, COUNT(*) c FROM documents d
+    WHERE d.deleted_at IS NULL AND {{visible}} GROUP BY d.direction`);
+  const totalDocs = scoped(`SELECT COUNT(*) c FROM documents d WHERE d.deleted_at IS NULL AND {{visible}}`)[0].c;
+  const avgCompletionHours = scoped(`
+    SELECT AVG((julianday(d.updated_at) - julianday(d.created_at)) * 24) h FROM documents d
+    WHERE d.status IN ('completed','archived') AND d.deleted_at IS NULL AND {{visible}}`)[0].h;
 
   const content = `
     <div class="card-header">
@@ -39,12 +46,18 @@ router.get('/reports', requirePage((ctx) => {
   html(ctx, 200, layout({ user: ctx.user, title: 'รายงาน', path: '/reports', content }));
 }));
 
+// เดิมไฟล์นี้ดัมป์เอกสาร "ทุกฉบับในฐานข้อมูล" ให้ใครก็ตามที่ล็อกอินได้ ทั้งที่หน้าทะเบียนซ่อนหนังสือลับ
+// จากคนที่ไม่เกี่ยวข้องอยู่แล้ว — ทดสอบยืนยันแล้วว่าครูที่มองไม่เห็นหนังสือ "ลับมาก" ในหน้าเว็บ กดปุ่มนี้
+// แล้วได้ชื่อเรื่อง/หน่วยงาน/สถานะของหนังสือฉบับนั้นมาครบ และไฟล์ที่ดาวน์โหลดไปแล้วเรียกคืนไม่ได้
+// จึงต้องใช้เงื่อนไขสิทธิ์ชุดเดียวกับหน้าทะเบียน แล้วกรองซ้ำด้วยตัวตรวจรายฉบับอีกชั้น
 router.get('/reports/export.csv', requirePage((ctx) => {
+  const visible = visibleDocumentsSqlFilter(ctx.user);
   const rows = db.prepare(`
-    SELECT d.doc_number_display, d.direction, d.title, dep.name as dept_name,
-           d.priority, d.secret_level, d.status, d.correspondent_name, d.created_at
+    SELECT d.*, dep.name as dept_name
     FROM documents d JOIN departments dep ON dep.id = d.department_id
-    WHERE d.deleted_at IS NULL ORDER BY d.created_at DESC`).all();
+    WHERE d.deleted_at IS NULL AND ${visible.sql} ORDER BY d.created_at DESC`)
+    .all(visible.params)
+    .filter((d) => canUserSeeDocument(ctx.user, d));
 
   const header = ['เลขที่', 'ประเภทการรับส่ง', 'เรื่อง', 'ฝ่าย', 'ความเร็ว', 'ชั้นความลับ', 'สถานะ', 'หน่วยงาน', 'วันที่บันทึก'];
   const csvEscape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;

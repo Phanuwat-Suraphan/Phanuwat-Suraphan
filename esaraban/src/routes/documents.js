@@ -16,6 +16,10 @@ import {
   ackSlotTopPercent, ACK_WORD_HEIGHT_PERCENT, ACK_ENTRY_HEIGHT_PERCENT,
 } from '../services/pdfStamp.js';
 import { getActiveDelegateFor } from '../services/delegation.js';
+import {
+  buildDocumentQuery, countDocuments, listDocuments, describeFilters, CLOSED_STATUSES,
+} from '../services/documentQuery.js';
+import { buildXlsx } from '../services/xlsxWrite.js';
 import { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -75,67 +79,22 @@ function listUserOptions(excludeId) {
 const PAGE_SIZE = 50;
 
 router.get('/documents', requirePage((ctx) => {
-  const direction = ctx.query.direction === 'outgoing' ? 'outgoing' : 'incoming';
-  const q = (ctx.query.q || '').trim();
-  const statusFilter = ctx.query.status || '';
+  // เงื่อนไขค้นหา/กรอง/สิทธิ์ อยู่ที่ documentQuery.js ที่เดียว — หน้านี้ ไฟล์ Excel และหน้าพิมพ์ทะเบียน
+  // ใช้ตัวเดียวกันหมด ไม่งั้นสามที่จะค่อยๆ เลื่อนจากกันจนกรองบนเว็บได้ 40 ฉบับ แต่ Excel ออกมา 63 ฉบับ
+  const query = buildDocumentQuery(ctx.user, ctx.query);
+  const { direction, q, statusFilter, f, params, whereSql, activeFilters, filtering } = query;
 
-  // กรองสิทธิ์ตั้งแต่ในฐานข้อมูล ไม่ใช่ดึงมาแล้วค่อยกรองด้วย JS — ไม่งั้น LIMIT จะนับรวมฉบับที่ผู้ใช้
-  // ไม่มีสิทธิ์เห็นไปด้วย แล้วจำนวนที่แสดงกับการแบ่งหน้าจะผิดทั้งคู่ (ดู visibleDocumentsSqlFilter)
-  const visible = visibleDocumentsSqlFilter(ctx.user);
-  const where = ['d.direction = :direction', 'd.deleted_at IS NULL', visible.sql];
-  const params = { direction, ...visible.params };
-  if (statusFilter) { where.push('d.status = :status'); params.status = statusFilter; }
-  if (q) {
-    where.push('(d.title LIKE :like OR d.doc_number_display LIKE :like OR d.subject LIKE :like OR d.correspondent_name LIKE :like)');
-    params.like = `%${q}%`;
-  }
-
-  // ตัวกรองละเอียด — ธุรการต้องหาแบบ "หนังสือจาก สพป. ช่วง ก.ค.-ส.ค. ที่ยังไม่ปิด" ได้ ซึ่งเดิมทำไม่ได้เลย
-  // ต้องค้นทีละคำแล้วไล่อ่านเอง ค่าที่รับมาทั้งหมดผูกเป็น named parameter ไม่ต่อสตริงเข้า SQL
-  // ค่าที่ไม่รู้จักให้ตกเป็นค่าว่าง (= ไม่กรอง) แทนที่จะยิงเข้า SQL ตรงๆ — พิมพ์ ?priority=xxx มั่วๆ
-  // แล้วต้องได้ "ทุกความเร็ว" ไม่ใช่ตารางว่างเปล่าที่ชวนให้เข้าใจผิดว่าไม่มีหนังสือ
-  const pick = (value, allowed) => (allowed.includes(value) ? value : '');
-  const f = {
-    dept: ctx.query.dept || '',
-    priority: pick(ctx.query.priority, Object.keys(LABELS.PRIORITY_LABEL)),
-    secret: pick(ctx.query.secret, Object.keys(LABELS.SECRET_LABEL)),
-    from: /^\d{4}-\d{2}-\d{2}$/.test(ctx.query.from || '') ? ctx.query.from : '',
-    to: /^\d{4}-\d{2}-\d{2}$/.test(ctx.query.to || '') ? ctx.query.to : '',
-    overdue: ctx.query.overdue === '1',
-  };
-  if (f.dept) { where.push('d.department_id = :dept'); params.dept = f.dept; }
-  if (f.priority) { where.push('d.priority = :priority'); params.priority = f.priority; }
-  if (f.secret) { where.push('d.secret_level = :secret'); params.secret = f.secret; }
-  // created_at เก็บเป็น ISO เต็ม (มีเวลาต่อท้าย) การเทียบกับวันที่ล้วนต้องตัดเอาเฉพาะ 10 ตัวแรก
-  // ไม่งั้น "ถึงวันที่ 31 ส.ค." จะไม่รวมเอกสารที่ลงทะเบียนตอนบ่ายของวันที่ 31 เอง
-  if (f.from) { where.push('substr(d.created_at, 1, 10) >= :from'); params.from = f.from; }
-  if (f.to) { where.push('substr(d.created_at, 1, 10) <= :to'); params.to = f.to; }
-  if (f.overdue) {
-    // "เลยกำหนด" ต้องนับจากวันนี้ตามเวลาไทย และนับเฉพาะเรื่องที่ยังไม่ปิด ให้ตรงกับตัวเลขบนแดชบอร์ด
-    where.push(`d.due_date IS NOT NULL AND d.due_date < :today
-      AND d.status NOT IN ('completed', 'archived', 'voided', 'destroyed', 'rejected')`);
-    params.today = todayInBangkok();
-  }
-
-  const activeFilters = Object.values(f).filter(Boolean).length;
-  const filtering = activeFilters > 0 || Boolean(q) || Boolean(statusFilter);
-  const whereSql = where.join(' AND ');
-
-  const total = db.prepare(`SELECT COUNT(*) as c FROM documents d WHERE ${whereSql}`).get(params).c;
+  const total = countDocuments(query);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const page = Math.min(totalPages, Math.max(1, Math.floor(Number(ctx.query.page) || 1)));
   const offset = (page - 1) * PAGE_SIZE;
 
   // ยังเรียก canUserSeeDocument ซ้ำอีกชั้น เผื่อเงื่อนไข SQL กับตัวตรวจรายฉบับเลื่อนจากกันในอนาคต
   // (มีเทสต์เทียบผลของทั้งสองไว้แล้ว แต่การเปิดเผยหนังสือลับเป็นความผิดพลาดที่ยอมเสี่ยงไม่ได้)
-  const rows = db.prepare(`
-    SELECT d.*, dt.name as type_name, dep.name as dept_name FROM documents d
-    JOIN document_types dt ON dt.id = d.doc_type_id JOIN departments dep ON dep.id = d.department_id
-    WHERE ${whereSql} ORDER BY d.created_at DESC LIMIT ${PAGE_SIZE} OFFSET ${offset}
-  `).all(params).filter((d) => canUserSeeDocument(ctx.user, d));
+  const rows = listDocuments(query, { limit: PAGE_SIZE, offset }).filter((d) => canUserSeeDocument(ctx.user, d));
 
   // เรื่องที่ยังไม่ปิดถือว่ายัง "นับเวลาอยู่" — เรื่องที่ปิดแล้วไม่ต้องขึ้นเตือนว่าเลยกำหนดอีก
-  const stillOpen = (d) => !['completed', 'archived', 'voided', 'destroyed', 'rejected'].includes(d.status);
+  const stillOpen = (d) => !CLOSED_STATUSES.includes(d.status);
   const overdueCount = rows.filter((d) => stillOpen(d) && daysUntil(d.due_date) < 0).length;
 
   const rowsHtml = rows.map((d) => {
@@ -155,14 +114,20 @@ router.get('/documents', requirePage((ctx) => {
   // แถบเลื่อนหน้า — ทะเบียนหนังสือของโรงเรียนหนึ่งปีมีหลายร้อยถึงหลักพันฉบับ ถ้าไม่มีตรงนี้ ฉบับที่เก่ากว่า
   // หน้าแรกจะเปิดดูไม่ได้เลยนอกจากจะรู้คำค้นล่วงหน้า ซึ่งขัดกับการใช้งานทะเบียนที่ต้องไล่ดูย้อนหลังได้
   // ต้องหอบตัวกรองทุกตัวไปกับลิงก์เปลี่ยนหน้าด้วย ไม่งั้นกดหน้า 2 แล้วตัวกรองหลุดหมด กลายเป็นดูคนละชุด
-  const pageLink = (n) => {
+  const filterQs = () => {
     const qs = new URLSearchParams({ direction });
     if (q) qs.set('q', q);
     if (statusFilter) qs.set('status', statusFilter);
     for (const [k, v] of Object.entries(f)) if (v) qs.set(k, v === true ? '1' : v);
+    return qs;
+  };
+  const pageLink = (n) => {
+    const qs = filterQs();
     if (n > 1) qs.set('page', String(n));
     return `/documents?${qs.toString()}`;
   };
+  // ไฟล์ที่ส่งออกต้องเป็น "ชุดเดียวกับที่เห็นอยู่ตรงหน้า" ไม่ใช่ทั้งฐานข้อมูล จึงหอบตัวกรองไปด้วยเสมอ
+  const exportLink = (path) => `${path}?${filterQs().toString()}`;
   const pager = totalPages > 1 ? `
     <div class="flex items-center justify-between gap-2 flex-wrap" style="margin-top:1rem">
       ${page > 1 ? `<a class="btn btn-outline btn-sm" href="${pageLink(page - 1)}">← ใหม่กว่า</a>` : '<span></span>'}
@@ -225,7 +190,12 @@ router.get('/documents', requirePage((ctx) => {
         </div>
         <button class="btn btn-primary btn-sm" type="submit">กรองตามเงื่อนไข</button>
       </details>
-    </form>`;
+    </form>
+    <div class="flex gap-2 flex-wrap items-center" style="margin:-.4rem 0 1rem">
+      <span class="text-muted" style="font-size:.85rem">ส่งออก${filtering ? 'เฉพาะรายการที่กรองไว้' : 'ทั้งทะเบียน'}:</span>
+      <a class="btn btn-outline btn-sm" href="${exportLink('/documents/export.xlsx')}">📊 Excel</a>
+      <a class="btn btn-outline btn-sm" href="${exportLink('/documents/register')}" target="_blank" rel="noopener">🖨️ พิมพ์ทะเบียน / PDF</a>
+    </div>`;
 
   const content = `
     <div class="card-header">
@@ -794,6 +764,144 @@ router.post('/documents/bulk', requireApi((ctx) => {
   json(ctx, 201, {
     documents: docs.map((d) => ({ id: d.id, docNumberDisplay: d.docNumberDisplay })),
   });
+}));
+
+// ---------------- ส่งออกทะเบียนหนังสือ ----------------
+// รูปแบบคอลัมน์อ้างอิงทะเบียนหนังสือรับ/ทะเบียนหนังสือส่งตามระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ
+// พ.ศ. 2526 (แบบที่ 13 และ 14) เพื่อให้พิมพ์ออกมาแล้วใช้แทนสมุดทะเบียนกระดาษได้จริง ไม่ใช่ตารางทั่วไป
+function registerColumns(direction) {
+  const isIn = direction === 'incoming';
+  return [
+    { head: isIn ? 'ทะเบียนรับที่' : 'ทะเบียนส่งที่', width: 13, get: (d) => d.doc_number_display },
+    { head: 'ที่ (หนังสือต้นทาง)', width: 18, get: (d) => d.external_doc_number || '' },
+    { head: 'ลงวันที่', width: 13, get: (d) => (d.external_doc_date ? fmtThaiDateShort(d.external_doc_date) : '') },
+    { head: isIn ? 'จาก' : 'ถึง', width: 24, get: (d) => d.correspondent_name || '' },
+    { head: 'เรื่อง', width: 46, get: (d) => d.title },
+    { head: 'ฝ่ายที่รับผิดชอบ', width: 20, get: (d) => d.dept_name },
+    { head: 'ความเร็ว', width: 11, get: (d) => LABELS.PRIORITY_LABEL[d.priority] || d.priority },
+    { head: 'ชั้นความลับ', width: 12, get: (d) => LABELS.SECRET_LABEL[d.secret_level] || d.secret_level },
+    { head: 'การปฏิบัติ', width: 16, get: (d) => LABELS.STATUS_LABEL[d.status] || d.status },
+    { head: 'ครบกำหนด', width: 13, get: (d) => (d.due_date ? fmtThaiDateShort(d.due_date) : '') },
+    { head: 'วันที่ลงทะเบียน', width: 15, get: (d) => fmtThaiDateShort(d.created_at) },
+  ];
+}
+
+// ชื่อไฟล์บอกให้ครบว่าเป็นทะเบียนอะไร ช่วงไหน ส่งออกวันไหน — ธุรการเก็บไฟล์หลายรอบไว้ในโฟลเดอร์เดียวกัน
+// ถ้าชื่อเหมือนกันหมดจะกลายเป็น documents(1).xlsx, documents(2).xlsx ที่แยกไม่ออกว่าอันไหนคืออันไหน
+function exportFilename(query, ext) {
+  const kind = query.direction === 'incoming' ? 'ทะเบียนหนังสือรับ' : 'ทะเบียนหนังสือส่ง';
+  const range = query.f.from || query.f.to ? `_${query.f.from || 'เริ่มต้น'}_ถึง_${query.f.to || 'ปัจจุบัน'}` : '';
+  return `${kind}${range}_ณ_${todayInBangkok()}.${ext}`;
+}
+
+router.get('/documents/export.xlsx', requirePage((ctx) => {
+  const query = buildDocumentQuery(ctx.user, ctx.query);
+  // กรองซ้ำด้วยตัวตรวจรายฉบับอีกชั้นเหมือนหน้ารายการ — ไฟล์ที่ส่งออกไปแล้วเรียกคืนไม่ได้ ถ้าหนังสือลับ
+  // หลุดติดไปในไฟล์ที่ถูกส่งต่อทางไลน์/อีเมล จะไม่มีทางแก้ย้อนหลังได้เลย
+  const rows = listDocuments(query).filter((d) => canUserSeeDocument(ctx.user, d));
+  const cols = registerColumns(query.direction);
+  const buf = buildXlsx({
+    sheetName: query.direction === 'incoming' ? 'ทะเบียนหนังสือรับ' : 'ทะเบียนหนังสือส่ง',
+    header: cols.map((c) => c.head),
+    widths: cols.map((c) => c.width),
+    rows: rows.map((d) => cols.map((c) => c.get(d))),
+  });
+  audit({
+    userId: ctx.user.id, action: 'register_exported',
+    detail: { format: 'xlsx', direction: query.direction, rows: rows.length, filters: describeFilters(query) || null },
+    ip: ctx.ip,
+  });
+  ctx.res.writeHead(200, {
+    'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Length': buf.length,
+    'Content-Disposition': contentDispositionHeader(exportFilename(query, 'xlsx'), 'document-register.xlsx', 'attachment'),
+  });
+  ctx.res.end(buf);
+}));
+
+// หน้าพิมพ์ทะเบียน — ไม่ได้สร้าง PDF ฝั่งเซิร์ฟเวอร์โดยตั้งใจ ให้เบราว์เซอร์สั่งพิมพ์แล้วเลือก
+// "บันทึกเป็น PDF" แทน เพราะ (1) ทุกเบราว์เซอร์ทำได้อยู่แล้วทั้งบนเครื่องและมือถือ (2) ฟอนต์ไทยที่ใช้
+// เป็นฟอนต์ในเครื่องผู้ใช้เอง ไม่ต้องพึ่ง chromium บนเซิร์ฟเวอร์ที่อาจไม่มีฟอนต์ไทยติดตั้ง และ
+// (3) ทะเบียนพันแถวไม่ต้องไปเบียดเวลาประมวลผลกับการประทับตราลงไฟล์ PDF ซึ่งใช้ chromium ตัวเดียวกัน
+router.get('/documents/register', requirePage((ctx) => {
+  const query = buildDocumentQuery(ctx.user, ctx.query);
+  const rows = listDocuments(query).filter((d) => canUserSeeDocument(ctx.user, d));
+  const cols = registerColumns(query.direction);
+  const filterNote = describeFilters(query);
+  const title = query.direction === 'incoming' ? 'ทะเบียนหนังสือรับ' : 'ทะเบียนหนังสือส่ง';
+
+  // ตั้งความกว้างคอลัมน์ตายตัว โดยเทียบสัดส่วนจากความกว้างชุดเดียวกับที่ใช้ในไฟล์ Excel — ถ้าปล่อยให้
+  // เบราว์เซอร์จัดเอง คอลัมน์ที่บังเอิญว่างทั้งแถบ (เช่น "ลงวันที่" ตอนที่ยังไม่มีใครกรอก) จะถูกบีบจน
+  // หัวตารางแตกเป็นตัวอักษรเรียงลงมาแนวตั้ง อ่านไม่ออก
+  const SEQ_WEIGHT = 8;
+  const weightSum = SEQ_WEIGHT + cols.reduce((s, c) => s + c.width, 0);
+  const colWidths = [SEQ_WEIGHT, ...cols.map((c) => c.width)].map((w) => ((w / weightSum) * 100).toFixed(2));
+
+  audit({
+    userId: ctx.user.id, action: 'register_exported',
+    detail: { format: 'print', direction: query.direction, rows: rows.length, filters: filterNote || null },
+    ip: ctx.ip,
+  });
+
+  const body = `<!DOCTYPE html>
+<html lang="th"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${esc(title)}</title>
+<style>
+  /* แนวนอนเพราะทะเบียนมี 11 คอลัมน์ ถ้าพิมพ์แนวตั้งช่อง "เรื่อง" จะแคบจนอ่านไม่ออก */
+  @page { size: A4 landscape; margin: 12mm 10mm; }
+  body { font-family: "Sarabun", "TH SarabunPSK", "Noto Sans Thai", sans-serif; font-size: 12px; line-height: 1.5; color: #000; margin: 0; padding: 1rem; }
+  .sheet-head { text-align: center; margin-bottom: .8rem; }
+  .sheet-head h1 { font-size: 17px; margin: 0 0 .15rem; }
+  .sheet-head .sub { font-size: 13px; }
+  .sheet-head .meta { font-size: 11px; color: #333; margin-top: .3rem; }
+  table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+  th, td { border: 1px solid #000; padding: 3px 5px; vertical-align: top; overflow-wrap: anywhere; }
+  th { background: #eee; font-weight: 700; text-align: center; }
+  /* ให้หัวตารางซ้ำทุกหน้าเวลาพิมพ์ และไม่ให้แถวถูกตัดครึ่งคาบหน้ากระดาษ */
+  thead { display: table-header-group; }
+  tr { page-break-inside: avoid; }
+  td.num { text-align: center; white-space: nowrap; }
+  .sign { margin-top: 1.6rem; display: flex; justify-content: flex-end; }
+  .sign .box { text-align: center; font-size: 12px; min-width: 240px; }
+  .sign .line { margin-top: 2.2rem; }
+  .toolbar { margin-bottom: 1rem; display: flex; gap: .5rem; }
+  .toolbar button, .toolbar a {
+    font: inherit; padding: .45rem .9rem; border-radius: 8px; border: 1px solid #888;
+    background: #f3f3f3; color: #000; cursor: pointer; text-decoration: none;
+  }
+  .empty { padding: 2rem; text-align: center; color: #555; }
+  @media print { .toolbar { display: none; } body { padding: 0; } }
+</style></head>
+<body>
+  <div class="toolbar">
+    <button type="button" onclick="window.print()">🖨️ พิมพ์ / บันทึกเป็น PDF</button>
+    <a href="/documents?direction=${query.direction}">← กลับทะเบียนในระบบ</a>
+  </div>
+  <div class="sheet-head">
+    <h1>${esc(title)}</h1>
+    <div class="sub">${esc(SCHOOL_NAME)}</div>
+    <div class="meta">
+      รวม ${rows.length} ฉบับ · พิมพ์เมื่อ ${esc(fmtThaiDateLong(todayInBangkok()))}
+      ${filterNote ? ` · เงื่อนไข: ${esc(filterNote)}` : ''}
+    </div>
+  </div>
+  ${rows.length ? `<table>
+    <colgroup>${colWidths.map((w) => `<col style="width:${w}%" />`).join('')}</colgroup>
+    <thead><tr><th>ลำดับ</th>${cols.map((c) => `<th>${esc(c.head)}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map((d, i) => `<tr>
+      <td class="num">${i + 1}</td>
+      ${cols.map((c, ci) => `<td${ci === 4 ? '' : ' class="num"'}>${esc(c.get(d))}</td>`).join('')}
+    </tr>`).join('')}</tbody>
+  </table>
+  <div class="sign"><div class="box">
+    <div class="line">ลงชื่อ ................................................ ผู้จัดทำ</div>
+    <div>( ................................................ )</div>
+    <div>ตำแหน่ง ................................................</div>
+  </div></div>`
+  : '<div class="empty">ไม่มีรายการตามเงื่อนไขที่เลือก</div>'}
+</body></html>`;
+  html(ctx, 200, body);
 }));
 
 router.post('/documents/:id/attachments', requireApi(async (ctx) => {

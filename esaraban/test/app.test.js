@@ -22,6 +22,7 @@ const {
 } = await import('../src/services/workflow.js');
 const { nextRunningNumber } = await import('../src/numbering.js');
 const { readWorkbook } = await import('../src/services/xlsx.js');
+const { buildXlsx } = await import('../src/services/xlsxWrite.js');
 const { parseUploadedWorkbook, looksLikeHeader } = await import('../src/services/dailySummaryParse.js');
 const {
   createLeaveRequest, approveLeaveRequest, rejectLeaveRequest, canSeeLeaveRequest, getLeaveRequest,
@@ -62,6 +63,30 @@ function loadUserForTest(userId) {
 
 function getDocRow(id) {
   return db.prepare('SELECT * FROM documents WHERE id = ?').get(id);
+}
+
+// เรียกเส้นทาง GET จริงผ่าน router โดยจำลอง ctx เหมือนที่ server.js ประกอบให้ แล้วเก็บสิ่งที่เส้นทาง
+// เขียนออกมา — ตรรกะหลายอย่าง (ตัวกรอง, การส่งออกไฟล์, การกรองสิทธิ์ตอน export) อยู่ในตัวเส้นทางเอง
+// ถ้าเทสต์ระดับฟังก์ชันอย่างเดียวจะไม่ได้ตรวจสิ่งที่ผู้ใช้ได้รับจริงเลย
+let routerForTest = null;
+async function dispatchGet(user, path, query = {}) {
+  if (!routerForTest) {
+    ({ router: routerForTest } = await import('../src/router.js'));
+    await import('../src/routes/index.js');
+  }
+  let status = 0;
+  const chunks = [];
+  const headers = {};
+  const res = {
+    headersSent: false,
+    setHeader() {},
+    writeHead(code, h) { status = code; Object.assign(headers, h || {}); this.headersSent = true; return this; },
+    end(chunk) { if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))); },
+  };
+  const ctx = { req: { method: 'GET', headers: {} }, res, url: new URL(`http://x${path}`), query, user, body: {}, ip: '127.0.0.1' };
+  await routerForTest.dispatch('GET', path, ctx);
+  const buffer = Buffer.concat(chunks);
+  return { status, headers, buffer, body: buffer.toString('utf8') };
 }
 
 describe('auth: login + rate limiting', () => {
@@ -1305,26 +1330,7 @@ describe('ลงรับหลายฉบับรวดเดียว', () =
 // ตัวกรองละเอียดของทะเบียนหนังสือ — เรียกเส้นทางจริงผ่าน router.dispatch แล้วอ่าน HTML ที่ได้ เพราะ
 // ตรรกะการกรองอยู่ในตัวเส้นทางเอง ถ้าเทสต์ระดับฟังก์ชันอย่างเดียวจะไม่ได้ตรวจสิ่งที่ผู้ใช้เห็นจริงเลย
 describe('ทะเบียนหนังสือ: ตัวกรองละเอียด', () => {
-  let router;
-  before(async () => {
-    ({ router } = await import('../src/router.js'));
-    await import('../src/routes/index.js');
-  });
-
-  // จำลอง ctx เหมือนที่ server.js ประกอบให้ แล้วเก็บ HTML ที่เส้นทางเขียนออกมา
-  async function getDocumentsPage(user, query) {
-    let status = 0;
-    let body = '';
-    const res = {
-      headersSent: false,
-      setHeader() {},
-      writeHead(code) { status = code; this.headersSent = true; return this; },
-      end(chunk) { body = chunk ? String(chunk) : ''; },
-    };
-    const ctx = { req: { method: 'GET', headers: {} }, res, url: new URL('http://x/documents'), query, user, body: {}, ip: '127.0.0.1' };
-    await router.dispatch('GET', '/documents', ctx);
-    return { status, body };
-  }
+  const getDocumentsPage = (user, query) => dispatchGet(user, '/documents', query);
   const rowIds = (body) => [...body.matchAll(/location\.href='\/documents\/([^']+)'/g)].map((m) => m[1]);
 
   const reg = () => loadUserForTest(seed.userIds.reg001);
@@ -1382,9 +1388,157 @@ describe('ทะเบียนหนังสือ: ตัวกรองล�
   test('ลิงก์เปลี่ยนหน้าต้องหอบตัวกรองไปด้วย ไม่ใช่หลุดกลับไปดูทั้งหมด', () => {
     // อ่านจากซอร์สแทนการสร้างหนังสือ 51 ฉบับ — สิ่งที่ต้องกันคือการลืมใส่ตัวกรองลงใน query string
     const src = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
-    const fn = src.slice(src.indexOf('const pageLink = (n)'), src.indexOf('const pager ='));
+    const fn = src.slice(src.indexOf('const filterQs = ()'), src.indexOf('const pager ='));
+    assert.ok(fn.length > 0, 'หา filterQs/pageLink ในซอร์สไม่เจอ — เทสต์นี้ต้องแก้ตามชื่อใหม่');
     assert.match(fn, /Object\.entries\(f\)/,
-      'pageLink ต้องวนใส่ตัวกรองทุกตัวลงใน query string ไม่ใช่ใส่ทีละตัวแล้วลืมตัวใหม่ที่เพิ่มทีหลัง');
+      'ตัวประกอบ query string ต้องวนใส่ตัวกรองทุกตัว ไม่ใช่ใส่ทีละตัวแล้วลืมตัวใหม่ที่เพิ่มทีหลัง');
+    // ลิงก์ส่งออกไฟล์ต้องใช้ตัวประกอบตัวเดียวกับลิงก์เปลี่ยนหน้า ไม่งั้นไฟล์ที่ได้จะเป็นทั้งทะเบียน
+    // ทั้งที่ผู้ใช้กรองไว้แล้ว ซึ่งเป็นความผิดพลาดที่ผู้ใช้ไม่มีทางสังเกตเห็นจากปุ่มเลย
+    assert.match(fn, /const exportLink = \(path\) => `\$\{path\}\?\$\{filterQs\(\)/);
+  });
+});
+
+// ส่งออกทะเบียนหนังสือเป็น Excel / หน้าพิมพ์
+//
+// ความเสี่ยงที่แท้จริงของฟีเจอร์ส่งออกคือ "ไฟล์ที่ออกไปแล้วเรียกคืนไม่ได้" — ถ้าไฟล์มีหนังสือลับที่คน
+// ดาวน์โหลดไม่มีสิทธิ์เห็นติดไปด้วย แล้วไฟล์นั้นถูกส่งต่อทางไลน์/อีเมล จะไม่มีทางแก้ย้อนหลังเลย
+// (เคยรั่วจริงมาแล้วที่ /reports/export.csv ซึ่งดัมป์ทุกฉบับในฐานข้อมูลให้ใครก็ตามที่ล็อกอินได้)
+describe('ส่งออกทะเบียนหนังสือ', () => {
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  const outsider = () => loadUserForTest(seed.userIds.teacher001);
+  const sheetOf = (buffer) => readWorkbook(buffer)[0];
+
+  test('ไฟล์ Excel ที่ได้ อ่านกลับได้จริงและมีหัวตารางแบบทะเบียนหนังสือรับ', async () => {
+    makeDoc({ title: 'หนังสือสำหรับทดสอบการส่งออก' });
+    const res = await dispatchGet(reg(), '/documents/export.xlsx', { direction: 'incoming' });
+    assert.equal(res.status, 200);
+    assert.match(res.headers['Content-Type'], /spreadsheetml\.sheet/);
+    assert.match(res.headers['Content-Disposition'], /attachment/);
+
+    const sheet = sheetOf(res.buffer);
+    assert.equal(sheet.name, 'ทะเบียนหนังสือรับ');
+    assert.deepEqual(sheet.rows[0].slice(0, 5),
+      ['ทะเบียนรับที่', 'ที่ (หนังสือต้นทาง)', 'ลงวันที่', 'จาก', 'เรื่อง']);
+    assert.ok(sheet.rows.length > 1, 'ต้องมีข้อมูลอย่างน้อยหนึ่งแถว ไม่งั้นเทสต์นี้ไม่ได้ตรวจอะไร');
+    assert.ok(sheet.rows.every((r) => r.length === sheet.rows[0].length), 'ทุกแถวต้องมีจำนวนคอลัมน์เท่ากัน');
+  });
+
+  test('จำนวนแถวในไฟล์ต้องตรงกับที่หน้าเว็บกรองไว้เป๊ะ', async () => {
+    makeDoc({ title: 'หนังสือด่วนที่สุดสำหรับทดสอบส่งออก', priority: 'most_urgent' });
+    for (const query of [
+      { direction: 'incoming' },
+      { direction: 'incoming', priority: 'most_urgent' },
+      { direction: 'incoming', q: 'ทดสอบส่งออก' },
+      { direction: 'outgoing' },
+    ]) {
+      const page = await dispatchGet(reg(), '/documents', query);
+      const shown = Number((page.body.match(/(?:ทั้งหมด|ตรงตามเงื่อนไข) ([\d,]+) ฉบับ/) || [, '0'])[1].replace(/,/g, ''));
+      const sheet = sheetOf((await dispatchGet(reg(), '/documents/export.xlsx', query)).buffer);
+      const inFile = Math.max(0, sheet.rows.length - 1);
+      const print = await dispatchGet(reg(), '/documents/register', query);
+      const inPrint = (print.body.match(/<td class="num">\d+<\/td>/g) || []).length;
+      assert.equal(inFile, shown, `Excel ไม่ตรงกับหน้าเว็บที่เงื่อนไข ${JSON.stringify(query)}`);
+      assert.equal(inPrint, shown, `หน้าพิมพ์ไม่ตรงกับหน้าเว็บที่เงื่อนไข ${JSON.stringify(query)}`);
+    }
+  });
+
+  test('หนังสือลับต้องไม่หลุดไปกับไฟล์ที่คนไม่มีสิทธิ์ดาวน์โหลด', async () => {
+    const secret = makeDoc({ title: 'หนังสือลับมากที่ต้องไม่หลุดออกไปกับไฟล์', secretLevel: 'top_secret', createdBy: seed.userIds.reg001 });
+    assert.equal(canUserSeeDocument(outsider(), getDocRow(secret.id)), false, 'ตั้งต้นต้องเป็นหนังสือที่ครูคนนี้เห็นไม่ได้');
+
+    for (const [label, path] of [['Excel', '/documents/export.xlsx'], ['หน้าพิมพ์', '/documents/register'], ['CSV รายงาน', '/reports/export.csv']]) {
+      const res = await dispatchGet(outsider(), path, { direction: 'incoming' });
+      assert.equal(res.status, 200, `${label} ต้องดาวน์โหลดได้ปกติ`);
+      const text = path.endsWith('.xlsx') ? JSON.stringify(sheetOf(res.buffer)) : res.body;
+      assert.ok(!text.includes('หนังสือลับมากที่ต้องไม่หลุดออกไปกับไฟล์'), `${label} มีหนังสือลับหลุดออกไป`);
+    }
+    // และผู้ที่มีสิทธิ์ต้องยังได้รับข้อมูลครบ ไม่ใช่ซ่อนหมดทุกคนแล้วเทสต์ผ่านแบบไม่ได้ตรวจอะไร
+    const ownerSheet = sheetOf((await dispatchGet(reg(), '/documents/export.xlsx', { direction: 'incoming' })).buffer);
+    assert.ok(JSON.stringify(ownerSheet).includes('หนังสือลับมากที่ต้องไม่หลุดออกไปกับไฟล์'),
+      'ผู้บันทึกเองต้องยังเห็นหนังสือลับของตัวเองในไฟล์');
+  });
+
+  test('หน้าพิมพ์บอกเงื่อนไขที่กรองไว้ เพื่อไม่ให้เข้าใจผิดว่าเป็นทะเบียนทั้งเล่ม', async () => {
+    const res = await dispatchGet(reg(), '/documents/register', { direction: 'incoming', priority: 'urgent', from: '2026-08-01' });
+    assert.match(res.body, /เงื่อนไข:/);
+    assert.match(res.body, /ความเร็ว ด่วน/);
+    assert.match(res.body, /ตั้งแต่ 2026-08-01/);
+    // ทะเบียนที่ไม่ได้กรองต้องไม่ขึ้นบรรทัดเงื่อนไข ไม่งั้นจะดูเหมือนเป็นทะเบียนบางส่วนทั้งที่ครบ
+    const all = await dispatchGet(reg(), '/documents/register', { direction: 'incoming' });
+    assert.doesNotMatch(all.body, /เงื่อนไข:/);
+  });
+});
+
+// ตัวเขียนไฟล์ .xlsx เอง (zero-dependency) — ถ้าโครงไฟล์ผิดแม้นิดเดียว Excel จะขึ้นว่า "ไฟล์เสียหาย"
+// แล้วธุรการจะเปิดไม่ได้เลยโดยที่ฝั่งเซิร์ฟเวอร์ไม่มีอะไรฟ้อง
+describe('เขียนไฟล์ Excel', () => {
+  test('เขียนแล้วอ่านกลับได้ค่าเดิมทุกช่อง', () => {
+    const buf = buildXlsx({
+      sheetName: 'ทะเบียนทดสอบ',
+      header: ['เลขที่', 'เรื่อง', 'จำนวน'],
+      rows: [
+        ['0001/2569', 'เครื่องหมายที่ต้อง escape: & < > " \'', 5],
+        ['0002/2569', '', null],
+        ['0003/2569', 'ช่องว่างสองช่อง  กลางข้อความ', 0],
+      ],
+      widths: [14, 50, 8],
+    });
+    const sheet = readWorkbook(buf)[0];
+    assert.equal(sheet.name, 'ทะเบียนทดสอบ');
+    assert.deepEqual(sheet.rows, [
+      ['เลขที่', 'เรื่อง', 'จำนวน'],
+      ['0001/2569', 'เครื่องหมายที่ต้อง escape: & < > " \'', '5'],
+      ['0002/2569', '', ''],
+      ['0003/2569', 'ช่องว่างสองช่อง  กลางข้อความ', '0'],
+    ]);
+  });
+
+  // แกะ XML ของชีตออกมาดูตรงๆ — เทียบผ่าน readWorkbook อย่างเดียวไม่พอ เพราะฝั่งอ่านตัดช่องว่าง
+  // หัวท้ายทิ้ง (ตั้งใจ ใช้ตอนนำเข้า) ถ้าฝั่งเขียนลืม xml:space="preserve" ช่องว่างจะหายจริงใน Excel
+  // โดยเทสต์ round-trip ไม่มีทางจับได้เลย
+  function sheetXmlOf(buf) {
+    // อ่านจาก local header ของไฟล์ย่อยตัวสุดท้าย (xl/worksheets/sheet1.xml ถูกเขียนเป็นตัวสุดท้าย)
+    const marker = Buffer.from('xl/worksheets/sheet1.xml', 'utf8');
+    const at = buf.indexOf(marker);
+    assert.ok(at > 0, 'หา worksheet ในไฟล์ไม่เจอ');
+    const local = at - 30;
+    assert.equal(buf.readUInt32LE(local), 0x04034b50, 'ตำแหน่งที่เจอไม่ใช่ local header ของ ZIP');
+    const compSize = buf.readUInt32LE(local + 18);
+    const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+    return zlib.inflateRawSync(buf.subarray(start, start + compSize)).toString('utf8');
+  }
+
+  test('รักษาช่องว่างหัวท้ายไว้ในไฟล์ (xml:space="preserve")', () => {
+    const xml = sheetXmlOf(buildXlsx({ header: ['ก'], rows: [['  เว้นหน้าและหลัง  ']] }));
+    assert.match(xml, /xml:space="preserve"/);
+    assert.ok(xml.includes('>  เว้นหน้าและหลัง  <'), `ช่องว่างหัวท้ายหายไปจากไฟล์: ${xml.slice(0, 400)}`);
+  });
+
+  test('escape อักขระ XML ไม่ให้ไฟล์เสีย', () => {
+    const xml = sheetXmlOf(buildXlsx({ header: ['ก'], rows: [['<tag> & "ก" \'ข\'']] }));
+    assert.ok(!/<t[^>]*>[^<]*<tag>/.test(xml), 'แท็กดิบหลุดเข้าไปใน XML');
+    assert.match(xml, /&lt;tag&gt; &amp; &quot;ก&quot;/);
+  });
+
+  // อักขระควบคุมทำให้ Excel ปฏิเสธ "ทั้งไฟล์" ไม่ใช่แค่ช่องนั้น — และมันปนมาได้ง่ายมากเวลาผู้ใช้
+  // ก๊อปข้อความมาจากไฟล์ PDF/Word
+  test('ตัดอักขระควบคุมทิ้ง ไม่ปล่อยให้ทั้งไฟล์เสีย', () => {
+    const sheet = readWorkbook(buildXlsx({ header: ['ก'], rows: [['ก่อนหลัง']] }))[0];
+    assert.equal(sheet.rows[1][0], 'ก่อนหลัง');
+  });
+
+  test('ชื่อชีตที่ยาวเกินหรือมีอักขระต้องห้าม ต้องถูกปรับให้ Excel รับได้', () => {
+    assert.equal(readWorkbook(buildXlsx({ sheetName: 'a'.repeat(50), rows: [['x']] }))[0].name.length, 31);
+    assert.doesNotMatch(readWorkbook(buildXlsx({ sheetName: 'ทะเบียน/รับ[2569]', rows: [['x']] }))[0].name, /[/[\]]/);
+  });
+
+  test('เป็นไฟล์ ZIP ที่มีชิ้นส่วนครบตามที่ Excel ต้องการ', () => {
+    const buf = buildXlsx({ header: ['ก'], rows: [['ข']] });
+    assert.equal(buf.subarray(0, 2).toString('latin1'), 'PK', 'ต้องขึ้นต้นด้วยลายเซ็นของไฟล์ ZIP');
+    const text = buf.toString('latin1');
+    for (const part of ['[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml', 'xl/_rels/workbook.xml.rels', 'xl/styles.xml', 'xl/worksheets/sheet1.xml']) {
+      assert.ok(text.includes(part), `ขาดชิ้นส่วน ${part}`);
+    }
   });
 });
 
