@@ -524,6 +524,20 @@ export function migrate() {
     db.exec('ALTER TABLE user_delegations ADD COLUMN created_by TEXT');
     db.exec('ALTER TABLE user_delegations ADD COLUMN cancelled_at TEXT');
   }
+  // การมอบหมายรักษาการแทนที่วันที่ไม่ใช่รูปแบบ YYYY-MM-DD จะ "มีผลตลอดไป" เพราะการตรวจว่ายังมีผลอยู่ไหม
+  // ทำด้วยการเทียบสตริงวันที่ใน SQL และอักษรไทย/อังกฤษมีค่ามากกว่าตัวเลขทุกตัว (ทดสอบยืนยันแล้วว่า
+  // อีก 100 ปีข้างหน้าก็ยังถูกนับว่ามีผล) = ผู้รักษาการแทนถืออำนาจลงนามแทนผู้อำนวยการแบบถาวร
+  // ตอนนี้ค่าแบบนั้นถูกปฏิเสธตั้งแต่ต้นทางแล้ว แถวเก่าที่ค้างอยู่จึงยกเลิกทิ้งให้ ไม่ปล่อยไว้เฉยๆ
+  const brokenDelegations = db.prepare(`
+    UPDATE user_delegations SET cancelled_at = ?
+    WHERE cancelled_at IS NULL
+      AND (start_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+        OR end_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')
+  `).run(nowIso()).changes;
+  if (brokenDelegations) {
+    console.warn(`[security] ยกเลิกการมอบหมายรักษาการแทน ${brokenDelegations} รายการที่วันที่ไม่ถูกต้อง (รายการเหล่านี้จะมีผลตลอดไปถ้าปล่อยไว้)`);
+  }
+
   const leaveCols = db.prepare("PRAGMA table_info(leave_requests)").all().map((c) => c.name);
   if (!leaveCols.includes('delegate_id')) {
     db.exec('ALTER TABLE leave_requests ADD COLUMN delegate_id TEXT');

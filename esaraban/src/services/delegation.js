@@ -1,17 +1,32 @@
 import { db, uuid, nowIso, audit, todayInBangkok } from '../db.js';
 import { fmtThaiDateShort } from '../render.js';
 import { notifyUser } from './notify.js';
+import { httpError, assertDateRange, assertMaxLength } from './validate.js';
 
-// httpError คัดลอกไว้ในไฟล์นี้เอง (ไม่ import จาก workflow.js) — เหตุผลเดียวกับ googleDrive.js/pdfPreview.js/pdfStamp.js
-export function httpError(statusCode, message) {
-  return Object.assign(new Error(message), { statusCode });
-}
+export { httpError };
+
+// เพดานช่วงเวลาการรักษาการแทน — 1 ปีการศึกษาเป็นช่วงที่ยาวที่สุดที่มีเหตุผลจริง (ลาศึกษาต่อ/ลาคลอด
+// ต่อเนื่อง) ที่ยาวกว่านี้แปลว่าพิมพ์ปีผิด ซึ่งอันตรายมากเพราะเป็นการมอบอำนาจลงนามแทนผู้อำนวยการ
+const MAX_DELEGATION_DAYS = 366;
+const MAX_DELEGATION_REASON = 1000;
 
 export function createDelegation({ delegatorId, delegateId, startDate, endDate, reason, leaveRequestId, createdBy }) {
   if (!delegatorId || !delegateId) throw httpError(400, 'กรุณาระบุผู้มอบหมายและผู้รักษาการแทน');
   if (delegatorId === delegateId) throw httpError(400, 'มอบหมายให้ตัวเองไม่ได้');
-  if (!startDate || !endDate) throw httpError(400, 'กรุณาระบุวันที่เริ่มและวันที่สิ้นสุด');
-  if (endDate < startDate) throw httpError(400, 'วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่ม');
+  // ตรวจก่อนที่จะไปชนกับ foreign key ของ SQLite — ไม่งั้นผู้ใช้จะได้ error 500 พร้อมข้อความ
+  // "FOREIGN KEY constraint failed" ซึ่งอ่านไม่รู้เรื่องและดูเหมือนระบบพัง
+  const delegate = db.prepare("SELECT id FROM users WHERE id = ? AND deleted_at IS NULL AND status = 'active'").get(delegateId);
+  if (!delegate) throw httpError(400, 'ไม่พบผู้รักษาการแทนที่เลือก หรือบัญชีนั้นถูกระงับอยู่');
+  assertMaxLength(reason, MAX_DELEGATION_REASON, 'เหตุผล/หมายเหตุ');
+
+  // การเทียบว่า "การมอบหมายนี้ยังมีผลอยู่ไหม" ทำด้วยการเทียบสตริงวันที่ใน SQL ถ้าปล่อยให้ค่าที่ไม่ใช่
+  // วันที่หลุดเข้ามาได้ อักษรไทย/อังกฤษจะมากกว่าตัวเลขทุกตัว การมอบหมายนั้นจะ "มีผลตลอดไป"
+  // (ทดสอบยืนยันแล้วว่าอีก 100 ปีก็ยังมีผล) = มอบอำนาจลงนามแทนผู้อำนวยการแบบถาวรโดยไม่มีอะไรฟ้อง
+  ({ start: startDate, end: endDate } = assertDateRange({
+    startDate, endDate,
+    startLabel: 'วันที่เริ่มรักษาการแทน', endLabel: 'วันที่สิ้นสุด',
+    maxDays: MAX_DELEGATION_DAYS, rangeLabel: 'ช่วงเวลารักษาการแทน',
+  }));
 
   const id = uuid();
   db.prepare(`

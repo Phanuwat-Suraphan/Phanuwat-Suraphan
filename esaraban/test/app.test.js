@@ -1406,6 +1406,89 @@ describe('ทะเบียนหนังสือ: ตัวกรองล�
   });
 });
 
+// วันที่ของใบลาและการมอบหมายรักษาการแทน
+//
+// เดิมสองโมดูลนี้ตรวจวันที่กันเอง คนละแบบกับฝั่งหนังสือ และตรวจแค่ "วันสิ้นสุดต้องไม่ก่อนวันเริ่ม"
+// ด้วยการเทียบสตริง ผลที่ทดสอบยืนยันแล้วว่าเกิดขึ้นจริงก่อนแก้:
+//   - การมอบหมายที่ end_date = "ไม่ใช่วันที่" ถูกบันทึก แล้ว "มีผลตลอดไป" (อีก 100 ปีก็ยังมีผล)
+//     เพราะ SQL เทียบสตริง และอักษรไทยมากกว่าตัวเลขทุกตัว = มอบอำนาจลงนามแทน ผอ. แบบถาวร
+//   - ใบลาที่พิมพ์ปีผิดหนึ่งหลัก (2126) ถูกบันทึกเป็น 36,526 วัน
+//   - วันที่แบบ พ.ศ. และวันที่ที่ไม่มีอยู่จริง (2026-02-30) ผ่านทั้งคู่
+describe('วันที่ของใบลาและการมอบหมายรักษาการแทน', () => {
+  const approver = () => seed.userIds.director01;
+  const mkLeave = (over = {}) => createLeaveRequest({
+    requesterId: teacherUser.id, leaveType: 'sick', startDate: '2026-10-01', endDate: '2026-10-02',
+    reason: 'ทดสอบ', approverId: approver(), ...over,
+  });
+  const mkDelegation = (over = {}) => createDelegation({
+    delegatorId: seed.userIds.director01, delegateId: seed.userIds.vicedir01,
+    startDate: '2026-10-01', endDate: '2026-10-05', reason: 'ทดสอบ', createdBy: seed.userIds.director01, ...over,
+  });
+
+  test('ค่าที่ไม่ใช่วันที่ต้องถูกปฏิเสธ ไม่ใช่บันทึกแล้วมีผลตลอดไป', () => {
+    for (const [label, over] of [
+      ['วันสิ้นสุดเป็นข้อความไทย', { endDate: 'ไม่ใช่วันที่' }],
+      ['วันสิ้นสุดเป็นตัวอักษรอังกฤษ', { endDate: 'zzzz' }],
+      ['วันเริ่มเป็นข้อความ', { startDate: 'ไม่ใช่วันที่' }],
+      ['วันที่แบบ พ.ศ.', { startDate: '2569-10-01', endDate: '2569-10-05' }],
+      ['วันที่ที่ไม่มีอยู่จริง', { startDate: '2026-02-30', endDate: '2026-02-30' }],
+      ['เว้นว่าง', { endDate: '' }],
+    ]) {
+      assert.throws(() => mkDelegation(over), undefined, `การมอบหมายควรปฏิเสธ: ${label}`);
+      assert.throws(() => mkLeave(over), undefined, `ใบลาควรปฏิเสธ: ${label}`);
+    }
+  });
+
+  // เทสต์ข้อนี้คือหัวใจของเรื่อง — ถ้าค่าที่ไม่ใช่วันที่หลุดเข้าฐานข้อมูลได้ ผู้รักษาการแทนจะถืออำนาจ
+  // ลงนามแทนผู้อำนวยการไปตลอดกาล โดยหน้าจอไม่มีอะไรบอกว่าทำไม
+  test('ไม่มีการมอบหมายที่ยังมีผลอยู่ในอีก 100 ปีข้างหน้า', () => {
+    mkDelegation({ startDate: '2026-10-01', endDate: '2026-10-05' });
+    const farFuture = '2126-08-23';
+    const stillActive = db.prepare(`
+      SELECT start_date, end_date FROM user_delegations
+      WHERE cancelled_at IS NULL AND start_date <= ? AND end_date >= ?
+    `).all(farFuture, farFuture);
+    assert.deepEqual(stillActive, [], `มีการมอบหมายที่ไม่มีวันหมดอายุ: ${JSON.stringify(stillActive)}`);
+  });
+
+  test('ช่วงเวลาที่ยาวผิดปกติต้องถูกปฏิเสธ (พิมพ์ปีผิดหนึ่งหลัก)', () => {
+    assert.throws(() => mkLeave({ startDate: '2026-10-01', endDate: '2126-10-02' }), /ยาวผิดปกติ/);
+    assert.throws(() => mkDelegation({ startDate: '2026-10-01', endDate: '2126-10-02' }), /ยาวผิดปกติ/);
+    // ช่วงที่สมเหตุสมผลต้องยังผ่าน ไม่ใช่ปิดตายไปเลย
+    assert.ok(mkLeave({ startDate: '2026-10-01', endDate: '2026-12-28' }).id, 'ลา ~3 เดือนต้องยังทำได้');
+  });
+
+  test('ข้อความยาวเกินกำหนดต้องถูกปฏิเสธ', () => {
+    assert.throws(() => mkLeave({ reason: 'ก'.repeat(50000) }), /ยาวเกินไป/);
+    assert.throws(() => mkDelegation({ reason: 'ก'.repeat(50000) }), /ยาวเกินไป/);
+  });
+
+  test('ผู้รักษาการแทนที่ไม่มีอยู่จริง ต้องได้ข้อความที่อ่านรู้เรื่อง ไม่ใช่ error ของ SQLite', () => {
+    assert.throws(() => mkDelegation({ delegateId: 'ไม่มีคนนี้' }), (err) => {
+      assert.ok(!/FOREIGN KEY/i.test(err.message), `ข้อความดิบของ SQLite หลุดถึงผู้ใช้: ${err.message}`);
+      assert.match(err.message, /ไม่พบผู้รักษาการแทน/);
+      return true;
+    });
+  });
+
+  test('จำนวนวันลาคำนวณถูกต้อง นับรวมวันแรกและวันสุดท้าย', () => {
+    assert.equal(mkLeave({ startDate: '2026-10-01', endDate: '2026-10-01' }).daysCount, 1);
+    assert.equal(mkLeave({ startDate: '2026-10-01', endDate: '2026-10-03' }).daysCount, 3);
+    // ข้ามเดือนและปีอธิกสุรทิน
+    assert.equal(mkLeave({ startDate: '2028-02-27', endDate: '2028-03-01' }).daysCount, 4);
+  });
+
+  // ทั้งสามโมดูลต้องเรียกตัวตรวจตัวเดียวกัน ไม่ใช่ก๊อปโค้ดไปคนละชุดแล้วค่อยๆ เลื่อนจากกันอีกรอบ
+  test('หนังสือ/ใบลา/การมอบหมาย ใช้ตัวตรวจวันที่ชุดเดียวกัน', () => {
+    const srcDir = new URL('../src/services/', import.meta.url).pathname;
+    for (const file of ['workflow.js', 'leave.js', 'delegation.js']) {
+      const src = fs.readFileSync(path.join(srcDir, file), 'utf8');
+      assert.match(src, /from '\.\/validate\.js'/, `${file} ไม่ได้ใช้ตัวตรวจกลาง`);
+      assert.ok(!/^function normalizeDate\(/m.test(src), `${file} ยังมี normalizeDate เป็นของตัวเองอยู่`);
+    }
+  });
+});
+
 // ด่านบังคับตั้งรหัสผ่านเองตอนเข้าใช้ครั้งแรก
 //
 // เดิมหน้าเข้าสู่ระบบพิมพ์รหัสผ่านของทุกบัญชีไว้ให้เห็น (admin / Admin@2569 ...) ใครเปิดเว็บเจอก็

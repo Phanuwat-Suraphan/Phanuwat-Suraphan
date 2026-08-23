@@ -3,9 +3,9 @@ import { fmtThaiDateShort } from '../render.js';
 import { notifyUser } from './notify.js';
 import { createDelegation } from './delegation.js';
 
-export function httpError(statusCode, message) {
-  return Object.assign(new Error(message), { statusCode });
-}
+import { httpError, assertDateRange, assertMaxLength } from './validate.js';
+
+export { httpError };
 
 export const LEAVE_TYPE_LABEL = {
   sick: 'ลาป่วย',
@@ -23,13 +23,11 @@ export function decisionVerb(leaveType) {
   return leaveType === 'official_travel' ? 'อนุมัติ' : 'อนุญาต';
 }
 
-function countDays(startDate, endDate) {
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  const diffMs = end - start;
-  if (diffMs < 0) return null;
-  return Math.floor(diffMs / 86_400_000) + 1;
-}
+// เพดานของใบลาหนึ่งใบ — ลาคลอด/ลาอุปสมบทที่ยาวที่สุดตามระเบียบก็ไม่เกินไม่กี่เดือน ที่ยาวกว่า 1 ปี
+// แปลว่าพิมพ์ปีผิด (ทดสอบแล้วเกิดขึ้นจริง: พิมพ์ 2126 แทน 2026 ได้ใบลา 36,526 วันโดยไม่มีอะไรฟ้อง)
+const MAX_LEAVE_DAYS = 366;
+const MAX_LEAVE_REASON = 2000;
+const MAX_LEAVE_TEXT = 500; // สถานที่ไปราชการ / ข้อมูลติดต่อ
 
 // ผู้ใช้ที่ยังใช้งานอยู่จริงเท่านั้น — ถ้าไม่ตรวจ ค่าที่ส่งมาจะไปตกที่ FOREIGN KEY constraint ของ SQLite
 // แล้วเด้งข้อความภาษาอังกฤษดิบๆ ใส่หน้าครู และในฐานข้อมูลที่อัปเกรดมาจากรุ่นเก่า คอลัมน์ delegate_id
@@ -42,10 +40,21 @@ function assertActiveUser(userId, what) {
 
 export function createLeaveRequest({ requesterId, leaveType, startDate, endDate, reason, destination, contactInfo, approverId, delegateId }) {
   if (!LEAVE_TYPE_LABEL[leaveType]) throw httpError(400, 'ประเภทการลาไม่ถูกต้อง');
-  if (!startDate || !endDate) throw httpError(400, 'กรุณาระบุวันที่เริ่มและวันที่สิ้นสุด');
-  const daysCount = countDays(startDate, endDate);
-  if (daysCount === null) throw httpError(400, 'วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่ม');
+  // ใช้ตัวตรวจวันที่ตัวเดียวกับฝั่งหนังสือ — เดิมที่นี่แค่ลบวันที่กัน ค่าที่ไม่ใช่วันที่จึงกลายเป็น NaN
+  // แล้วไปตกที่ NOT NULL constraint ของ days_count เป็น error 500 ภาษาอังกฤษดิบๆ ส่วนวันที่แบบ พ.ศ.
+  // กับวันที่ที่ไม่มีอยู่จริง (2026-02-30) ผ่านฉลุยแล้วถูกบันทึกไปเงียบๆ
+  const range = assertDateRange({
+    startDate, endDate,
+    startLabel: 'วันที่เริ่มลา', endLabel: 'วันที่สิ้นสุดการลา',
+    maxDays: MAX_LEAVE_DAYS, rangeLabel: 'ช่วงวันลา',
+  });
+  startDate = range.start;
+  endDate = range.end;
+  const daysCount = range.days;
   if (!reason?.trim()) throw httpError(400, 'กรุณาระบุเหตุผล');
+  assertMaxLength(reason, MAX_LEAVE_REASON, 'เหตุผล');
+  assertMaxLength(destination, MAX_LEAVE_TEXT, 'สถานที่ไปราชการ');
+  assertMaxLength(contactInfo, MAX_LEAVE_TEXT, 'ข้อมูลติดต่อระหว่างลา');
   if (!approverId) throw httpError(400, 'กรุณาเลือกผู้อนุมัติ');
   if (leaveType === 'official_travel' && !destination?.trim()) throw httpError(400, 'กรุณาระบุสถานที่ไปราชการ');
   if (delegateId === requesterId) throw httpError(400, 'มอบหมายให้ตัวเองรักษาการแทนไม่ได้');

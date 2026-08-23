@@ -3,9 +3,14 @@ import { nextRunningNumber } from '../numbering.js';
 import { notifyUser } from './notify.js';
 import { deleteFile as deleteDriveFile, isGoogleDriveEnabled } from './googleDrive.js';
 import { getActiveDelegateFor } from './delegation.js';
+import { httpError, normalizeDate, assertMaxLength } from './validate.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+// ตัวตรวจค่าที่กรอกเข้ามาทั้งหมดย้ายไปอยู่ที่ validate.js แล้ว เพื่อให้หนังสือ/ใบลา/การมอบหมายรักษาการแทน
+// ใช้ตัวเดียวกัน — ต่างคนต่างตรวจคือเหตุผลที่ใบลากับการมอบหมายรับวันที่มั่วเข้ามาได้อยู่นาน
+export { httpError };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
@@ -26,37 +31,7 @@ const VALID_DIRECTION = new Set(['incoming', 'outgoing']);
 const MAX_LEN = { title: 500, subject: 5000, correspondentName: 300, externalDocNumber: 100, customDocNumber: 100 };
 
 function assertLength(value, field, label) {
-  if (typeof value === 'string' && value.length > MAX_LEN[field]) {
-    throw httpError(400, `${label}ยาวเกินไป (${value.length} ตัวอักษร) — จำกัดไม่เกิน ${MAX_LEN[field]} ตัวอักษร`);
-  }
-}
-
-/**
- * ตรวจว่าเป็นวันที่จริงในรูปแบบ YYYY-MM-DD — คืน null ถ้าเว้นว่าง, throw ถ้ากรอกมาแต่ไม่ใช่วันที่
- *
- * เดิมเก็บค่าที่กรอกมาดิบๆ ลงฐานข้อมูลเลย ข้อความอย่าง "ไม่ใช่วันที่" จึงกลายเป็นวันครบกำหนดได้จริง
- * แล้วหน้าเอกสารก็แสดงคำนั้นออกมาตรงๆ ส่วนการนับว่าเลยกำหนดหรือยังก็เงียบไป (daysUntil คืน null)
- * หนังสือฉบับนั้นจึงหลุดจากรายการเลยกำหนดตลอดไปโดยไม่มีใครรู้
- */
-function normalizeDate(value, label) {
-  if (!value) return null;
-  const s = String(value).trim();
-  if (!s) return null;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw httpError(400, `${label}ไม่ใช่วันที่ที่ถูกต้อง (ต้องเป็นรูปแบบ ปี-เดือน-วัน)`);
-  const d = new Date(`${s}T00:00:00Z`);
-  // เช็คซ้ำว่าเป็นวันที่มีอยู่จริง — "2026-13-45" ผ่าน regex แต่ Date จะเลื่อนไปเป็นวันอื่นเงียบๆ
-  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) {
-    throw httpError(400, `${label}ไม่ใช่วันที่ที่มีอยู่จริง (${s})`);
-  }
-  // ช่องกรอกวันที่ของเบราว์เซอร์เป็น ค.ศ. เสมอ แต่ครูไทยคิดเป็น พ.ศ. การกรอก 2569 แทน 2026 จึงเกิดง่ายมาก
-  // ถ้าปล่อยผ่าน วันครบกำหนดจะไปอยู่อีก 543 ปีข้างหน้า แล้วหนังสือฉบับนั้นจะไม่มีวันขึ้นว่าเลยกำหนดเลย
-  // ค้างอยู่เงียบๆ ตลอดไป — ดักไว้พร้อมบอกวิธีแก้ตรงๆ ดีกว่าให้ไปเจอตอนเรื่องค้างแล้ว
-  const year = Number(s.slice(0, 4));
-  if (year > 2400) {
-    throw httpError(400, `${label}ดูเหมือนกรอกเป็นปี พ.ศ. (${year}) — ช่องนี้ใช้ปี ค.ศ. ถ้าเป็น พ.ศ. ${year} ให้กรอกเป็น ${year - 543}`);
-  }
-  if (year < 1900) throw httpError(400, `${label}มีปีที่ไม่สมเหตุสมผล (${year})`);
-  return s;
+  assertMaxLength(value, MAX_LEN[field], label);
 }
 
 /**
@@ -501,8 +476,4 @@ export function archiveDocument({ documentId, actorUser }) {
   if (doc.status !== 'completed') throw httpError(409, 'จัดเก็บได้เฉพาะเอกสารที่เสร็จสิ้นแล้ว');
   db.prepare(`UPDATE documents SET status = 'archived', updated_at = ? WHERE id = ?`).run(nowIso(), documentId);
   audit({ userId: actorUser.id, action: 'document_archived', tableName: 'documents', recordId: documentId });
-}
-
-export function httpError(statusCode, message) {
-  return Object.assign(new Error(message), { statusCode });
 }
