@@ -55,6 +55,41 @@ export function computeRetentionUntil(yearBe, retentionClass) {
   return `${untilYearAd}-12-31`;
 }
 
+// รหัสผ่านตั้งต้นชุดเดิมที่เคยพิมพ์โชว์ไว้บนหน้าเข้าสู่ระบบ — เก็บไว้เพื่อ "ตรวจจับ" ว่าฐานข้อมูลที่
+// deploy ไปแล้วยังมีบัญชีไหนใช้รหัสเหล่านี้อยู่ แล้วบังคับให้เปลี่ยน ไม่ได้ใช้ตั้งรหัสให้บัญชีใหม่อีกแล้ว
+const LEGACY_SEED_PASSWORDS = {
+  admin: 'Admin@2569',
+  director01: 'Director@2569',
+  vicedir01: 'Vice@2569',
+  head_acad: 'Head@2569',
+  reg001: 'Reg@2569',
+  teacher001: 'Teacher@2569',
+};
+
+// ตัดอักขระที่อ่านสับสน (0/O, 1/l/I) ออก เพราะรหัสชุดนี้ถูกอ่านจากหน้าจอ/กระดาษแล้วพิมพ์ตามด้วยมือ
+const SEED_PW_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+function randomPassword() {
+  const bytes = randomBytes(12);
+  return Array.from(bytes, (b) => SEED_PW_CHARS[b % SEED_PW_CHARS.length]).join('');
+}
+function randomPin() {
+  // ปฏิเสธ PIN ที่เป็นเลขซ้ำทั้งหมด (111111) หรือเรียงติดกัน — เดาง่ายเกินไปสำหรับสิ่งที่ใช้แทนลายเซ็น
+  for (;;) {
+    const pin = Array.from(randomBytes(6), (b) => String(b % 10)).join('');
+    if (!isWeakPin(pin)) return pin;
+  }
+}
+
+/** PIN ที่อ่อนเกินกว่าจะใช้แทนการลงนาม — เลขซ้ำทั้งหมด หรือเรียงขึ้น/ลงติดกันทั้ง 6 ตัว */
+export function isWeakPin(pin) {
+  if (!/^\d{6}$/.test(pin || '')) return true;
+  if (/^(\d)\1{5}$/.test(pin)) return true;
+  const digits = [...pin].map(Number);
+  const step = digits[1] - digits[0];
+  if ((step === 1 || step === -1) && digits.every((d, i) => i === 0 || d - digits[i - 1] === step)) return true;
+  return false;
+}
+
 export function hashSecret(plain) {
   const salt = randomBytes(16).toString('hex');
   const hash = scryptSync(plain, salt, 64).toString('hex');
@@ -115,6 +150,10 @@ export function migrate() {
     locked_until TEXT, -- login rate limiting (Security Bible §7): lock 15 min after 5 bad attempts
     signature_image TEXT, -- ลายเซ็นสแกนของผู้ใช้แต่ละคน (data URL, base64) — ของใครของมัน
     avatar_emoji TEXT, -- อวตารอิโมจิที่ผู้ใช้เลือกเอง (UX Bible Part 21 §8) — NULL แปลว่ายังไม่เลือก ใช้ตัวอักษรย่อชื่อแทน
+    -- บัญชีที่ยังใช้รหัสผ่านที่ "คนอื่นตั้งให้" (บัญชีตั้งต้นของระบบ / บัญชีที่นำเข้าจาก Excel) ต้องเปลี่ยน
+    -- รหัสผ่านและ PIN ด้วยตัวเองก่อนใช้งานอย่างอื่น — ตราบใดที่ยังไม่เปลี่ยน คนที่ส่งรหัสให้ก็ยังเข้าบัญชี
+    -- นั้นได้ ซึ่งทำให้ลายเซ็น/การลงนาม "ทราบ" ที่ออกจากบัญชีนั้นพิสูจน์ตัวตนไม่ได้จริง
+    must_change_password INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT
@@ -432,6 +471,22 @@ export function migrate() {
   if (!userCols.includes('avatar_emoji')) {
     db.exec('ALTER TABLE users ADD COLUMN avatar_emoji TEXT');
   }
+  // ฐานข้อมูลที่ deploy ไปแล้วมีบัญชีตั้งต้นที่รหัสผ่านเคยถูกพิมพ์ไว้บนหน้าเข้าสู่ระบบให้ทุกคนเห็น
+  // (Admin@2569, Director@2569, ...) ใครที่เปิดเว็บเจอก็ล็อกอินเป็นผู้อำนวยการได้ทันที — ตั้งธงบังคับ
+  // เปลี่ยนรหัสเฉพาะบัญชีที่ "ยังใช้รหัสเดิมอยู่จริง" เท่านั้น คนที่เปลี่ยนไปแล้วไม่ต้องมาเจอหน้านี้ซ้ำ
+  if (!userCols.includes('must_change_password')) {
+    db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
+    const stmt = db.prepare('UPDATE users SET must_change_password = 1 WHERE id = ?');
+    let flagged = 0;
+    for (const u of db.prepare('SELECT id, employee_code, password_hash FROM users').all()) {
+      const known = LEGACY_SEED_PASSWORDS[u.employee_code];
+      if (known && verifySecret(known, u.password_hash)) { stmt.run(u.id); flagged++; }
+    }
+    if (flagged) {
+      console.warn(`[security] พบ ${flagged} บัญชีที่ยังใช้รหัสผ่านตั้งต้นซึ่งเคยเปิดเผยไว้บนหน้าเข้าสู่ระบบ — บังคับให้เปลี่ยนรหัสผ่านและ PIN ก่อนใช้งานครั้งถัดไป`);
+    }
+  }
+
   const documentCols = db.prepare("PRAGMA table_info(documents)").all().map((c) => c.name);
   if (!documentCols.includes('stamp_x')) {
     db.exec('ALTER TABLE documents ADD COLUMN stamp_x REAL');
@@ -555,29 +610,46 @@ function seedIfEmpty() {
   }
 
   const insUser = db.prepare(`
-    INSERT INTO users (id, employee_code, prefix, first_name, last_name, email, position, department_id, password_hash, pin_hash, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+    INSERT INTO users (id, employee_code, prefix, first_name, last_name, email, position, department_id, password_hash, pin_hash, status, must_change_password, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)
   `);
   const insUserRole = db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)');
 
-  const demoUsers = [
-    { code: 'admin', prefix: 'นาย', first: 'ระบบ', last: 'ผู้ดูแล', email: 'admin@school.local', pos: 'ผู้ดูแลระบบ', dept: 'ADMIN', role: 'admin', pass: 'Admin@2569', pin: '111111' },
-    { code: 'director01', prefix: 'นาย', first: 'สมชาย', last: 'ผู้นำโรงเรียน', email: 'director@school.local', pos: 'ผู้อำนวยการ', dept: 'ADMIN', role: 'director', pass: 'Director@2569', pin: '222222' },
-    { code: 'vicedir01', prefix: 'นาง', first: 'สมหญิง', last: 'รองผู้อำนวยการ', email: 'vicedir@school.local', pos: 'รองผู้อำนวยการ', dept: 'ACAD', role: 'vice_director', pass: 'Vice@2569', pin: '333333' },
-    { code: 'head_acad', prefix: 'นาง', first: 'วิชาการ', last: 'หัวหน้าฝ่าย', email: 'head.acad@school.local', pos: 'หัวหน้าฝ่ายวิชาการ', dept: 'ACAD', role: 'head', pass: 'Head@2569', pin: '444444' },
-    { code: 'reg001', prefix: 'นางสาว', first: 'ธุรการ', last: 'ใจดี', email: 'registrar@school.local', pos: 'เจ้าหน้าที่ธุรการ', dept: 'REG', role: 'registrar', pass: 'Reg@2569', pin: '555555' },
-    { code: 'teacher001', prefix: 'นาย', first: 'ครูใหญ่', last: 'สอนดี', email: 'teacher@school.local', pos: 'ครู', dept: 'ACAD', role: 'teacher', pass: 'Teacher@2569', pin: '666666' },
+  const seedUsers = [
+    { code: 'admin', prefix: 'นาย', first: 'ระบบ', last: 'ผู้ดูแล', email: 'admin@school.local', pos: 'ผู้ดูแลระบบ', dept: 'ADMIN', role: 'admin' },
+    { code: 'director01', prefix: 'นาย', first: 'สมชาย', last: 'ผู้นำโรงเรียน', email: 'director@school.local', pos: 'ผู้อำนวยการ', dept: 'ADMIN', role: 'director' },
+    { code: 'vicedir01', prefix: 'นาง', first: 'สมหญิง', last: 'รองผู้อำนวยการ', email: 'vicedir@school.local', pos: 'รองผู้อำนวยการ', dept: 'ACAD', role: 'vice_director' },
+    { code: 'head_acad', prefix: 'นาง', first: 'วิชาการ', last: 'หัวหน้าฝ่าย', email: 'head.acad@school.local', pos: 'หัวหน้าฝ่ายวิชาการ', dept: 'ACAD', role: 'head' },
+    { code: 'reg001', prefix: 'นางสาว', first: 'ธุรการ', last: 'ใจดี', email: 'registrar@school.local', pos: 'เจ้าหน้าที่ธุรการ', dept: 'REG', role: 'registrar' },
+    { code: 'teacher001', prefix: 'นาย', first: 'ครูใหญ่', last: 'สอนดี', email: 'teacher@school.local', pos: 'ครู', dept: 'ACAD', role: 'teacher' },
   ];
 
   const userIds = {};
-  for (const u of demoUsers) {
+  const passwords = {};
+  for (const u of seedUsers) {
     const id = uuid();
     userIds[u.code] = id;
-    insUser.run(id, u.code, u.prefix, u.first, u.last, u.email, u.pos, deptIds[u.dept], hashSecret(u.pass), hashSecret(u.pin), nowIso(), nowIso());
+    // สุ่มรหัสผ่าน/PIN ใหม่ทุกครั้งที่สร้างฐานข้อมูล แล้วพิมพ์ออก log ของเซิร์ฟเวอร์ครั้งเดียว —
+    // เดิมเป็นรหัสตายตัวที่พิมพ์โชว์อยู่บนหน้าเข้าสู่ระบบด้วย ใครเปิดเว็บเจอก็เข้าเป็นผู้อำนวยการได้ทันที
+    const pass = randomPassword();
+    const pin = randomPin();
+    passwords[u.code] = { password: pass, pin };
+    insUser.run(id, u.code, u.prefix, u.first, u.last, u.email, u.pos, deptIds[u.dept], hashSecret(pass), hashSecret(pin), nowIso(), nowIso());
     insUserRole.run(id, roleIds[u.role]);
   }
 
-  db._seed = { deptIds, roleIds, typeIds, userIds };
+  console.warn([
+    '',
+    '='.repeat(78),
+    '  สร้างฐานข้อมูลใหม่พร้อมบัญชีตั้งต้นแล้ว — รหัสผ่านชุดนี้แสดงเพียงครั้งเดียวเท่านั้น',
+    '  ทุกบัญชีจะถูกบังคับให้ตั้งรหัสผ่านและ PIN ใหม่ด้วยตัวเองตอนเข้าใช้งานครั้งแรก',
+    '='.repeat(78),
+    ...seedUsers.map((u) => `  ${u.code.padEnd(12)} รหัสผ่าน ${passwords[u.code].password}   PIN ${passwords[u.code].pin}   (${u.pos})`),
+    '='.repeat(78),
+    '',
+  ].join('\n'));
+
+  db._seed = { deptIds, roleIds, typeIds, userIds, passwords };
 }
 
 migrate();

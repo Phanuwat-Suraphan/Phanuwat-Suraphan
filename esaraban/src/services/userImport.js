@@ -6,7 +6,7 @@
 // รับทั้ง .xlsx และ .csv เพราะไฟล์รายชื่อครูที่โรงเรียนมีอยู่แล้วมีทั้งสองแบบ และ CSV ทำให้เราแจก
 // ไฟล์ตัวอย่างได้โดยไม่ต้องเขียนตัวสร้าง .xlsx เอง (โปรเจกต์นี้ไม่มี npm dependency)
 import { readWorkbook } from './xlsx.js';
-import { db, uuid, nowIso, hashSecret, audit } from '../db.js';
+import { db, uuid, nowIso, hashSecret, audit, isWeakPin } from '../db.js';
 
 function httpError(statusCode, message) {
   return Object.assign(new Error(message), { statusCode });
@@ -157,16 +157,21 @@ export function generatePassword() {
   return Array.from(bytes, (b) => PW_CHARS[b % PW_CHARS.length]).join('');
 }
 export function generatePin() {
-  const bytes = crypto.getRandomValues(new Uint8Array(6));
-  return Array.from(bytes, (b) => String(b % 10)).join('');
+  // วนจนกว่าจะได้ PIN ที่ไม่เดาง่าย — ตัวที่สุ่มได้อาจออกมาเป็น 111111 หรือ 123456 ได้จริง แล้วหน้า
+  // ตั้งรหัสครั้งแรกจะปฏิเสธ PIN นั้นเอง กลายเป็นระบบแจก PIN ที่ระบบตัวเองไม่ยอมรับ
+  for (;;) {
+    const bytes = crypto.getRandomValues(new Uint8Array(6));
+    const pin = Array.from(bytes, (b) => String(b % 10)).join('');
+    if (!isWeakPin(pin)) return pin;
+  }
 }
 
 /** สร้างบัญชีจริงจากรายการที่ตรวจแล้ว — คืนรหัสผ่าน/PIN ที่สุ่มให้ เพื่อแสดงครั้งเดียว */
 export function applyUserImport(items, actorId) {
   const created = [];
   const insUser = db.prepare(`
-    INSERT INTO users (id, employee_code, prefix, first_name, last_name, email, position, department_id, password_hash, pin_hash, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+    INSERT INTO users (id, employee_code, prefix, first_name, last_name, email, position, department_id, password_hash, pin_hash, status, must_change_password, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)
   `);
   const insRole = db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)');
 

@@ -11,7 +11,7 @@ const tmpDb = path.join(os.tmpdir(), `esaraban-test-${Date.now()}-${Math.random(
 process.env.DB_PATH = tmpDb;
 process.env.SESSION_SECRET = 'test-secret-not-for-production';
 
-const { db, computeRetentionUntil, beYear, todayInBangkok, hashSecret, verifySecret } = await import('../src/db.js');
+const { db, computeRetentionUntil, beYear, todayInBangkok, hashSecret, verifySecret, isWeakPin, nowIso } = await import('../src/db.js');
 const { login, getSessionUser, revokeOtherSessions, verifyPin } = await import('../src/auth.js');
 const { contentDispositionHeader } = await import('../src/router.js');
 const { daysUntil, fmtDate, fmtThaiDateShort, fmtThaiDateLong, stampDateThai, stampTimeThai, bangkokHour } = await import('../src/render.js');
@@ -34,6 +34,14 @@ const { createDestructionBatch, approveDestructionBatch } = await import('../src
 const zlib = await import('node:zlib');
 
 const seed = db._seed;
+// รหัสผ่าน/PIN ของบัญชีตั้งต้นถูกสุ่มใหม่ทุกครั้งที่สร้างฐานข้อมูล (เดิมเป็นค่าตายตัวที่พิมพ์โชว์ไว้บน
+// หน้าเข้าสู่ระบบ) เทสต์จึงต้องอ่านจากที่ seed คืนมา ไม่ใช่ฝังค่าไว้เอง
+const pw = (code) => seed.passwords[code].password;
+const userPin = (code) => seed.passwords[code].pin;
+// บัญชีตั้งต้นถูกตั้งธง must_change_password ไว้ตอน seed เทสต์ส่วนใหญ่จำลอง "ระบบที่ใช้งานอยู่จริง"
+// คือทุกคนตั้งรหัสของตัวเองไปแล้ว จึงเคลียร์ธงตรงนี้ทีเดียว ส่วนตัวด่านบังคับเปลี่ยนรหัสมีเทสต์แยกของ
+// ตัวเองที่ตั้งธงขึ้นมาเองเฉพาะกิจ (describe 'ด่านบังคับตั้งรหัสผ่านเองตอนเข้าใช้ครั้งแรก')
+db.prepare('UPDATE users SET must_change_password = 0').run();
 const adminUser = { id: seed.userIds.admin, roleCodes: ['admin'] };
 const teacherUser = { id: seed.userIds.teacher001, roleCodes: ['teacher'], prefix: 'นาย', first_name: 'ครูใหญ่', last_name: 'สอนดี' };
 const registrarUser = { id: seed.userIds.reg001, roleCodes: ['registrar'] };
@@ -96,7 +104,7 @@ describe('auth: login + rate limiting', () => {
   });
 
   test('accepts correct credentials', () => {
-    const result = login('teacher001', 'Teacher@2569', '127.0.0.1');
+    const result = login('teacher001', pw('teacher001'), '127.0.0.1');
     assert.equal(result.ok, true);
     assert.ok(result.cookie);
   });
@@ -111,7 +119,7 @@ describe('auth: login + rate limiting', () => {
     assert.equal(lockingAttempt.ok, false);
     assert.match(lockingAttempt.error, /ล็อกชั่วคราว/);
 
-    const blockedEvenCorrect = login('reg001', 'Reg@2569', '127.0.0.1');
+    const blockedEvenCorrect = login('reg001', pw('reg001'), '127.0.0.1');
     assert.equal(blockedEvenCorrect.ok, false);
     assert.match(blockedEvenCorrect.error, /ล็อกชั่วคราว/);
   });
@@ -132,8 +140,8 @@ describe('ตรวจรหัสผ่าน/PIN: ค่าที่ไม่�
 
   test('verifyPin ของผู้ใช้จริง ไม่พังเมื่อไม่ได้ส่ง PIN มา', () => {
     assert.equal(verifyPin(teacherUser.id, undefined), false);
-    assert.equal(verifyPin(teacherUser.id, 666666), false, 'ตัวเลขต้องไม่ผ่าน (ต้องเป็นข้อความ)');
-    assert.equal(verifyPin(teacherUser.id, '666666'), true);
+    assert.equal(verifyPin(teacherUser.id, Number(userPin('teacher001'))), false, 'ตัวเลขต้องไม่ผ่าน (ต้องเป็นข้อความ)');
+    assert.equal(verifyPin(teacherUser.id, userPin('teacher001')), true);
   });
 });
 
@@ -759,7 +767,7 @@ describe('เซสชัน: เปลี่ยนรหัสผ่าน/ร�
   // คนเปลี่ยนรหัสผ่านเพราะกลัวรหัสรั่ว ถ้าเซสชันเดิมยังใช้ได้ต่ออีก 8 ชั่วโมงตามอายุคุกกี้
   // การเปลี่ยนรหัสก็ไม่ได้แก้ปัญหาที่ตั้งใจจะแก้ (ทดสอบกับระบบจริงแล้วว่าเซสชันเดิมยังเปิดหน้าได้จริง)
   test('เปลี่ยนรหัสผ่านแล้ว เครื่องอื่นถูกเตะออก แต่เครื่องที่กำลังใช้อยู่ยังอยู่', () => {
-    const [other, current] = twoSessions('vicedir01', 'Vice@2569');
+    const [other, current] = twoSessions('vicedir01', pw('vicedir01'));
     assert.ok(getSessionUser(cookieOf(other.cookie)), 'ก่อนเปลี่ยนรหัส เครื่องอื่นต้องยังใช้ได้');
 
     const me = getSessionUser(cookieOf(current.cookie));
@@ -773,7 +781,7 @@ describe('เซสชัน: เปลี่ยนรหัสผ่าน/ร�
   // ครูที่ย้ายออกไปแล้ว/ถูกระงับบัญชี ต้องใช้งานไม่ได้ทันที ไม่ใช่ใช้ต่อได้จนเซสชันหมดอายุเอง
   // login() กันไว้อยู่แล้ว แต่เซสชันที่เปิดค้างอยู่ก่อนหน้านั้นรอดมาได้
   test('บัญชีที่ถูกระงับ ใช้เซสชันเดิมต่อไม่ได้', () => {
-    const s = login('head_acad', 'Head@2569', '127.0.0.1', 'เครื่องเดิม');
+    const s = login('head_acad', pw('head_acad'), '127.0.0.1', 'เครื่องเดิม');
     assert.ok(s.ok, 'ต้องล็อกอินได้ก่อน');
     assert.ok(getSessionUser(cookieOf(s.cookie)), 'ตอนบัญชียังปกติต้องใช้ได้');
     try {
@@ -1395,6 +1403,127 @@ describe('ทะเบียนหนังสือ: ตัวกรองล�
     // ลิงก์ส่งออกไฟล์ต้องใช้ตัวประกอบตัวเดียวกับลิงก์เปลี่ยนหน้า ไม่งั้นไฟล์ที่ได้จะเป็นทั้งทะเบียน
     // ทั้งที่ผู้ใช้กรองไว้แล้ว ซึ่งเป็นความผิดพลาดที่ผู้ใช้ไม่มีทางสังเกตเห็นจากปุ่มเลย
     assert.match(fn, /const exportLink = \(path\) => `\$\{path\}\?\$\{filterQs\(\)/);
+  });
+});
+
+// ด่านบังคับตั้งรหัสผ่านเองตอนเข้าใช้ครั้งแรก
+//
+// เดิมหน้าเข้าสู่ระบบพิมพ์รหัสผ่านของทุกบัญชีไว้ให้เห็น (admin / Admin@2569 ...) ใครเปิดเว็บเจอก็
+// ล็อกอินเป็นผู้อำนวยการแล้วลงนาม "ทราบ" แทนได้ทันที ตอนนี้รหัสตั้งต้นถูกสุ่มและบังคับเปลี่ยนก่อนใช้งาน
+describe('ด่านบังคับตั้งรหัสผ่านเองตอนเข้าใช้ครั้งแรก', () => {
+  // ผู้ใช้เฉพาะกิจของ describe นี้ จะได้ไม่ไปรบกวนเทสต์อื่นที่จำลองระบบที่ใช้งานอยู่จริง
+  function freshUser(code, { password = 'TempPass1234', pin = '482913' } = {}) {
+    const id = `first-login-${code}`;
+    db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    db.prepare(`
+      INSERT INTO users (id, employee_code, first_name, last_name, department_id, password_hash, pin_hash,
+        status, must_change_password, created_at, updated_at)
+      VALUES (?, ?, 'ทดสอบ', 'ครั้งแรก', ?, ?, ?, 'active', 1, ?, ?)
+    `).run(id, code, deptId, hashSecret(password), hashSecret(pin), nowIso(), nowIso());
+    db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)').run(id, seed.roleIds.teacher);
+    return { id, code, password, pin, roleCodes: ['teacher'], department_id: deptId, must_change_password: 1 };
+  }
+  const post = async (user, path, body) => {
+    let status = 0; const chunks = []; const headers = {};
+    const res = {
+      headersSent: false, setHeader() {},
+      writeHead(code, h) { status = code; Object.assign(headers, h || {}); this.headersSent = true; return this; },
+      end(chunk) { if (chunk) chunks.push(String(chunk)); },
+    };
+    const ctx = { req: { method: 'POST', headers: {} }, res, url: new URL(`http://x${path}`), query: {}, user, body, ip: '127.0.0.1' };
+    if (!routerForTest) { ({ router: routerForTest } = await import('../src/router.js')); await import('../src/routes/index.js'); }
+    await routerForTest.dispatch('POST', path, ctx);
+    return { status, headers, body: chunks.join('') };
+  };
+
+  test('ทุกหน้าถูกเด้งไปหน้าตั้งรหัสผ่าน จนกว่าจะตั้งเสร็จ', async () => {
+    const user = freshUser('firstlogin01');
+    for (const path of ['/', '/documents', '/leave', '/profile', '/notifications']) {
+      const res = await dispatchGet(user, path, {});
+      assert.equal(res.status, 302, `${path} ต้องเด้งไปหน้าตั้งรหัสผ่าน`);
+      assert.equal(res.headers.Location, '/first-login', `${path} เด้งผิดที่: ${res.headers.Location}`);
+    }
+    // หน้าตั้งรหัสผ่านเองต้องเปิดได้ ไม่งั้นจะติดอยู่ในวงวนเด้งไม่รู้จบ
+    assert.equal((await dispatchGet(user, '/first-login', {})).status, 200);
+  });
+
+  test('API ต้องถูกปฏิเสธด้วย ไม่ใช่กันแค่หน้าเว็บ', async () => {
+    const user = freshUser('firstlogin02');
+    const res = await post(user, '/documents', { title: 'ก', correspondentName: 'ข', departmentId: deptId });
+    assert.equal(res.status, 403, 'ต้องกันที่ฝั่งเซิร์ฟเวอร์ ไม่ใช่พึ่งการเด้งหน้าเว็บอย่างเดียว');
+    assert.match(res.body, /ตั้งรหัสผ่าน/);
+  });
+
+  test('ตั้งรหัสผ่านและ PIN ใหม่แล้วใช้งานได้ตามปกติ', async () => {
+    const user = freshUser('firstlogin03');
+    const res = await post(user, '/first-login', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '739184' });
+    assert.equal(res.status, 302);
+    const row = db.prepare('SELECT must_change_password FROM users WHERE id = ?').get(user.id);
+    assert.equal(row.must_change_password, 0, 'ธงต้องถูกลบหลังตั้งรหัสเสร็จ');
+    assert.equal(login('firstlogin03', 'RhatMaiPloxy99', '127.0.0.1').ok, true, 'ต้องล็อกอินด้วยรหัสใหม่ได้');
+    assert.equal(login('firstlogin03', user.password, '127.0.0.1').ok, false, 'รหัสชั่วคราวต้องใช้ไม่ได้อีก');
+    assert.equal(verifyPin(user.id, '739184'), true, 'ต้องใช้ PIN ใหม่ได้');
+    assert.equal((await dispatchGet({ ...user, must_change_password: 0 }, '/documents', { direction: 'incoming' })).status, 200);
+  });
+
+  test('ปฏิเสธรหัสผ่าน/PIN ที่ยังไม่ปลอดภัยพอ', async () => {
+    const user = freshUser('firstlogin04');
+    const cases = [
+      ['สั้นเกินไป', { newPassword: 'Sun123', confirmPassword: 'Sun123', newPin: '739184' }, /อย่างน้อย 8/],
+      ['พิมพ์ยืนยันไม่ตรง', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy98', newPin: '739184' }, /ไม่ตรงกัน/],
+      ['ซ้ำรหัสชั่วคราว', { newPassword: user.password, confirmPassword: user.password, newPin: '739184' }, /ไม่ซ้ำกับรหัสผ่านชั่วคราว/],
+      ['PIN ไม่ใช่ 6 หลัก', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '12ก4' }, /6 หลัก/],
+      ['PIN เลขซ้ำ', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '111111' }, /เดาง่าย/],
+      ['PIN เลขเรียง', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '123456' }, /เดาง่าย/],
+      ['PIN ซ้ำของเดิม', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: user.pin }, /ไม่ซ้ำกับ PIN ชั่วคราว/],
+    ];
+    for (const [label, body, expected] of cases) {
+      const res = await post(user, '/first-login', body);
+      assert.equal(res.status, 400, `ควรปฏิเสธ: ${label}`);
+      assert.match(res.body, expected, `ข้อความไม่ตรงกรณี: ${label}`);
+    }
+    assert.equal(db.prepare('SELECT must_change_password m FROM users WHERE id = ?').get(user.id).m, 1,
+      'ธงต้องยังอยู่เมื่อยังตั้งรหัสไม่สำเร็จ');
+  });
+
+  // ตรวจจาก HTML ที่ผู้ใช้ได้รับจริง ไม่ใช่จากซอร์ส — สิ่งที่ต้องกันคือ "หน้าที่คนยังไม่ล็อกอินเปิดดูได้
+  // แล้วมีรหัสผ่านติดมาด้วย" ไม่ว่ารหัสนั้นจะมาจากตรงไหนในโค้ด
+  test('หน้าเข้าสู่ระบบต้องไม่มีรหัสผ่านของบัญชีใดๆ ติดมาด้วย', async () => {
+    const page = (await dispatchGet(null, '/login', {})).body;
+    assert.match(page, /ลงชื่อเข้าใช้งาน/, 'ต้องได้หน้าเข้าสู่ระบบจริง ไม่งั้นเทสต์นี้ไม่ได้ตรวจอะไร');
+    const forbidden = [
+      'Admin@2569', 'Director@2569', 'Vice@2569', 'Head@2569', 'Reg@2569', 'Teacher@2569',
+      ...Object.values(seed.passwords).flatMap((c) => [c.password, c.pin]),
+    ];
+    for (const leaked of forbidden) {
+      assert.ok(!page.includes(leaked), `หน้าเข้าสู่ระบบยังมี "${leaked}" อยู่`);
+    }
+  });
+
+  test('รหัสผ่านของบัญชีตั้งต้นต้องสุ่มใหม่ ไม่ใช่ค่าตายตัวเดิม', () => {
+    for (const [code, creds] of Object.entries(seed.passwords)) {
+      assert.ok(creds.password.length >= 12, `รหัสผ่านของ ${code} สั้นเกินไป`);
+      assert.ok(!['Admin@2569', 'Director@2569', 'Vice@2569', 'Head@2569', 'Reg@2569', 'Teacher@2569'].includes(creds.password),
+        `${code} ยังใช้รหัสผ่านตั้งต้นชุดเดิมที่เคยเปิดเผยไว้`);
+      assert.equal(isWeakPin(creds.pin), false, `PIN ของ ${code} เดาง่ายเกินไป`);
+    }
+    const all = Object.values(seed.passwords).map((c) => c.password);
+    assert.equal(new Set(all).size, all.length, 'ทุกบัญชีต้องได้รหัสผ่านคนละอัน');
+  });
+
+  test('บัญชีที่นำเข้าจาก Excel ก็ต้องตั้งรหัสเองก่อนใช้งาน', () => {
+    const src = fs.readFileSync(new URL('../src/services/userImport.js', import.meta.url), 'utf8');
+    assert.match(src, /must_change_password/,
+      'บัญชีที่นำเข้าได้รหัสผ่านจากผู้ดูแล จึงต้องถูกบังคับให้ตั้งเองเหมือนบัญชีตั้งต้น');
+  });
+
+  test('isWeakPin จับ PIN ที่เดาง่ายได้ครบ', () => {
+    for (const weak of ['111111', '000000', '999999', '123456', '654321', '12345', 'abcdef', '', null]) {
+      assert.equal(isWeakPin(weak), true, `ควรถือว่าอ่อน: ${weak}`);
+    }
+    for (const ok of ['739184', '482913', '135790', '112233']) {
+      assert.equal(isWeakPin(ok), false, `ไม่ควรถือว่าอ่อน: ${ok}`);
+    }
   });
 });
 

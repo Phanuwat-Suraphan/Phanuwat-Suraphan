@@ -2,7 +2,7 @@ import { router, html, json, redirect, contentDispositionHeader } from '../route
 import { layout, esc, fmtDate, emptyState } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { db, uuid, nowIso, hashSecret, audit } from '../db.js';
-import { readTable, planUserImport, applyUserImport, templateCsv } from '../services/userImport.js';
+import { readTable, planUserImport, applyUserImport, templateCsv, generatePassword, generatePin } from '../services/userImport.js';
 import { httpError } from '../services/workflow.js';
 import {
   isGoogleDriveEnabled, isGoogleDriveConnected, getOAuthClientConfig, exchangeCodeForTokens, DRIVE_SCOPE, AUTH_URL,
@@ -54,7 +54,11 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
             <td>${esc(u.employee_code)}</td><td>${esc(u.prefix || '')}${esc(u.first_name)} ${esc(u.last_name)}</td>
             <td>${esc(u.dept_name || '-')}</td><td>${esc(u.role_names || '-')}</td>
             <td><span class="badge ${u.status === 'active' ? 'badge-success' : 'badge-muted'}">${u.status === 'active' ? 'ใช้งาน' : 'ระงับ'}</span></td>
-            <td>${u.id === ctx.user.id ? '' : `<button class="btn btn-outline btn-sm" onclick="deleteUser('${u.id}','${esc(u.first_name)} ${esc(u.last_name)}')">🗑️ ลบ</button>`}</td>
+            <td style="white-space:nowrap">
+              ${u.must_change_password ? '<span class="badge badge-warning" title="ยังไม่ได้ตั้งรหัสผ่านของตัวเอง">🔑 รอตั้งรหัส</span> ' : ''}
+              <button class="btn btn-outline btn-sm" onclick="resetPassword('${u.id}','${esc(u.employee_code)}')">🔑 รีเซ็ตรหัส</button>
+              ${u.id === ctx.user.id ? '' : `<button class="btn btn-outline btn-sm" onclick="deleteUser('${u.id}','${esc(u.first_name)} ${esc(u.last_name)}')">🗑️ ลบ</button>`}
+            </td>
           </tr>`).join('')}</tbody>
         </table></div>
       </div>
@@ -95,6 +99,18 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
               .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
               .catch(e => toast(e.message, 'danger'));
           });
+          function resetPassword(id, code) {
+            if (!confirm('ออกรหัสผ่านชั่วคราวใหม่ให้ "' + code + '"?\n\nรหัสเดิมจะใช้ไม่ได้ทันที เครื่องที่เปิดค้างอยู่จะถูกให้ออกจากระบบ และเจ้าตัวต้องตั้งรหัสของตัวเองตอนเข้าใช้ครั้งถัดไป')) return;
+            fetch('/admin/users/' + id + '/reset-password', {method:'POST'})
+              .then(r => r.json().then(d => ({ok:r.ok,d})))
+              .then(({ok,d}) => {
+                if(!ok) throw new Error(d.error);
+                // แสดงครั้งเดียวและไม่เก็บไว้ที่ไหน — ผู้ดูแลต้องคัดลอกส่งให้เจ้าตัวตอนนี้เลย
+                prompt('คัดลอกรหัสชั่วคราวนี้ส่งให้เจ้าตัว (แสดงครั้งเดียวเท่านั้น)', 'รหัสผ่าน: ' + d.password + '   PIN: ' + d.pin);
+                location.reload();
+              })
+              .catch(e => toast(e.message, 'danger'));
+          }
           function deleteUser(id, name) {
             if (!confirm('ยืนยันลบผู้ใช้ "' + name + '"? (บัญชีจะถูกระงับการใช้งานถาวร แต่ประวัติเอกสาร/audit log ที่เกี่ยวข้องยังคงอยู่)')) return;
             fetch('/admin/users/' + id + '/delete', {method:'POST'})
@@ -202,8 +218,8 @@ router.post('/admin/users', requireApi(async (ctx) => {
   const id = uuid();
   try {
     db.prepare(`
-      INSERT INTO users (id, employee_code, prefix, first_name, last_name, email, position, department_id, password_hash, pin_hash, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+      INSERT INTO users (id, employee_code, prefix, first_name, last_name, email, position, department_id, password_hash, pin_hash, status, must_change_password, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)
     `).run(id, b.employeeCode.trim(), b.prefix || '', b.firstName.trim(), b.lastName.trim(), b.email || null, b.position || null, b.departmentId, hashSecret(b.password), hashSecret(b.pin), nowIso(), nowIso());
   } catch (e) {
     return json(ctx, 409, { error: 'รหัสพนักงานนี้มีอยู่แล้ว' });
@@ -211,6 +227,29 @@ router.post('/admin/users', requireApi(async (ctx) => {
   db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)').run(id, b.roleId);
   audit({ userId: ctx.user.id, action: 'user_created', tableName: 'users', recordId: id, detail: { employeeCode: b.employeeCode } });
   json(ctx, 201, { ok: true });
+}));
+
+// รีเซ็ตรหัสผ่านให้ผู้ใช้ที่ลืมรหัส — ออกรหัสชั่วคราวแบบสุ่มให้ครั้งเดียว แล้วบังคับให้เจ้าตัวตั้งเองทันที
+// ที่เข้ามา ผู้ดูแลจึงไม่ได้ถือรหัสของใครค้างไว้ (ถ้าถือไว้ ลายเซ็น/การลงนาม "ทราบ" ของคนนั้นจะพิสูจน์
+// ตัวตนไม่ได้จริง เพราะมีคนอื่นเข้าบัญชีได้ด้วย) และเตะเซสชันที่ค้างอยู่ออกให้หมดพร้อมกัน
+router.post('/admin/users/:id/reset-password', requireApi(async (ctx) => {
+  if (!ctx.user.roleCodes.includes('admin')) return json(ctx, 403, { error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
+  const target = db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(ctx.params.id);
+  if (!target) return json(ctx, 404, { error: 'ไม่พบผู้ใช้นี้' });
+
+  const password = generatePassword();
+  const pin = generatePin();
+  db.prepare('UPDATE users SET password_hash = ?, pin_hash = ?, must_change_password = 1, updated_at = ? WHERE id = ?')
+    .run(hashSecret(password), hashSecret(pin), nowIso(), target.id);
+  const killed = db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id).changes;
+  audit({
+    userId: ctx.user.id, action: 'user_password_reset', tableName: 'users', recordId: target.id,
+    detail: { employeeCode: target.employee_code, revokedSessions: killed }, ip: ctx.ip,
+  });
+  json(ctx, 200, {
+    ok: true, employeeCode: target.employee_code, password, pin,
+    message: `ออกรหัสชั่วคราวให้ ${target.employee_code} แล้ว — เจ้าตัวจะต้องตั้งรหัสผ่านและ PIN ของตัวเองทันทีที่เข้าใช้งาน`,
+  });
 }));
 
 router.post('/admin/users/:id/delete', requireApi(async (ctx) => {
