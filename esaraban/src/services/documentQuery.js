@@ -21,15 +21,19 @@ const pick = (value, allowed) => (allowed.includes(value) ? value : '');
  * (visibleDocumentsSqlFilter) ติดไปกับทุกคำสั่งเสมอ ผู้เรียกลืมใส่เองไม่ได้
  */
 export function buildDocumentQuery(user, query = {}) {
-  const direction = query.direction === 'outgoing' ? 'outgoing' : 'incoming';
+  // direction=all คือโหมดค้นหารวม ใช้กับแถบค้นหาด้านบนสุด — เดิมแถบนั้นส่งแต่ q ไปที่ /documents
+  // ซึ่ง default เป็น incoming เสมอ ผลคือค้นเลขหนังสือ "ออก" จากแถบบนสุดแล้วไม่เจออะไรเลย
+  // ทั้งที่หนังสือฉบับนั้นมีอยู่จริงในระบบ (ทดสอบยืนยันแล้ว)
+  const direction = ['outgoing', 'all'].includes(query.direction) ? query.direction : 'incoming';
   const q = (query.q || '').trim();
   const statusFilter = pick(query.status, Object.keys(LABELS.STATUS_LABEL));
 
   // กรองสิทธิ์ตั้งแต่ในฐานข้อมูล ไม่ใช่ดึงมาแล้วค่อยกรองด้วย JS — ไม่งั้น LIMIT จะนับรวมฉบับที่ผู้ใช้
   // ไม่มีสิทธิ์เห็นไปด้วย แล้วจำนวนที่แสดงกับการแบ่งหน้าจะผิดทั้งคู่
   const visible = visibleDocumentsSqlFilter(user);
-  const where = ['d.direction = :direction', 'd.deleted_at IS NULL', visible.sql];
-  const params = { direction, ...visible.params };
+  const where = ['d.deleted_at IS NULL', visible.sql];
+  const params = { ...visible.params };
+  if (direction !== 'all') { where.push('d.direction = :direction'); params.direction = direction; }
   if (statusFilter) { where.push('d.status = :status'); params.status = statusFilter; }
   if (q) {
     where.push('(d.title LIKE :like OR d.doc_number_display LIKE :like OR d.subject LIKE :like OR d.correspondent_name LIKE :like)');

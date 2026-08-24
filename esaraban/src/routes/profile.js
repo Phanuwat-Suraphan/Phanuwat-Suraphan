@@ -1,7 +1,7 @@
 import { router, html, json } from '../router.js';
 import { layout, esc, fmtDate, avatarContent, parseUserAgent } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
-import { db, nowIso, hashSecret, verifySecret, audit } from '../db.js';
+import { db, nowIso, hashSecret, verifySecret, audit, isWeakPin } from '../db.js';
 import { revokeOtherSessions } from '../auth.js';
 
 // อวตารอิโมจิให้เลือก (UX Bible Part 21 §8) — คัดเฉพาะที่เหมาะกับบุคลากรโรงเรียน
@@ -234,6 +234,18 @@ router.get('/profile', requirePage((ctx) => {
 router.post('/profile/info', requireApi(async (ctx) => {
   const { prefix, firstName, lastName, email, position } = ctx.body;
   if (!firstName?.trim() || !lastName?.trim()) return json(ctx, 400, { error: 'กรุณากรอกชื่อและนามสกุล' });
+  // เพดานความยาวเหมือนหน้าจัดการผู้ใช้ของแอดมิน — ชื่อคนไม่มีทางยาวถึงหลักหมื่นตัวอักษร และชื่อยาวๆ
+  // จะไปทำให้ไทม์ไลน์เอกสาร ตราประทับ และไฟล์ Excel ที่ส่งออกเสียรูปทั้งหมด
+  for (const [value, max, label] of [[prefix, 50, 'คำนำหน้า'], [firstName, 100, 'ชื่อ'],
+    [lastName, 100, 'นามสกุล'], [email, 200, 'อีเมล'], [position, 200, 'ตำแหน่ง']]) {
+    if (typeof value === 'string' && value.length > max) {
+      return json(ctx, 400, { error: `${label}ยาวเกินไป (${value.length} ตัวอักษร) — จำกัดไม่เกิน ${max} ตัวอักษร` });
+    }
+  }
+  // อีเมลใช้ติดต่อกลับจริง ถ้าเก็บค่าที่ไม่ใช่อีเมลไว้จะไม่มีใครรู้จนถึงวันที่ต้องส่งอะไรไปหา
+  if (email?.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    return json(ctx, 400, { error: 'รูปแบบอีเมลไม่ถูกต้อง' });
+  }
   try {
     db.prepare(`
       UPDATE users SET prefix = ?, first_name = ?, last_name = ?, email = ?, position = ?, updated_at = ? WHERE id = ?
@@ -250,6 +262,9 @@ router.post('/profile/password', requireApi(async (ctx) => {
   if (!newPassword || newPassword.length < 8) return json(ctx, 400, { error: 'รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร' });
   const row = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(ctx.user.id);
   if (!verifySecret(currentPassword, row.password_hash)) return json(ctx, 401, { error: 'รหัสผ่านปัจจุบันไม่ถูกต้อง' });
+  // คนที่มาเปลี่ยนรหัสผ่านส่วนใหญ่เปลี่ยนเพราะกลัวรหัสรั่ว การตั้งรหัสเดิมซ้ำจึงไม่ได้เปลี่ยนอะไรเลย
+  // แต่หน้าจอขึ้นว่า "เปลี่ยนเรียบร้อย" ทำให้เข้าใจผิดว่าปลอดภัยแล้ว
+  if (verifySecret(newPassword, row.password_hash)) return json(ctx, 400, { error: 'รหัสผ่านใหม่ต้องไม่ซ้ำกับรหัสผ่านเดิม' });
   db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').run(hashSecret(newPassword), nowIso(), ctx.user.id);
   // เตะเครื่องอื่นที่ยังล็อกอินค้างอยู่ออกทั้งหมด (เหลือเครื่องนี้ไว้) — คนเปลี่ยนรหัสผ่านเพราะกลัวรหัสรั่ว
   // ถ้าเซสชันเดิมยังใช้ได้ต่ออีก 8 ชั่วโมง การเปลี่ยนรหัสก็ไม่ได้ช่วยอะไร
@@ -303,6 +318,9 @@ router.post('/profile/avatar', requireApi(async (ctx) => {
 router.post('/profile/pin', requireApi(async (ctx) => {
   const { currentPassword, newPin } = ctx.body;
   if (!/^\d{6}$/.test(newPin || '')) return json(ctx, 400, { error: 'PIN ต้องเป็นตัวเลข 6 หลัก' });
+  // ต้องใช้เกณฑ์เดียวกับตอนตั้ง PIN ครั้งแรก ไม่งั้นระบบบังคับให้ตั้ง PIN ที่เดายากตอนเข้าใช้ครั้งแรก
+  // แล้วเปิดให้เปลี่ยนกลับเป็น 111111 ได้ทันทีจากหน้าโปรไฟล์ — PIN ใช้แทนการลงลายมือชื่อ
+  if (isWeakPin(newPin)) return json(ctx, 400, { error: 'PIN นี้เดาง่ายเกินไป — ห้ามใช้เลขซ้ำทั้งหมด (111111) หรือเลขเรียงติดกัน (123456)' });
   const row = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(ctx.user.id);
   if (!verifySecret(currentPassword, row.password_hash)) return json(ctx, 401, { error: 'รหัสผ่านปัจจุบันไม่ถูกต้อง' });
   db.prepare('UPDATE users SET pin_hash = ?, updated_at = ? WHERE id = ?').run(hashSecret(newPin), nowIso(), ctx.user.id);

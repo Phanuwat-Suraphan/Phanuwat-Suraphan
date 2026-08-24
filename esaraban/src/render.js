@@ -213,6 +213,9 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
       <div class="topbar-search">
         <span>🔍</span>
         <form action="/documents" method="get" style="width:100%">
+          <!-- ค้นรวมทั้งหนังสือเข้าและหนังสือออก — เดิมไม่ได้ส่ง direction ไปด้วย เส้นทางจึง default เป็น
+               incoming เสมอ ค้นเลขหนังสือออกจากแถบนี้แล้วไม่เจออะไรเลยทั้งที่มีอยู่จริง -->
+          <input type="hidden" name="direction" value="all" />
           <input type="text" id="globalSearchInput" name="q" placeholder="ค้นหา... (Ctrl+K)" />
         </form>
       </div>

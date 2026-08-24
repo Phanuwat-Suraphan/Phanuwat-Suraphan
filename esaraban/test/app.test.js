@@ -1555,6 +1555,100 @@ describe('ทะเบียนหนังสือ: ตัวกรองล�
   });
 });
 
+// แถบค้นหาด้านบนสุดกับความปลอดภัยของหน้าโปรไฟล์
+describe('ค้นหาจากแถบบนสุด และหน้าโปรไฟล์', () => {
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  const teacher = () => loadUserForTest(seed.userIds.teacher001);
+
+  // เดิมแถบค้นหาส่งแต่ q ไปที่ /documents ซึ่ง default เป็น incoming เสมอ ผลคือค้นเลขหนังสือ "ออก"
+  // จากแถบบนสุดแล้วไม่เจออะไรเลย ทั้งที่หนังสือฉบับนั้นมีอยู่จริง (ทดสอบยืนยันแล้วก่อนแก้)
+  test('ค้นจากแถบบนสุดต้องเจอทั้งหนังสือเข้าและหนังสือออก', async () => {
+    const KEY = 'คำค้นเฉพาะสำหรับเทสต์';
+    makeDoc({ direction: 'incoming', title: `หนังสือเข้า${KEY}` });
+    makeDoc({ direction: 'outgoing', title: `หนังสือออก${KEY}` });
+
+    // อ่าน URL ที่ฟอร์มค้นหาส่งจริง ไม่ใช่เดาเอง — ถ้าวันหลังมีคนถอด direction ออกจากฟอร์ม เทสต์ต้องล้ม
+    const home = (await dispatchGet(reg(), '/', {})).body;
+    const form = home.match(/<div class="topbar-search">[\s\S]*?<\/form>/)[0];
+    const hidden = Object.fromEntries([...form.matchAll(/<input type="hidden" name="(\w+)" value="([^"]*)"/g)].map((m) => [m[1], m[2]]));
+    assert.equal(hidden.direction, 'all', 'แถบค้นหาต้องส่ง direction=all ไม่งั้นจะค้นเจอแต่หนังสือเข้า');
+
+    const res = await dispatchGet(reg(), '/documents', { ...hidden, q: KEY });
+    assert.equal(res.status, 200);
+    assert.match(res.body, new RegExp(`หนังสือเข้า${KEY}`), 'ต้องเจอหนังสือเข้า');
+    assert.match(res.body, new RegExp(`หนังสือออก${KEY}`), 'ต้องเจอหนังสือออก');
+    assert.match(res.body, /<th>ประเภท<\/th>/, 'โหมดค้นหารวมต้องมีคอลัมน์บอกว่าแถวไหนเป็นเข้าหรือออก');
+  });
+
+  test('ทะเบียนแยกทิศทางยังแยกกันเหมือนเดิม', async () => {
+    const KEY = 'คำค้นแยกทิศทาง';
+    makeDoc({ direction: 'incoming', title: `เข้า${KEY}` });
+    makeDoc({ direction: 'outgoing', title: `ออก${KEY}` });
+    const inc = await dispatchGet(reg(), '/documents', { direction: 'incoming', q: KEY });
+    assert.match(inc.body, new RegExp(`เข้า${KEY}`));
+    assert.doesNotMatch(inc.body, new RegExp(`ออก${KEY}`), 'ทะเบียนหนังสือเข้าต้องไม่มีหนังสือออกปน');
+    const out = await dispatchGet(reg(), '/documents', { direction: 'outgoing', q: KEY });
+    assert.match(out.body, new RegExp(`ออก${KEY}`));
+    assert.doesNotMatch(out.body, new RegExp(`(^|[^อ])เข้า${KEY}`), 'ทะเบียนหนังสือออกต้องไม่มีหนังสือเข้าปน');
+  });
+
+  test('ไฟล์ที่ส่งออกจากโหมดค้นหารวม ต้องบอกได้ว่าแถวไหนเป็นเข้าหรือออก', async () => {
+    const res = await dispatchGet(reg(), '/documents/export.xlsx', { direction: 'all' });
+    assert.equal(res.status, 200);
+    const sheet = readWorkbook(res.buffer)[0];
+    assert.ok(sheet.rows[0].includes('ประเภท'), `หัวตารางไม่มีคอลัมน์ประเภท: ${sheet.rows[0].join(' | ')}`);
+  });
+
+  // PIN ใช้แทนการลงลายมือชื่อ ถ้าหน้าโปรไฟล์ยอมให้ตั้ง 111111 ได้ การบังคับตั้ง PIN ที่เดายากตอน
+  // เข้าใช้ครั้งแรกก็ไม่มีความหมาย เพราะเปลี่ยนกลับได้ทันทีในหน้าถัดไป
+  test('เปลี่ยน PIN ในหน้าโปรไฟล์ ต้องใช้เกณฑ์เดียวกับตอนตั้งครั้งแรก', async () => {
+    const user = teacher();
+    const pass = pw('teacher001');
+    for (const weak of ['111111', '123456', '654321', '000000']) {
+      const res = await dispatchPost(user, '/profile/pin', { currentPassword: pass, newPin: weak });
+      assert.equal(res.status, 400, `ควรปฏิเสธ PIN ${weak}`);
+      assert.match(res.json.error || '', /เดาง่าย/);
+    }
+    assert.equal((await dispatchPost(user, '/profile/pin', { currentPassword: pass, newPin: '739184' })).status, 200,
+      'PIN ที่เดายากต้องยังตั้งได้');
+  });
+
+  test('เปลี่ยนรหัสผ่านเป็นรหัสเดิมไม่ได้', async () => {
+    const user = teacher();
+    const pass = pw('teacher001');
+    const res = await dispatchPost(user, '/profile/password', { currentPassword: pass, newPassword: pass });
+    assert.equal(res.status, 400, 'ตั้งรหัสเดิมซ้ำไม่ได้เปลี่ยนอะไรเลย แต่หน้าจอจะขึ้นว่าเปลี่ยนเรียบร้อย');
+    assert.match(res.json.error || '', /ไม่ซ้ำกับรหัสผ่านเดิม/);
+  });
+
+  test('ข้อมูลส่วนตัว: จำกัดความยาวและตรวจรูปแบบอีเมล', async () => {
+    const user = teacher();
+    for (const [label, body] of [
+      ['ชื่อยาวเกินกำหนด', { firstName: 'ก'.repeat(50000), lastName: 'ข' }],
+      ['ตำแหน่งยาวเกินกำหนด', { firstName: 'ก', lastName: 'ข', position: 'ก'.repeat(50000) }],
+      ['อีเมลรูปแบบผิด', { firstName: 'ก', lastName: 'ข', email: 'ไม่ใช่อีเมล' }],
+    ]) {
+      assert.equal((await dispatchPost(user, '/profile/info', body)).status, 400, `ควรปฏิเสธ: ${label}`);
+    }
+    assert.equal((await dispatchPost(user, '/profile/info', { firstName: 'ครูใหญ่', lastName: 'สอนดี', email: 'teacher@school.local' })).status, 200,
+      'ข้อมูลปกติต้องยังบันทึกได้');
+  });
+
+  // ลายเซ็นถูกฝังลงในไฟล์ PDF ที่ประทับตราและแสดงบนหน้าเว็บ ไฟล์ที่ไม่ใช่รูปจริงจึงต้องไม่หลุดเข้าไป
+  test('ลายเซ็นรับเฉพาะ PNG/JPG จริงเท่านั้น', async () => {
+    const user = teacher();
+    const png = `data:image/png;base64,${Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(40)]).toString('base64')}`;
+    for (const [label, dataUrl] of [
+      ['SVG ที่มีสคริปต์', `data:image/svg+xml;base64,${Buffer.from('<svg onload="alert(1)"/>').toString('base64')}`],
+      ['อ้างว่าเป็น PNG แต่ข้างในเป็นข้อความ', `data:image/png;base64,${Buffer.from('ไม่ใช่รูป').toString('base64')}`],
+      ['ไฟล์ใหญ่เกิน 1MB', `data:image/png;base64,${Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(1200000)]).toString('base64')}`],
+    ]) {
+      assert.ok((await dispatchPost(user, '/profile/signature', { dataUrl })).status >= 400, `ควรปฏิเสธ: ${label}`);
+    }
+    assert.equal((await dispatchPost(user, '/profile/signature', { dataUrl: png })).status, 200, 'PNG จริงต้องอัปโหลดได้');
+  });
+});
+
 // แก้ไขข้อมูลผู้ใช้ — เดิมทำได้แค่เพิ่มกับลบ ครูย้ายฝ่าย/เปลี่ยนตำแหน่ง/ชื่อพิมพ์ผิดตอนนำเข้าจาก Excel
 // แก้ไม่ได้เลย ต้องลบทิ้งแล้วสร้างใหม่ ซึ่งทำให้ประวัติเอกสารและลายเซ็นเดิมผูกกับบัญชีที่ถูกระงับไปแล้ว
 describe('แก้ไขข้อมูลผู้ใช้', () => {

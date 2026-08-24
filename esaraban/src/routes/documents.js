@@ -79,6 +79,10 @@ function listUserOptions(excludeId) {
 // จำนวนต่อหน้าของทะเบียนหนังสือ — 50 พอดีกับการกวาดสายตาหาเลขที่ในหน้าเดียว และโหลดเร็วบนมือถือ
 const PAGE_SIZE = 50;
 
+// direction=all คือโหมดค้นหารวมจากแถบค้นหาด้านบนสุด ไม่ใช่ทะเบียนของทิศทางใดทิศทางหนึ่ง
+const DIRECTION_TITLE = { incoming: '📥 หนังสือเข้า', outgoing: '📤 หนังสือออก', all: '🔎 ผลการค้นหา (หนังสือเข้าและออก)' };
+const DIRECTION_NOUN = { incoming: 'หนังสือเข้า', outgoing: 'หนังสือออก', all: 'หนังสือ' };
+
 router.get('/documents', requirePage((ctx) => {
   // เงื่อนไขค้นหา/กรอง/สิทธิ์ อยู่ที่ documentQuery.js ที่เดียว — หน้านี้ ไฟล์ Excel และหน้าพิมพ์ทะเบียน
   // ใช้ตัวเดียวกันหมด ไม่งั้นสามที่จะค่อยๆ เลื่อนจากกันจนกรองบนเว็บได้ 40 ฉบับ แต่ Excel ออกมา 63 ฉบับ
@@ -103,6 +107,7 @@ router.get('/documents', requirePage((ctx) => {
     return `
     <tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer${n !== null && n < 0 ? ';background:rgba(220,38,38,.06)' : ''}">
       <td style="white-space:nowrap"><strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong></td>
+      ${direction === 'all' ? `<td style="white-space:nowrap">${d.direction === 'incoming' ? '📥 เข้า' : '📤 ออก'}</td>` : ''}
       <td class="wrap">${esc(d.title)}${d.secret_level !== 'normal' ? ' 🔒' : ''}</td>
       <td>${esc(d.dept_name)}</td>
       <td>${priorityBadge(d.priority)}</td>
@@ -201,28 +206,33 @@ router.get('/documents', requirePage((ctx) => {
   const content = `
     <div class="card-header">
       <div>
-        <h2 class="mt-0">${direction === 'incoming' ? '📥 หนังสือเข้า' : '📤 หนังสือออก'}</h2>
+        <h2 class="mt-0">${DIRECTION_TITLE[direction]}</h2>
         <p class="text-muted" style="margin:-.3rem 0 0;font-size:.85rem">
           ${total ? `${filtering ? 'ตรงตามเงื่อนไข' : 'ทั้งหมด'} ${fmtCount(total)} ฉบับ${totalPages > 1 ? ` · หน้า ${page} จาก ${totalPages}` : ''}${overdueCount ? ` · <strong style="color:var(--danger)">เลยกำหนดในหน้านี้ ${overdueCount}</strong>` : ''}`
             : 'ยังไม่มีรายการ'}
         </p>
       </div>
+      ${direction === 'all' ? `
+      <div class="flex gap-2 flex-wrap">
+        <a class="btn btn-outline" href="/documents?direction=incoming">📥 ทะเบียนหนังสือเข้า</a>
+        <a class="btn btn-outline" href="/documents?direction=outgoing">📤 ทะเบียนหนังสือออก</a>
+      </div>` : `
       <div class="flex gap-2 flex-wrap">
         <a class="btn btn-outline" href="/documents/bulk?direction=${direction}">📎 ลงหลายฉบับรวดเดียว</a>
         <a class="btn btn-primary" href="/documents/new?direction=${direction}">+ ${direction === 'incoming' ? 'รับหนังสือใหม่' : 'สร้างหนังสือส่ง'}</a>
-      </div>
+      </div>`}
     </div>
     <div class="card">
       ${filterForm}
       ${rows.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ฝ่าย</th><th>ความเร็ว</th><th>สถานะ</th><th>ครบกำหนด</th><th>วันที่ลงทะเบียน</th></tr></thead>
+        <thead><tr><th>เลขที่</th>${direction === 'all' ? '<th>ประเภท</th>' : ''}<th>เรื่อง</th><th>ฝ่าย</th><th>ความเร็ว</th><th>สถานะ</th><th>ครบกำหนด</th><th>วันที่ลงทะเบียน</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table></div>${pager}`
       : emptyState('📭', filtering
         ? 'ไม่พบหนังสือที่ตรงกับเงื่อนไขที่เลือก — ลองลดเงื่อนไขลงหรือกด "ล้างตัวกรอง"'
-        : `ไม่มี${direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก'}ในรายการนี้`)}
+        : `ไม่มี${DIRECTION_NOUN[direction]}ในรายการนี้`)}
     </div>`;
 
-  html(ctx, 200, layout({ user: ctx.user, title: direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก', path: '/documents', content }));
+  html(ctx, 200, layout({ user: ctx.user, title: DIRECTION_NOUN[direction] === 'หนังสือ' ? 'ผลการค้นหา' : DIRECTION_NOUN[direction], path: '/documents', content }));
 }));
 
 // ---------------- new form ----------------
@@ -782,11 +792,14 @@ function assertStampTextFits({ decisionNote, registrarNote }) {
 // พ.ศ. 2526 (แบบที่ 13 และ 14) เพื่อให้พิมพ์ออกมาแล้วใช้แทนสมุดทะเบียนกระดาษได้จริง ไม่ใช่ตารางทั่วไป
 function registerColumns(direction) {
   const isIn = direction === 'incoming';
+  const isAll = direction === 'all';
   return [
-    { head: isIn ? 'ทะเบียนรับที่' : 'ทะเบียนส่งที่', width: 13, get: (d) => d.doc_number_display },
+    { head: isAll ? 'เลขทะเบียน' : (isIn ? 'ทะเบียนรับที่' : 'ทะเบียนส่งที่'), width: 13, get: (d) => d.doc_number_display },
+    // โหมดค้นหารวมมีทั้งหนังสือเข้าและออกปนกัน ต้องมีคอลัมน์บอกว่าแถวไหนเป็นอะไร ไม่งั้นอ่านไม่รู้เรื่อง
+    ...(isAll ? [{ head: 'ประเภท', width: 10, get: (d) => (d.direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก') }] : []),
     { head: 'ที่ (หนังสือต้นทาง)', width: 18, get: (d) => d.external_doc_number || '' },
     { head: 'ลงวันที่', width: 13, get: (d) => (d.external_doc_date ? fmtThaiDateShort(d.external_doc_date) : '') },
-    { head: isIn ? 'จาก' : 'ถึง', width: 24, get: (d) => d.correspondent_name || '' },
+    { head: isAll ? 'จาก/ถึง' : (isIn ? 'จาก' : 'ถึง'), width: 24, get: (d) => d.correspondent_name || '' },
     { head: 'เรื่อง', width: 46, get: (d) => d.title },
     { head: 'ฝ่ายที่รับผิดชอบ', width: 20, get: (d) => d.dept_name },
     { head: 'ความเร็ว', width: 11, get: (d) => LABELS.PRIORITY_LABEL[d.priority] || d.priority },
@@ -800,7 +813,7 @@ function registerColumns(direction) {
 // ชื่อไฟล์บอกให้ครบว่าเป็นทะเบียนอะไร ช่วงไหน ส่งออกวันไหน — ธุรการเก็บไฟล์หลายรอบไว้ในโฟลเดอร์เดียวกัน
 // ถ้าชื่อเหมือนกันหมดจะกลายเป็น documents(1).xlsx, documents(2).xlsx ที่แยกไม่ออกว่าอันไหนคืออันไหน
 function exportFilename(query, ext) {
-  const kind = query.direction === 'incoming' ? 'ทะเบียนหนังสือรับ' : 'ทะเบียนหนังสือส่ง';
+  const kind = { incoming: 'ทะเบียนหนังสือรับ', outgoing: 'ทะเบียนหนังสือส่ง', all: 'ผลการค้นหาทะเบียนหนังสือ' }[query.direction];
   const range = query.f.from || query.f.to ? `_${query.f.from || 'เริ่มต้น'}_ถึง_${query.f.to || 'ปัจจุบัน'}` : '';
   return `${kind}${range}_ณ_${todayInBangkok()}.${ext}`;
 }
@@ -812,7 +825,7 @@ router.get('/documents/export.xlsx', requirePage((ctx) => {
   const rows = listDocuments(query).filter((d) => canUserSeeDocument(ctx.user, d));
   const cols = registerColumns(query.direction);
   const buf = buildXlsx({
-    sheetName: query.direction === 'incoming' ? 'ทะเบียนหนังสือรับ' : 'ทะเบียนหนังสือส่ง',
+    sheetName: { incoming: 'ทะเบียนหนังสือรับ', outgoing: 'ทะเบียนหนังสือส่ง', all: 'ผลการค้นหา' }[query.direction],
     header: cols.map((c) => c.head),
     widths: cols.map((c) => c.width),
     rows: rows.map((d) => cols.map((c) => c.get(d))),
@@ -839,7 +852,7 @@ router.get('/documents/register', requirePage((ctx) => {
   const rows = listDocuments(query).filter((d) => canUserSeeDocument(ctx.user, d));
   const cols = registerColumns(query.direction);
   const filterNote = describeFilters(query);
-  const title = query.direction === 'incoming' ? 'ทะเบียนหนังสือรับ' : 'ทะเบียนหนังสือส่ง';
+  const title = { incoming: 'ทะเบียนหนังสือรับ', outgoing: 'ทะเบียนหนังสือส่ง', all: 'ผลการค้นหาทะเบียนหนังสือ' }[query.direction];
 
   // ตั้งความกว้างคอลัมน์ตายตัว โดยเทียบสัดส่วนจากความกว้างชุดเดียวกับที่ใช้ในไฟล์ Excel — ถ้าปล่อยให้
   // เบราว์เซอร์จัดเอง คอลัมน์ที่บังเอิญว่างทั้งแถบ (เช่น "ลงวันที่" ตอนที่ยังไม่มีใครกรอก) จะถูกบีบจน
