@@ -2,7 +2,7 @@ import { router, html } from '../router.js';
 import { layout, esc, fmtDate, statusBadge, priorityBadge, illustratedEmptyState, daysUntil, dueCell, bangkokHour } from '../render.js';
 import { requirePage } from '../middleware.js';
 import { db, todayInBangkok } from '../db.js';
-import { canUserSeeDocument } from '../services/workflow.js';
+import { canUserSeeDocument, visibleDocumentsSqlFilter } from '../services/workflow.js';
 import { getBackupStatus } from '../services/dbBackup.js';
 
 // รวมงานที่มอบหมายให้ตรงๆ + งานที่มีคนมอบหมายให้เรารักษาการแทน (ยัง active วันนี้) เข้าเป็นเงื่อนไขเดียว —
@@ -43,11 +43,27 @@ router.get('/', requirePage((ctx) => {
   // หนังสือที่ลงทะเบียนก่อน 7 โมงจะไม่ถูกนับ ส่วนของเมื่อวานตอนเย็นกลับถูกนับรวมเข้ามาแทน
   const todayIso = new Date(`${todayInBangkok()}T00:00:00+07:00`).toISOString();
 
-  const inToday = db.prepare(`SELECT COUNT(*) c FROM documents WHERE direction='incoming' AND created_at >= ? AND deleted_at IS NULL`).get(todayIso).c;
-  const outToday = db.prepare(`SELECT COUNT(*) c FROM documents WHERE direction='outgoing' AND created_at >= ? AND deleted_at IS NULL`).get(todayIso).c;
+  // ตัวเลขและรายการทุกอันบนหน้านี้ต้องนับเฉพาะหนังสือที่ผู้ใช้คนนี้มีสิทธิ์เห็น
+  //
+  // เดิมไม่มีการกรองสิทธิ์เลยแม้แต่ที่เดียว ที่ร้ายแรงที่สุดคือรายการ "เอกสารล่าสุด" ซึ่งดึง 8 ฉบับล่าสุด
+  // ของทั้งระบบมาแสดง — ทดสอบยืนยันแล้วว่าครูธรรมดาเห็น "ชื่อเรื่อง" ของหนังสือชั้นลับมากที่ตัวเอง
+  // เปิดอ่านไม่ได้ บนหน้าแรกที่ทุกคนเห็นทันทีหลังล็อกอิน โดยไม่ต้องพยายามอะไรเลย
+  //
+  // ส่วนตัวเลข KPI ที่ไม่กรองสิทธิ์ ทำให้ครูเห็น "หนังสือเข้าวันนี้ 15" ทั้งที่เปิดดูได้จริงน้อยกว่านั้น
+  // ซึ่งทั้งชวนสับสนและบอกใบ้ปริมาณงานลับที่ตัวเองไม่เกี่ยวข้อง
+  const visible = visibleDocumentsSqlFilter(user);
+  const countVisible = (sql, extra = {}) => db.prepare(
+    `SELECT COUNT(*) c FROM documents d WHERE d.deleted_at IS NULL AND ${visible.sql} AND ${sql}`,
+  ).get({ ...visible.params, ...extra }).c;
+
+  const inToday = countVisible("d.direction = 'incoming' AND d.created_at >= :since", { since: todayIso });
+  const outToday = countVisible("d.direction = 'outgoing' AND d.created_at >= :since", { since: todayIso });
   const myTasks = db.prepare(`SELECT COUNT(*) c FROM workflow_steps ws WHERE ${MY_OR_DELEGATED_STEP_SQL} AND status = 'waiting'`).get(scope).c;
-  const overdue = db.prepare(`SELECT COUNT(*) c FROM documents WHERE due_date IS NOT NULL AND due_date < :today AND status NOT IN ('completed','archived','voided','rejected') AND deleted_at IS NULL`).get({ today: todayInBangkok() }).c;
-  const completedToday = db.prepare(`SELECT COUNT(*) c FROM documents WHERE status='completed' AND updated_at >= ? AND deleted_at IS NULL`).get(todayIso).c;
+  const overdue = countVisible(
+    "d.due_date IS NOT NULL AND d.due_date < :today AND d.status NOT IN ('completed','archived','voided','rejected')",
+    { today: todayInBangkok() },
+  );
+  const completedToday = countVisible("d.status = 'completed' AND d.updated_at >= :since", { since: todayIso });
 
   const myPending = db.prepare(`
     SELECT d.*, dt.name as type_name, ws.id as step_id, (ws.assignee_id != :me) as is_delegated FROM workflow_steps ws
@@ -55,25 +71,27 @@ router.get('/', requirePage((ctx) => {
     WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' ORDER BY d.priority DESC, ws.created_at ASC LIMIT 8
   `).all(scope);
 
+  // กรองซ้ำด้วยตัวตรวจรายฉบับอีกชั้นเหมือนหน้าทะเบียน — การเปิดเผยหนังสือลับเป็นความผิดพลาด
+  // ที่ยอมเสี่ยงไม่ได้ ดึงมาเผื่อแล้วค่อยตัดให้เหลือ 8 หลังกรอง
   const recent = db.prepare(`
     SELECT d.*, dt.name as type_name FROM documents d JOIN document_types dt ON dt.id = d.doc_type_id
-    WHERE d.deleted_at IS NULL ORDER BY d.created_at DESC LIMIT 8
-  `).all();
+    WHERE d.deleted_at IS NULL AND ${visible.sql} ORDER BY d.created_at DESC LIMIT 40
+  `).all(visible.params).filter((doc) => canUserSeeDocument(user, doc)).slice(0, 8);
 
   // Executive KPI (Master Spec §32) — avg completion time + pending load per department, ผู้บริหาร/แอดมินเท่านั้น
   const isExecutive = user.roleCodes.some((r) => ['admin', 'director', 'vice_director'].includes(r));
   let execKpiHtml = '';
   if (isExecutive) {
     const avgDays = db.prepare(`
-      SELECT AVG(julianday(updated_at) - julianday(created_at)) as avg_days FROM documents
-      WHERE status = 'completed' AND deleted_at IS NULL
-    `).get().avg_days;
+      SELECT AVG(julianday(d.updated_at) - julianday(d.created_at)) as avg_days FROM documents d
+      WHERE d.status = 'completed' AND d.deleted_at IS NULL AND ${visible.sql}
+    `).get(visible.params).avg_days;
     const byDept = db.prepare(`
       SELECT dep.name as dept_name, COUNT(*) as pending_count FROM documents d
       JOIN departments dep ON dep.id = d.department_id
-      WHERE d.status IN ('registered', 'in_progress', 'returned') AND d.deleted_at IS NULL
+      WHERE d.status IN ('registered', 'in_progress', 'returned') AND d.deleted_at IS NULL AND ${visible.sql}
       GROUP BY dep.id ORDER BY pending_count DESC
-    `).all();
+    `).all(visible.params);
     const maxCount = Math.max(1, ...byDept.map((r) => r.pending_count));
 
     execKpiHtml = `

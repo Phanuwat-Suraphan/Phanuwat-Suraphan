@@ -1555,6 +1555,57 @@ describe('ทะเบียนหนังสือ: ตัวกรองล�
   });
 });
 
+// แดชบอร์ด — หน้าแรกที่ทุกคนเห็นทันทีหลังล็อกอิน
+//
+// เดิมทุกคำสั่งบนหน้านี้ไม่มีการกรองสิทธิ์เลยแม้แต่ที่เดียว ที่ร้ายแรงที่สุดคือรายการ "เอกสารล่าสุด"
+// ซึ่งดึง 8 ฉบับล่าสุดของทั้งระบบมาแสดง — ทดสอบยืนยันแล้วว่าครูธรรมดาเห็นชื่อเรื่องของหนังสือ
+// ชั้นลับมากที่ตัวเองเปิดอ่านไม่ได้ โดยไม่ต้องพยายามอะไรเลย แค่ล็อกอินเข้ามาก็เห็น
+describe('แดชบอร์ด: ตัวเลขและรายการต้องนับเฉพาะที่ผู้ใช้มีสิทธิ์เห็น', () => {
+  const SECRET_TITLE = 'ลับมากเรื่องที่ครูคนนี้ไม่เกี่ยวข้องเลย';
+  let secretDoc;
+  before(() => {
+    secretDoc = makeDoc({ title: SECRET_TITLE, secretLevel: 'top_secret', createdBy: seed.userIds.reg001 });
+  });
+
+  test('ชื่อเรื่องหนังสือลับต้องไม่โผล่ในรายการ "เอกสารล่าสุด" ของคนที่ไม่มีสิทธิ์', async () => {
+    const outsider = loadUserForTest(seed.userIds.teacher001);
+    assert.equal(canUserSeeDocument(outsider, getDocRow(secretDoc.id)), false, 'ตั้งต้นต้องเป็นหนังสือที่ครูคนนี้เห็นไม่ได้');
+    const res = await dispatchGet(outsider, '/', {});
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.includes(SECRET_TITLE), 'ชื่อเรื่องหนังสือลับหลุดมาอยู่บนหน้าแรกของครู');
+
+    // และผู้ที่มีสิทธิ์ต้องยังเห็น ไม่ใช่ซ่อนหมดทุกคนแล้วเทสต์ผ่านแบบไม่ได้ตรวจอะไร
+    const owner = loadUserForTest(seed.userIds.reg001);
+    assert.ok((await dispatchGet(owner, '/', {})).body.includes(SECRET_TITLE), 'ผู้บันทึกเองต้องยังเห็นหนังสือของตัวเอง');
+  });
+
+  test('ตัวเลข KPI ต้องนับเฉพาะที่ผู้ใช้เห็นได้ ไม่ใช่ทั้งระบบ', async () => {
+    const kpiOf = (body) => {
+      const values = [...body.matchAll(/<div class="kpi-value">([\d,.-]+)<\/div>/g)].map((m) => m[1]);
+      const labels = [...body.matchAll(/<div class="kpi-label">([^<]*)<\/div>/g)].map((m) => m[1]);
+      return Object.fromEntries(labels.map((l, i) => [l, values[i]]));
+    };
+    const outsider = kpiOf((await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/', {})).body);
+    const owner = kpiOf((await dispatchGet(loadUserForTest(seed.userIds.reg001), '/', {})).body);
+    const key = 'หนังสือเข้าวันนี้';
+    assert.ok(key in outsider && key in owner, `หา KPI "${key}" ไม่เจอ: ${JSON.stringify(outsider)}`);
+    assert.ok(Number(outsider[key]) < Number(owner[key]),
+      `ครูต้องนับได้น้อยกว่าธุรการ เพราะมีหนังสือลับที่เห็นไม่ได้ (ครู=${outsider[key]} ธุรการ=${owner[key]})`);
+  });
+
+  // ทุกหน้าที่แสดงรายการเอกสารต้องกรองสิทธิ์เหมือนกันหมด ไม่ใช่จำได้เฉพาะหน้าที่เคยมีคนทัก
+  test('ไม่มีหน้าไหนแสดงชื่อเรื่องหนังสือลับให้คนที่ไม่มีสิทธิ์', async () => {
+    const outsider = loadUserForTest(seed.userIds.teacher001);
+    const leaked = [];
+    for (const pathname of ['/', '/tasks', '/summary', '/daily-summary', '/documents', '/reports', '/notifications', '/my-tasks']) {
+      const res = await dispatchGet(outsider, pathname, {});
+      if (res.status !== 200) continue;
+      if (res.body.includes(SECRET_TITLE)) leaked.push(pathname);
+    }
+    assert.deepEqual(leaked, [], `หน้าที่ทำหนังสือลับหลุด: ${leaked.join(', ')}`);
+  });
+});
+
 // แถบค้นหาด้านบนสุดกับความปลอดภัยของหน้าโปรไฟล์
 describe('ค้นหาจากแถบบนสุด และหน้าโปรไฟล์', () => {
   const reg = () => loadUserForTest(seed.userIds.reg001);
