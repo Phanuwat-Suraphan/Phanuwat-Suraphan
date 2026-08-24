@@ -1595,18 +1595,7 @@ describe('ด่านบังคับตั้งรหัสผ่านเ�
     db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)').run(id, seed.roleIds.teacher);
     return { id, code, password, pin, roleCodes: ['teacher'], department_id: deptId, must_change_password: 1 };
   }
-  const post = async (user, path, body) => {
-    let status = 0; const chunks = []; const headers = {};
-    const res = {
-      headersSent: false, setHeader() {},
-      writeHead(code, h) { status = code; Object.assign(headers, h || {}); this.headersSent = true; return this; },
-      end(chunk) { if (chunk) chunks.push(String(chunk)); },
-    };
-    const ctx = { req: { method: 'POST', headers: {} }, res, url: new URL(`http://x${path}`), query: {}, user, body, ip: '127.0.0.1' };
-    if (!routerForTest) { ({ router: routerForTest } = await import('../src/router.js')); await import('../src/routes/index.js'); }
-    await routerForTest.dispatch('POST', path, ctx);
-    return { status, headers, body: chunks.join('') };
-  };
+  const post = dispatchPost;
 
   test('ทุกหน้าถูกเด้งไปหน้าตั้งรหัสผ่าน จนกว่าจะตั้งเสร็จ', async () => {
     const user = freshUser('firstlogin01');
@@ -1687,6 +1676,44 @@ describe('ด่านบังคับตั้งรหัสผ่านเ�
     const src = fs.readFileSync(new URL('../src/services/userImport.js', import.meta.url), 'utf8');
     assert.match(src, /must_change_password/,
       'บัญชีที่นำเข้าได้รหัสผ่านจากผู้ดูแล จึงต้องถูกบังคับให้ตั้งเองเหมือนบัญชีตั้งต้น');
+  });
+
+  // อาการที่ผู้ใช้เจอจริง: "เปลี่ยนรหัสแล้วใช้รหัสใหม่ไม่ได้" — ตัวล็อกบัญชี 15 นาทีไม่ได้ดูรหัสผ่านเลย
+  // ตราบใดที่ locked_until ยังไม่หมด รหัสที่ถูกต้องก็เข้าไม่ได้ การให้รหัสใหม่จึงไม่ช่วยอะไรถ้าไม่ปลดล็อกด้วย
+  // และผู้ดูแลก็ไม่มีปุ่มปลดล็อกให้กดเลย
+  test('ตั้งรหัสใหม่เองแล้ว ต้องใช้ได้ทันทีแม้บัญชีเคยถูกล็อกอยู่', async () => {
+    const user = freshUser('firstlogin05');
+    db.prepare("UPDATE users SET locked_until = '2099-01-01T00:00:00.000Z', failed_login_count = 5 WHERE id = ?").run(user.id);
+    const res = await post(user, '/first-login', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '739184' });
+    assert.equal(res.status, 302);
+    const row = db.prepare('SELECT locked_until, failed_login_count FROM users WHERE id = ?').get(user.id);
+    assert.equal(row.locked_until, null, 'ต้องปลดล็อกให้ด้วย ไม่งั้นรหัสที่เพิ่งตั้งจะใช้ไม่ได้อีก 15 นาที');
+    assert.equal(row.failed_login_count, 0);
+    assert.equal(login('firstlogin05', 'RhatMaiPloxy99', '127.0.0.1').ok, true, 'ต้องล็อกอินด้วยรหัสใหม่ได้ทันที');
+  });
+
+  test('ผู้ดูแลรีเซ็ตรหัสให้ ต้องปลดล็อกบัญชีให้ด้วย', async () => {
+    const user = freshUser('firstlogin06');
+    db.prepare("UPDATE users SET locked_until = '2099-01-01T00:00:00.000Z', failed_login_count = 5 WHERE id = ?").run(user.id);
+    const admin = loadUserForTest(seed.userIds.admin);
+    const res = await post(admin, `/admin/users/${user.id}/reset-password`, {});
+    assert.equal(res.status, 200, res.body.slice(0, 150));
+    assert.equal(db.prepare('SELECT locked_until FROM users WHERE id = ?').get(user.id).locked_until, null,
+      'รีเซ็ตรหัสแล้วยังล็อกอยู่ — เจ้าตัวจะยังเข้าไม่ได้ และผู้ดูแลไม่มีทางปลดล็อกให้เลย');
+    assert.equal(login('firstlogin06', res.json.password, '127.0.0.1').ok, true, 'ต้องเข้าด้วยรหัสชั่วคราวได้ทันที');
+  });
+
+  // ระบบนี้ไม่มีการรีเซ็ตรหัสผ่านทางอีเมล ถ้าผู้ดูแลเข้าไม่ได้จะไม่เหลือทางเข้าเลยแม้แต่ทางเดียว
+  // นอกจากรื้อฐานข้อมูลทิ้ง ซึ่งแปลว่าทะเบียนหนังสือทั้งเล่มหายไปด้วย
+  test('กู้คืนบัญชีผู้ดูแลผ่าน environment variable ได้ แม้บัญชีถูกล็อกอยู่', () => {
+    const src = fs.readFileSync(new URL('../src/db.js', import.meta.url), 'utf8');
+    assert.match(src, /ADMIN_RESET_PASSWORD/, 'ต้องมีทางกู้คืนผ่าน environment variable');
+    // ต้องกู้แล้วบังคับตั้งรหัสใหม่เสมอ ไม่ใช่ปล่อยให้รหัสจาก env กลายเป็นรหัสถาวรที่ค้างอยู่ในหน้าตั้งค่า
+    const fn = src.slice(src.indexOf('function applyEmergencyAdminReset'), src.indexOf('migrate();'));
+    assert.match(fn, /must_change_password = 1/, 'รหัสจาก env ต้องเป็นรหัสชั่วคราวเสมอ');
+    assert.match(fn, /locked_until = NULL/, 'ต้องปลดล็อกให้ด้วย ไม่งั้นกู้คืนแล้วก็ยังเข้าไม่ได้');
+    assert.match(fn, /DELETE FROM sessions/, 'ต้องเตะเซสชันที่ค้างอยู่ออก');
+    assert.match(fn, /length < 8/, 'ต้องปฏิเสธรหัสกู้คืนที่สั้นเกินไป');
   });
 
   test('isWeakPin จับ PIN ที่เดาง่ายได้ครบ', () => {

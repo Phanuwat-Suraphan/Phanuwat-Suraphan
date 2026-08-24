@@ -239,8 +239,13 @@ router.post('/admin/users/:id/reset-password', requireApi(async (ctx) => {
 
   const password = generatePassword();
   const pin = generatePin();
-  db.prepare('UPDATE users SET password_hash = ?, pin_hash = ?, must_change_password = 1, updated_at = ? WHERE id = ?')
-    .run(hashSecret(password), hashSecret(pin), nowIso(), target.id);
+  // ต้องปลดล็อกบัญชีพร้อมกันเสมอ — ถ้าคนนั้นกรอกรหัสผิดครบ 5 ครั้งจนถูกล็อก 15 นาที (ซึ่งเป็นสาเหตุ
+  // ที่คนมาขอให้รีเซ็ตรหัสบ่อยที่สุด) การให้รหัสใหม่อย่างเดียวไม่ช่วยอะไรเลย เพราะตัวล็อกไม่ได้ดูรหัสผ่าน
+  // เจ้าตัวจะยังเข้าไม่ได้อยู่ดีโดยที่ผู้ดูแลไม่มีทางปลดล็อกให้ได้เลย
+  db.prepare(`
+    UPDATE users SET password_hash = ?, pin_hash = ?, must_change_password = 1,
+      failed_login_count = 0, locked_until = NULL, updated_at = ? WHERE id = ?
+  `).run(hashSecret(password), hashSecret(pin), nowIso(), target.id);
   const killed = db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id).changes;
   audit({
     userId: ctx.user.id, action: 'user_password_reset', tableName: 'users', recordId: target.id,
@@ -248,7 +253,8 @@ router.post('/admin/users/:id/reset-password', requireApi(async (ctx) => {
   });
   json(ctx, 200, {
     ok: true, employeeCode: target.employee_code, password, pin,
-    message: `ออกรหัสชั่วคราวให้ ${target.employee_code} แล้ว — เจ้าตัวจะต้องตั้งรหัสผ่านและ PIN ของตัวเองทันทีที่เข้าใช้งาน`,
+    wasLocked: Boolean(target.locked_until),
+    message: `ออกรหัสชั่วคราวให้ ${target.employee_code} แล้ว${target.locked_until ? ' และปลดล็อกบัญชีให้ด้วย' : ''} — เจ้าตัวจะต้องตั้งรหัสผ่านและ PIN ของตัวเองทันทีที่เข้าใช้งาน`,
   });
 }));
 

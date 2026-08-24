@@ -123,8 +123,12 @@ router.post('/first-login', (ctx) => {
   if (isWeakPin(newPin)) return fail('PIN นี้เดาง่ายเกินไป — ห้ามใช้เลขซ้ำทั้งหมดหรือเลขเรียงติดกัน');
   if (verifySecret(newPin, row.pin_hash)) return fail('PIN ใหม่ต้องไม่ซ้ำกับ PIN ชั่วคราวที่ได้รับมา');
 
-  db.prepare('UPDATE users SET password_hash = ?, pin_hash = ?, must_change_password = 0, updated_at = ? WHERE id = ?')
-    .run(hashSecret(newPassword), hashSecret(newPin), nowIso(), ctx.user.id);
+  // ล้างตัวนับ/เวลาล็อกทิ้งด้วย — คนที่เพิ่งพิสูจน์ตัวตนแล้วตั้งรหัสใหม่ด้วยตัวเอง ไม่ควรเดินออกไปเจอ
+  // "บัญชีถูกล็อก 15 นาที" ค้างจากการกรอกผิดก่อนหน้านี้ แล้วสรุปว่ารหัสใหม่ที่เพิ่งตั้งใช้ไม่ได้
+  db.prepare(`
+    UPDATE users SET password_hash = ?, pin_hash = ?, must_change_password = 0,
+      failed_login_count = 0, locked_until = NULL, updated_at = ? WHERE id = ?
+  `).run(hashSecret(newPassword), hashSecret(newPin), nowIso(), ctx.user.id);
   // เตะเซสชันอื่นออกให้หมด — ถ้ามีใครล็อกอินด้วยรหัสชั่วคราวค้างไว้อยู่ ต้องหลุดทันทีที่เจ้าตัวตั้งรหัสเอง
   const revoked = revokeOtherSessions(ctx.user.id, ctx.user.sessionId);
   audit({

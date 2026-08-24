@@ -666,8 +666,54 @@ function seedIfEmpty() {
   db._seed = { deptIds, roleIds, typeIds, userIds, passwords };
 }
 
+/**
+ * ทางกู้คืนบัญชีผู้ดูแลระบบ เมื่อเข้าไม่ได้แล้วจริงๆ
+ *
+ * ระบบนี้ไม่มีการรีเซ็ตรหัสผ่านทางอีเมล (โรงเรียนไม่มีเซิร์ฟเวอร์อีเมล และการต่อบริการส่งอีเมลภายนอก
+ * เกินความจำเป็น) ถ้าผู้ดูแลลืมรหัสผ่านหรือบัญชีถูกล็อกจากการกรอกผิด จะไม่เหลือทางเข้าระบบเลย
+ * แม้แต่ทางเดียว — ต้องรื้อฐานข้อมูลทิ้งอย่างเดียว ซึ่งแปลว่าทะเบียนหนังสือทั้งเล่มหายไปด้วย
+ *
+ * ทางออกคือใช้สิ่งที่เจ้าของระบบควบคุมได้อยู่แล้วแน่ๆ นั่นคือ environment variable บนเซิร์ฟเวอร์:
+ * ตั้ง ADMIN_RESET_PASSWORD แล้ว restart หนึ่งครั้ง ระบบจะตั้งรหัสนั้นให้บัญชีผู้ดูแล ปลดล็อก
+ * และบังคับให้ตั้งรหัสของตัวเองใหม่ทันทีที่เข้ามา (รหัสจาก env จึงเป็นรหัสชั่วคราวเสมอ ไม่ใช่รหัสถาวร)
+ *
+ * ADMIN_RESET_CODE เลือกได้ว่าจะรีเซ็ตบัญชีไหน (ค่าเริ่มต้นคือ 'admin')
+ */
+function applyEmergencyAdminReset() {
+  const newPassword = (process.env.ADMIN_RESET_PASSWORD || '').trim();
+  if (!newPassword) return;
+  const code = (process.env.ADMIN_RESET_CODE || 'admin').trim();
+  if (newPassword.length < 8) {
+    console.warn('[recovery] ข้าม ADMIN_RESET_PASSWORD เพราะสั้นกว่า 8 ตัวอักษร');
+    return;
+  }
+  const user = db.prepare('SELECT id, employee_code FROM users WHERE employee_code = ? AND deleted_at IS NULL').get(code);
+  if (!user) {
+    console.warn(`[recovery] ไม่พบบัญชี "${code}" — ตรวจ ADMIN_RESET_CODE อีกครั้ง`);
+    return;
+  }
+  db.prepare(`
+    UPDATE users SET password_hash = ?, must_change_password = 1,
+      failed_login_count = 0, locked_until = NULL, status = 'active', updated_at = ? WHERE id = ?
+  `).run(hashSecret(newPassword), nowIso(), user.id);
+  // เตะทุกเซสชันของบัญชีนั้นออก เผื่อคนที่ทำให้ต้องกู้คืนยังเปิดค้างอยู่
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+  audit({ userId: user.id, action: 'admin_password_recovered', tableName: 'users', recordId: user.id, detail: { via: 'ADMIN_RESET_PASSWORD' } });
+  console.warn([
+    '',
+    '='.repeat(78),
+    `  [recovery] ตั้งรหัสผ่านชั่วคราวให้บัญชี "${user.employee_code}" จาก ADMIN_RESET_PASSWORD แล้ว`,
+    '  เข้าสู่ระบบด้วยรหัสนี้ แล้วระบบจะให้ตั้งรหัสผ่านและ PIN ของตัวเองทันที',
+    '  ⚠️  เสร็จแล้วให้ "ลบ" ตัวแปร ADMIN_RESET_PASSWORD ออกจากเซิร์ฟเวอร์ทันที',
+    '     ไม่งั้นรหัสนี้จะถูกตั้งกลับทุกครั้งที่ระบบ restart และค้างอยู่ในหน้าตั้งค่า',
+    '='.repeat(78),
+    '',
+  ].join('\n'));
+}
+
 migrate();
 seedIfEmpty();
+applyEmergencyAdminReset();
 
 export function getUserByCode(code) {
   return db.prepare(`SELECT * FROM users WHERE employee_code = ? AND deleted_at IS NULL`).get(code);
