@@ -610,6 +610,35 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
     });
   }
 
+  // สคริปต์ฝั่งเบราว์เซอร์ถูกเขียนอยู่ใน template literal ของฝั่งเซิร์ฟเวอร์ ทำให้พลาดได้ง่ายมาก:
+  // \n ในสตริงจะถูกแปลงเป็นการขึ้นบรรทัดจริงตั้งแต่ตอนสร้าง HTML แล้วกลายเป็น SyntaxError ในเบราว์เซอร์
+  // ซึ่งทำให้ <script> "ทั้งก้อน" ไม่ทำงานเลย — ปุ่มอื่นที่อยู่ในก้อนเดียวกันตายไปด้วยทั้งหมด
+  //
+  // เกิดขึ้นจริงมาแล้ว: เพิ่มปุ่ม "รีเซ็ตรหัส" ในหน้าจัดการผู้ใช้ แล้วปุ่มเพิ่มผู้ใช้กับลบผู้ใช้หยุดทำงาน
+  // ทั้งคู่ โดยฝั่งเซิร์ฟเวอร์ยังตอบ 200 ปกติ เทสต์ smoke เดิมจึงเขียวสนิท และไม่มีใครรู้จนผู้ใช้มาแจ้ง
+  test('สคริปต์ฝั่งเบราว์เซอร์ในทุกหน้าต้องไม่มีไวยากรณ์ผิด', async () => {
+    const vm = await import('node:vm');
+    const offenders = [];
+    for (const code of ['admin', 'director01', 'reg001', 'teacher001']) {
+      const user = userAs(code);
+      for (const pathname of pages) {
+        const res = await openPage(pathname, user);
+        if (!String(res.headers['Content-Type'] || '').includes('text/html')) continue;
+        // เอาเฉพาะ <script> ที่มีโค้ดอยู่ในตัว (ไม่ใช่ src=) เพราะนั่นคือส่วนที่ประกอบจากเซิร์ฟเวอร์
+        for (const m of res.body.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)) {
+          try {
+            new vm.Script(m[1]);
+          } catch (err) {
+            const line = (m[1].split('\n')[Number((err.stack.match(/<anonymous>:(\d+)/) || [])[1] || 1) - 1] || '').trim();
+            offenders.push(`${pathname} (${code}): ${err.message} — ใกล้ๆ "${line.slice(0, 70)}"`);
+          }
+        }
+      }
+    }
+    assert.deepEqual([...new Set(offenders)], [],
+      `สคริปต์ในหน้าเว็บมีไวยากรณ์ผิด (ปุ่มทั้งก้อนจะไม่ทำงาน):\n  ${[...new Set(offenders)].join('\n  ')}`);
+  });
+
   // ทั้งระบบใช้ปีพุทธศักราชและชื่อเดือนไทย ถ้าที่ไหนลืมแปลง วันที่ดิบจากฐานข้อมูล (2026-08-25) จะโผล่มา
   // ให้ครูอ่านเอง ซึ่งเป็น ค.ศ. และเรียงคนละแบบ — เคยหลุดมาแล้วทั้งหน้ารายละเอียดเอกสาร หน้าลา
   // หน้ามอบหมายรักษาการแทน และหน้าอายุการเก็บ เพราะไม่มีอะไรคอยจับ
@@ -1428,6 +1457,92 @@ describe('ทะเบียนหนังสือ: ตัวกรองล�
     // ลิงก์ส่งออกไฟล์ต้องใช้ตัวประกอบตัวเดียวกับลิงก์เปลี่ยนหน้า ไม่งั้นไฟล์ที่ได้จะเป็นทั้งทะเบียน
     // ทั้งที่ผู้ใช้กรองไว้แล้ว ซึ่งเป็นความผิดพลาดที่ผู้ใช้ไม่มีทางสังเกตเห็นจากปุ่มเลย
     assert.match(fn, /const exportLink = \(path\) => `\$\{path\}\?\$\{filterQs\(\)/);
+  });
+});
+
+// แก้ไขข้อมูลผู้ใช้ — เดิมทำได้แค่เพิ่มกับลบ ครูย้ายฝ่าย/เปลี่ยนตำแหน่ง/ชื่อพิมพ์ผิดตอนนำเข้าจาก Excel
+// แก้ไม่ได้เลย ต้องลบทิ้งแล้วสร้างใหม่ ซึ่งทำให้ประวัติเอกสารและลายเซ็นเดิมผูกกับบัญชีที่ถูกระงับไปแล้ว
+describe('แก้ไขข้อมูลผู้ใช้', () => {
+  const admin = () => loadUserForTest(seed.userIds.admin);
+  const roleId = (name) => db.prepare('SELECT id FROM roles WHERE name = ?').get(name).id;
+  function makeUser(code) {
+    const id = `edit-${code}`;
+    db.prepare('DELETE FROM user_roles WHERE user_id = ?').run(id);
+    db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    db.prepare(`
+      INSERT INTO users (id, employee_code, first_name, last_name, department_id, password_hash, status, created_at, updated_at)
+      VALUES (?, ?, 'ก่อนแก้', 'นามสกุลเดิม', ?, ?, 'active', ?, ?)
+    `).run(id, code, deptId, hashSecret('Welcome@2569'), nowIso(), nowIso());
+    db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)').run(id, roleId('teacher'));
+    return id;
+  }
+  const roleOf = (id) => db.prepare('SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ?').get(id)?.name;
+
+  test('แก้ชื่อ ฝ่าย ตำแหน่ง และบทบาทได้จริง', async () => {
+    const id = makeUser('edituser01');
+    const dept2 = db.prepare('SELECT id FROM departments WHERE id != ? LIMIT 1').get(deptId).id;
+    const res = await dispatchPost(admin(), `/admin/users/${id}/edit`, {
+      prefix: 'นาง', firstName: 'หลังแก้', lastName: 'นามสกุลใหม่', position: 'หัวหน้าฝ่ายวิชาการ',
+      departmentId: dept2, roleId: roleId('head'), status: 'active',
+    });
+    assert.equal(res.status, 302, res.body.slice(0, 200));
+    const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    assert.equal(row.first_name, 'หลังแก้');
+    assert.equal(row.department_id, dept2);
+    assert.equal(row.position, 'หัวหน้าฝ่ายวิชาการ');
+    assert.equal(roleOf(id), 'head', 'บทบาทต้องเปลี่ยนตามที่เลือก และต้องเหลือบทบาทเดียว');
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM user_roles WHERE user_id = ?').get(id).c, 1);
+  });
+
+  test('ระงับบัญชีแล้วต้องหลุดออกจากระบบทันที ไม่ใช่ใช้ต่อจนเซสชันหมดอายุเอง', async () => {
+    const id = makeUser('edituser02');
+    assert.equal(login('edituser02', 'Welcome@2569', '127.0.0.1').ok, true);
+    assert.ok(db.prepare('SELECT COUNT(*) c FROM sessions WHERE user_id = ?').get(id).c > 0);
+
+    await dispatchPost(admin(), `/admin/users/${id}/edit`, { firstName: 'ก', lastName: 'ข', roleId: roleId('teacher'), status: 'suspended' });
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM sessions WHERE user_id = ?').get(id).c, 0, 'เซสชันที่ค้างอยู่ต้องถูกเตะออก');
+    assert.equal(login('edituser02', 'Welcome@2569', '127.0.0.1').ok, false, 'บัญชีที่ระงับต้องล็อกอินไม่ได้');
+  });
+
+  test('ปฏิเสธค่าที่ไม่ถูกต้อง และไม่บันทึกอะไรเลย', async () => {
+    const id = makeUser('edituser03');
+    for (const [label, body] of [
+      ['ไม่กรอกชื่อ', { firstName: '', lastName: 'ข', roleId: roleId('teacher') }],
+      ['ฝ่ายที่ไม่มีอยู่จริง', { firstName: 'ก', lastName: 'ข', departmentId: 'ไม่มีจริง', roleId: roleId('teacher') }],
+      ['บทบาทที่ไม่มีอยู่จริง', { firstName: 'ก', lastName: 'ข', roleId: 'ไม่มีจริง' }],
+      ['ชื่อยาวเกินกำหนด', { firstName: 'ก'.repeat(50000), lastName: 'ข', roleId: roleId('teacher') }],
+    ]) {
+      const res = await dispatchPost(admin(), `/admin/users/${id}/edit`, body);
+      assert.equal(res.status, 400, `ควรปฏิเสธ: ${label}`);
+    }
+    assert.equal(db.prepare('SELECT first_name FROM users WHERE id = ?').get(id).first_name, 'ก่อนแก้',
+      'ข้อมูลต้องไม่ถูกแก้เมื่อค่าที่ส่งมาไม่ผ่าน');
+  });
+
+  // ถ้าปล่อยให้ผู้ดูแลคนสุดท้ายถอดบทบาทตัวเองหรือระงับตัวเองได้ จะไม่เหลือใครเข้าหน้าจัดการผู้ใช้ได้อีกเลย
+  // ต้องไปกู้คืนผ่าน environment variable บนเซิร์ฟเวอร์อย่างเดียว
+  test('ผู้ดูแลระบบคนสุดท้ายถอดบทบาทตัวเองหรือระงับตัวเองไม่ได้', async () => {
+    const a = admin();
+    for (const [label, body] of [
+      ['เปลี่ยนบทบาทตัวเองเป็นครู', { firstName: a.first_name || 'ก', lastName: a.last_name || 'ข', roleId: roleId('teacher'), status: 'active' }],
+      ['ระงับบัญชีตัวเอง', { firstName: a.first_name || 'ก', lastName: a.last_name || 'ข', roleId: roleId('admin'), status: 'suspended' }],
+    ]) {
+      const res = await dispatchPost(a, `/admin/users/${a.id}/edit`, body);
+      assert.equal(res.status, 400, `ควรปฏิเสธ: ${label}`);
+      assert.match(res.body, /อย่างน้อย 1 คน/);
+    }
+    assert.equal(roleOf(a.id), 'admin', 'ต้องยังเป็นผู้ดูแลระบบอยู่');
+    assert.equal(db.prepare('SELECT status FROM users WHERE id = ?').get(a.id).status, 'active');
+  });
+
+  test('คนที่ไม่ใช่ผู้ดูแลระบบแก้ไขผู้ใช้ไม่ได้', async () => {
+    const id = makeUser('edituser04');
+    const teacher = loadUserForTest(seed.userIds.teacher001);
+    assert.equal((await dispatchGet(teacher, `/admin/users/${id}/edit`, {})).status, 403);
+    const res = await dispatchPost(teacher, `/admin/users/${id}/edit`, { firstName: 'แฮก', lastName: 'ระบบ', roleId: roleId('admin') });
+    assert.equal(res.status, 403);
+    assert.equal(db.prepare('SELECT first_name FROM users WHERE id = ?').get(id).first_name, 'ก่อนแก้');
+    assert.equal(roleOf(id), 'teacher', 'ต้องเลื่อนตัวเองเป็นผู้ดูแลระบบไม่ได้');
   });
 });
 

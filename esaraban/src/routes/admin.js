@@ -56,6 +56,7 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
             <td><span class="badge ${u.status === 'active' ? 'badge-success' : 'badge-muted'}">${u.status === 'active' ? 'ใช้งาน' : 'ระงับ'}</span></td>
             <td style="white-space:nowrap">
               ${u.must_change_password ? '<span class="badge badge-warning" title="ยังไม่ได้ตั้งรหัสผ่านของตัวเอง">🔑 รอตั้งรหัส</span> ' : ''}
+              <a class="btn btn-outline btn-sm" href="/admin/users/${u.id}/edit">✏️ แก้ไข</a>
               <button class="btn btn-outline btn-sm" onclick="resetPassword('${u.id}','${esc(u.employee_code)}')">🔑 รีเซ็ตรหัส</button>
               ${u.id === ctx.user.id ? '' : `<button class="btn btn-outline btn-sm" onclick="deleteUser('${u.id}','${esc(u.first_name)} ${esc(u.last_name)}')">🗑️ ลบ</button>`}
             </td>
@@ -100,7 +101,11 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
               .catch(e => toast(e.message, 'danger'));
           });
           function resetPassword(id, code) {
-            if (!confirm('ออกรหัสผ่านชั่วคราวใหม่ให้ "' + code + '"?\n\nรหัสเดิมจะใช้ไม่ได้ทันที เครื่องที่เปิดค้างอยู่จะถูกให้ออกจากระบบ และเจ้าตัวต้องตั้งรหัสของตัวเองตอนเข้าใช้ครั้งถัดไป')) return;
+            // ห้ามใช้ \\n ตรงๆ ในสตริงนี้ — โค้ดก้อนนี้อยู่ใน template literal ของฝั่งเซิร์ฟเวอร์
+            // \\n จึงถูกแปลงเป็นการขึ้นบรรทัดจริงตั้งแต่ตอนสร้าง HTML แล้วกลายเป็นสตริงที่ขึ้นบรรทัดใหม่
+            // กลางคันในฝั่งเบราว์เซอร์ = SyntaxError ซึ่งทำให้ <script> ทั้งก้อนไม่ทำงานเลย
+            // (ปุ่มเพิ่มผู้ใช้/ลบผู้ใช้ที่อยู่ในก้อนเดียวกันก็ตายไปด้วย — เคยหลุดไปแล้วครั้งหนึ่ง)
+            if (!confirm('ออกรหัสผ่านชั่วคราวใหม่ให้ "' + code + '"? รหัสเดิมจะใช้ไม่ได้ทันที เครื่องที่เปิดค้างอยู่จะถูกให้ออกจากระบบ และเจ้าตัวต้องตั้งรหัสของตัวเองตอนเข้าใช้ครั้งถัดไป')) return;
             fetch('/admin/users/' + id + '/reset-password', {method:'POST'})
               .then(r => r.json().then(d => ({ok:r.ok,d})))
               .then(({ok,d}) => {
@@ -257,6 +262,154 @@ router.post('/admin/users/:id/reset-password', requireApi(async (ctx) => {
     message: `ออกรหัสชั่วคราวให้ ${target.employee_code} แล้ว${target.locked_until ? ' และปลดล็อกบัญชีให้ด้วย' : ''} — เจ้าตัวจะต้องตั้งรหัสผ่านและ PIN ของตัวเองทันทีที่เข้าใช้งาน`,
   });
 }));
+
+// ---------------- แก้ไขข้อมูลผู้ใช้ ----------------
+// เดิมทำได้แค่ "เพิ่ม" กับ "ลบ" เท่านั้น ครูย้ายฝ่าย เปลี่ยนตำแหน่ง ได้เลื่อนเป็นหัวหน้าฝ่าย หรือพิมพ์ชื่อผิด
+// ตอนนำเข้าจาก Excel — ทั้งหมดนี้แก้ไม่ได้เลย ต้องลบทิ้งแล้วสร้างใหม่ ซึ่งทำให้ประวัติเอกสาร/ลายเซ็นเดิม
+// ผูกอยู่กับบัญชีที่ถูกระงับไปแล้ว
+//
+// ทำเป็นหน้าแยกที่ส่งฟอร์มแบบธรรมดา ไม่ใช่ JavaScript ในหน้าเดิม — สคริปต์ที่ประกอบจาก template literal
+// ของเซิร์ฟเวอร์เพิ่งทำให้ปุ่มทั้งหน้าตายมาแล้วครั้งหนึ่ง หน้าฟอร์มธรรมดาไม่มีทางพังแบบนั้น
+const USER_STATUSES = { active: 'ใช้งาน', suspended: 'ระงับการใช้งาน' };
+
+function userEditPage(ctx, target, { error, depts, roles, currentRoleId }) {
+  return `
+    <div class="card-header">
+      <div>
+        <h2 class="mt-0">✏️ แก้ไขข้อมูลผู้ใช้</h2>
+        <p class="text-muted" style="margin:-.3rem 0 0;font-size:.85rem">
+          รหัสประจำตัว <strong>${esc(target.employee_code)}</strong> — เปลี่ยนรหัสประจำตัวไม่ได้
+          เพราะเป็นตัวอ้างอิงของประวัติเอกสารและลายเซ็นทั้งหมดที่ผ่านมา
+        </p>
+      </div>
+      <a class="btn btn-outline" href="/admin/users">← กลับรายชื่อผู้ใช้</a>
+    </div>
+    <div class="card">
+      ${error ? `<div class="alert alert-danger">${esc(error)}</div>` : ''}
+      <form method="post" action="/admin/users/${target.id}/edit">
+        <div class="form-grid cols-3">
+          <div class="field"><label>คำนำหน้า</label>
+            <input type="text" name="prefix" value="${esc(target.prefix || '')}" placeholder="นาย/นาง/นางสาว" /></div>
+          <div class="field"><label>ชื่อ *</label>
+            <input type="text" name="firstName" value="${esc(target.first_name)}" required /></div>
+          <div class="field"><label>นามสกุล *</label>
+            <input type="text" name="lastName" value="${esc(target.last_name)}" required /></div>
+          <div class="field"><label>อีเมล</label>
+            <input type="email" name="email" value="${esc(target.email || '')}" /></div>
+          <div class="field"><label>ตำแหน่ง</label>
+            <input type="text" name="position" value="${esc(target.position || '')}" placeholder="เช่น ครู, หัวหน้าฝ่ายวิชาการ" /></div>
+          <div class="field"><label>ฝ่าย</label>
+            <select name="departmentId">
+              <option value="">— ไม่ระบุ —</option>
+              ${depts.map((d) => `<option value="${d.id}" ${d.id === target.department_id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}
+            </select></div>
+          <div class="field"><label>บทบาท *</label>
+            <select name="roleId" required>
+              ${roles.map((r) => `<option value="${r.id}" ${r.id === currentRoleId ? 'selected' : ''}>${esc(r.name_th)}</option>`).join('')}
+            </select></div>
+          <div class="field"><label>สถานะ</label>
+            <select name="status">
+              ${Object.entries(USER_STATUSES).map(([k, v]) => `<option value="${k}" ${k === target.status ? 'selected' : ''}>${esc(v)}</option>`).join('')}
+            </select>
+            <div class="help-text">บัญชีที่ระงับจะเข้าใช้งานไม่ได้ทันที แต่ประวัติเอกสารและลายเซ็นเดิมยังอยู่ครบ</div></div>
+        </div>
+        <button class="btn btn-primary" type="submit">บันทึกการแก้ไข</button>
+        <a class="btn btn-outline" href="/admin/users">ยกเลิก</a>
+      </form>
+    </div>`;
+}
+
+function loadUserForEdit(id) {
+  const target = db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
+  if (!target) return null;
+  const currentRoleId = db.prepare('SELECT role_id FROM user_roles WHERE user_id = ? LIMIT 1').get(id)?.role_id || null;
+  return {
+    target, currentRoleId,
+    depts: db.prepare('SELECT * FROM departments ORDER BY name').all(),
+    roles: db.prepare('SELECT * FROM roles ORDER BY level DESC').all(),
+  };
+}
+
+router.get('/admin/users/:id/edit', requireRole('admin')(requirePage((ctx) => {
+  const loaded = loadUserForEdit(ctx.params.id);
+  if (!loaded) return html(ctx, 404, layout({ user: ctx.user, title: 'ไม่พบผู้ใช้', path: '/admin/users', content: emptyState('🔍', 'ไม่พบผู้ใช้นี้') }));
+  html(ctx, 200, layout({
+    user: ctx.user, title: 'แก้ไขผู้ใช้', path: '/admin/users',
+    content: userEditPage(ctx, loaded.target, loaded),
+  }));
+})));
+
+router.post('/admin/users/:id/edit', requireRole('admin')(requirePage((ctx) => {
+  const loaded = loadUserForEdit(ctx.params.id);
+  if (!loaded) return html(ctx, 404, layout({ user: ctx.user, title: 'ไม่พบผู้ใช้', path: '/admin/users', content: emptyState('🔍', 'ไม่พบผู้ใช้นี้') }));
+  const { target } = loaded;
+  const b = ctx.body;
+  const fail = (error) => html(ctx, 400, layout({
+    user: ctx.user, title: 'แก้ไขผู้ใช้', path: '/admin/users',
+    content: userEditPage(ctx, { ...target, ...pendingEdit(b, target) }, { ...loaded, error, currentRoleId: b.roleId || loaded.currentRoleId }),
+  }));
+
+  const firstName = (b.firstName || '').trim();
+  const lastName = (b.lastName || '').trim();
+  if (!firstName || !lastName) return fail('กรุณากรอกชื่อและนามสกุล');
+  for (const [value, max, label] of [[b.prefix, 50, 'คำนำหน้า'], [firstName, 100, 'ชื่อ'], [lastName, 100, 'นามสกุล'],
+    [b.email, 200, 'อีเมล'], [b.position, 200, 'ตำแหน่ง']]) {
+    if (typeof value === 'string' && value.length > max) return fail(`${label}ยาวเกินไป (จำกัดไม่เกิน ${max} ตัวอักษร)`);
+  }
+  const departmentId = (b.departmentId || '').trim() || null;
+  if (departmentId && !db.prepare('SELECT 1 x FROM departments WHERE id = ?').get(departmentId)) return fail('ไม่พบฝ่ายที่เลือก');
+  const role = db.prepare('SELECT * FROM roles WHERE id = ?').get(b.roleId);
+  if (!role) return fail('กรุณาเลือกบทบาท');
+  const status = b.status in USER_STATUSES ? b.status : target.status;
+
+  // กันไม่ให้ผู้ดูแลระบบคนสุดท้ายถอดบทบาทตัวเองหรือระงับตัวเอง — ถ้าปล่อยไว้จะไม่เหลือใครเข้าหน้า
+  // จัดการผู้ใช้ได้อีกเลย ต้องไปกู้คืนผ่าน environment variable อย่างเดียว (ดู DEPLOY.md)
+  const wasAdmin = db.prepare(`
+    SELECT 1 x FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? AND r.name = 'admin'
+  `).get(target.id);
+  if (wasAdmin && (role.name !== 'admin' || status !== 'active')) {
+    const adminCount = db.prepare(`
+      SELECT COUNT(DISTINCT u.id) c FROM users u
+      JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
+      WHERE r.name = 'admin' AND u.deleted_at IS NULL AND u.status = 'active'
+    `).get().c;
+    if (adminCount <= 1) return fail('ต้องมีผู้ดูแลระบบที่ใช้งานได้อย่างน้อย 1 คนเสมอ — กรุณาตั้งผู้ดูแลระบบคนอื่นก่อน');
+  }
+
+  try {
+    db.prepare(`
+      UPDATE users SET prefix = ?, first_name = ?, last_name = ?, email = ?, position = ?,
+        department_id = ?, status = ?, updated_at = ? WHERE id = ?
+    `).run((b.prefix || '').trim() || null, firstName, lastName, (b.email || '').trim() || null,
+      (b.position || '').trim() || null, departmentId, status, nowIso(), target.id);
+  } catch (e) {
+    return fail('อีเมลนี้ถูกใช้งานโดยผู้ใช้อื่นแล้ว');
+  }
+  // บทบาทเก็บเป็นตาราง many-to-many แต่หน้านี้ให้เลือกได้บทบาทเดียว จึงล้างของเดิมแล้วใส่ใหม่
+  db.prepare('DELETE FROM user_roles WHERE user_id = ?').run(target.id);
+  db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)').run(target.id, role.id);
+  // บัญชีที่ถูกระงับต้องหลุดออกจากระบบทันที ไม่ใช่ใช้ต่อได้จนกว่าเซสชันจะหมดอายุเอง
+  if (status !== 'active') db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id);
+
+  audit({
+    userId: ctx.user.id, action: 'user_updated', tableName: 'users', recordId: target.id,
+    detail: { employeeCode: target.employee_code, role: role.name, status }, ip: ctx.ip,
+  });
+  redirect(ctx, '/admin/users?updated=1');
+})));
+
+// ค่าที่ผู้ใช้เพิ่งกรอกมา ใช้เติมกลับลงฟอร์มเมื่อบันทึกไม่ผ่าน จะได้ไม่ต้องพิมพ์ใหม่ทั้งหมด
+function pendingEdit(b, target) {
+  return {
+    prefix: b.prefix ?? target.prefix,
+    first_name: b.firstName ?? target.first_name,
+    last_name: b.lastName ?? target.last_name,
+    email: b.email ?? target.email,
+    position: b.position ?? target.position,
+    department_id: b.departmentId ?? target.department_id,
+    status: b.status ?? target.status,
+  };
+}
 
 router.post('/admin/users/:id/delete', requireApi(async (ctx) => {
   if (!ctx.user.roleCodes.includes('admin')) return json(ctx, 403, { error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
