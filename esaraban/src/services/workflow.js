@@ -30,6 +30,10 @@ const VALID_DIRECTION = new Set(['incoming', 'outgoing']);
 // ต่อการเปิดหนึ่งครั้ง และทำให้ตาราง/ตราประทับ/ไฟล์ Excel ที่ส่งออกเสียรูปทั้งหมด
 const MAX_LEN = { title: 500, subject: 5000, correspondentName: 300, externalDocNumber: 100, customDocNumber: 100 };
 
+// เพดานของข้อความในขั้นตอน workflow — ยาวกว่านี้ไม่ได้ช่วยใครอ่านรู้เรื่องขึ้น แต่ทำให้ไทม์ไลน์
+// ของเอกสารพองจนเปิดหน้าไม่ไหว (เทียบกับกรณีชื่อเรื่อง 50,000 ตัวอักษรที่เคยทำให้หน้าทะเบียนพอง 115KB)
+const MAX_STEP_TEXT = 2000;
+
 function assertLength(value, field, label) {
   assertMaxLength(value, MAX_LEN[field], label);
 }
@@ -293,6 +297,7 @@ function documentOfStep(step) {
 }
 
 export function assignStep({ documentId, assigneeId, instruction, actorUser }) {
+  assertMaxLength(instruction, MAX_STEP_TEXT, 'ข้อความเกษียณ/หมายเหตุ');
   const doc = getDocument(documentId);
   if (!doc) throw httpError(404, 'ไม่พบเอกสาร');
   assertAssignableUser(assigneeId);
@@ -332,6 +337,7 @@ function assertOwnsStep(step, actorUser) {
 }
 
 export function approveAndForward({ stepId, nextAssigneeId, comment, actorUser }) {
+  assertMaxLength(comment, MAX_STEP_TEXT, 'ความเห็น');
   const step = db.prepare('SELECT * FROM workflow_steps WHERE id = ?').get(stepId);
   assertOwnsStep(step, actorUser);
   assertAssignableUser(nextAssigneeId);
@@ -364,6 +370,7 @@ export function approveAndForward({ stepId, nextAssigneeId, comment, actorUser }
 }
 
 export function acknowledgeAndComplete({ stepId, comment, actorUser }) {
+  assertMaxLength(comment, MAX_STEP_TEXT, 'ความเห็น');
   const step = db.prepare('SELECT * FROM workflow_steps WHERE id = ?').get(stepId);
   assertOwnsStep(step, actorUser);
   const doc = documentOfStep(step);
@@ -384,6 +391,7 @@ export function acknowledgeAndComplete({ stepId, comment, actorUser }) {
 }
 
 export function rejectStep({ stepId, reason, actorUser }) {
+  assertMaxLength(reason, MAX_STEP_TEXT, 'เหตุผล');
   const step = db.prepare('SELECT * FROM workflow_steps WHERE id = ?').get(stepId);
   assertOwnsStep(step, actorUser);
   const doc = documentOfStep(step);
@@ -402,6 +410,7 @@ export function rejectStep({ stepId, reason, actorUser }) {
 }
 
 export function returnStep({ stepId, reason, actorUser }) {
+  assertMaxLength(reason, MAX_STEP_TEXT, 'เหตุผล');
   const step = db.prepare('SELECT * FROM workflow_steps WHERE id = ?').get(stepId);
   assertOwnsStep(step, actorUser);
   const doc = documentOfStep(step);
@@ -430,6 +439,7 @@ function assertCanManageDocument(doc, actorUser, what) {
 }
 
 export function voidDocument({ documentId, reason, actorUser }) {
+  assertMaxLength(reason, MAX_STEP_TEXT, 'เหตุผลการยกเลิก');
   const doc = getDocument(documentId);
   if (!doc) throw httpError(404, 'ไม่พบเอกสาร');
   assertCanManageDocument(doc, actorUser, 'ยกเลิกเอกสาร');

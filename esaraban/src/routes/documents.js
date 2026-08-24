@@ -13,8 +13,9 @@ import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStr
 import {
   stampPdf, stampDirectorDecision, stampAcknowledgeMark, stampRegistrarComment,
   DECISION_MAX_TOP_PERCENT, DEFAULT_ACK_MARK_X_PERCENT, DEFAULT_DECISION_X_PERCENT, DEFAULT_REGISTRAR_X_PERCENT,
-  ackSlotTopPercent, ACK_WORD_HEIGHT_PERCENT, ACK_ENTRY_HEIGHT_PERCENT,
+  ackSlotTopPercent, ACK_WORD_HEIGHT_PERCENT, ACK_ENTRY_HEIGHT_PERCENT, MAX_STAMP_TEXT,
 } from '../services/pdfStamp.js';
+import { assertMaxLength } from '../services/validate.js';
 import { getActiveDelegateFor } from '../services/delegation.js';
 import {
   buildDocumentQuery, countDocuments, listDocuments, describeFilters, CLOSED_STATUSES,
@@ -765,6 +766,16 @@ router.post('/documents/bulk', requireApi((ctx) => {
     documents: docs.map((d) => ({ id: d.id, docNumberDisplay: d.docNumberDisplay })),
   });
 }));
+
+
+// ข้อความที่จะถูกประทับลงบนไฟล์ PDF ต้องตรวจความยาว "ก่อน" ที่ขั้นตอน workflow จะถูกบันทึก —
+// ถ้าปล่อยไปตรวจตอนประทับตรา (ซึ่งเกิดหลัง approveAndForward ไปแล้ว) ผลจะเป็น: เรื่องถูกอนุมัติและ
+// ส่งต่อไปคนถัดไปเรียบร้อย แต่ความเห็นของ ผอ. ไม่ได้ขึ้นบนหนังสือเลย ผู้ใช้เห็นแค่ข้อความเตือนเล็กๆ
+// แล้วย้อนกลับไปแก้ไม่ได้อีก เพราะขั้นตอนนั้นปิดไปแล้ว
+function assertStampTextFits({ decisionNote, registrarNote }) {
+  assertMaxLength(decisionNote, MAX_STAMP_TEXT, 'ความเห็นที่จะประทับลงหนังสือ');
+  assertMaxLength(registrarNote, MAX_STAMP_TEXT, 'ความเห็นธุรการที่จะประทับลงหนังสือ');
+}
 
 // ---------------- ส่งออกทะเบียนหนังสือ ----------------
 // รูปแบบคอลัมน์อ้างอิงทะเบียนหนังสือรับ/ทะเบียนหนังสือส่งตามระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ
@@ -1536,6 +1547,7 @@ router.post('/documents/:id/assign', requireApi(async (ctx) => {
     const { verifyPin } = await import('../auth.js');
     if (!verifyPin(ctx.user.id, ctx.body.pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   }
+  assertStampTextFits({ registrarNote });
 
   assignStep({ documentId: doc.id, assigneeId: ctx.body.assigneeId, instruction: ctx.body.instruction, actorUser: ctx.user });
   const warning = await stampRegistrarCommentIfApplicable({
@@ -1573,6 +1585,7 @@ router.post('/documents/:id/workflow/:stepId/approve', requireApi(async (ctx) =>
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   if (!nextAssigneeId) throw httpError(400, 'กรุณาเลือกผู้รับที่จะส่งต่อ');
+  assertStampTextFits({ decisionNote, registrarNote });
   assertStepBelongsToDocument(ctx.params.id, ctx.params.stepId);
   approveAndForward({ stepId: ctx.params.stepId, nextAssigneeId, comment, actorUser: ctx.user });
   const warning1 = await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
@@ -1594,6 +1607,7 @@ router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx
   const { pin, comment, markX, markY, decisionX, decisionY, decisionNote, decisionMarks, decisionNotify, registrarNote, registrarX, registrarY } = ctx.body;
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
+  assertStampTextFits({ decisionNote, registrarNote });
   assertStepBelongsToDocument(ctx.params.id, ctx.params.stepId);
   acknowledgeAndComplete({ stepId: ctx.params.stepId, comment, actorUser: ctx.user });
   const warning1 = await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
@@ -1610,6 +1624,8 @@ router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx
 
 router.post('/documents/:id/workflow/:stepId/reject', requireApi(async (ctx) => {
   const { reason, markX, markY, decisionX, decisionY, decisionNote, decisionMarks, decisionNotify, registrarNote, registrarX, registrarY } = ctx.body;
+  // decisionNote ว่างเปล่าจะใช้ reason แทนตอนประทับ จึงต้องตรวจ reason ตามเพดานของตราประทับด้วย
+  assertStampTextFits({ decisionNote: decisionNote || reason, registrarNote });
   assertStepBelongsToDocument(ctx.params.id, ctx.params.stepId);
   rejectStep({ stepId: ctx.params.stepId, reason, actorUser: ctx.user });
   const warning1 = await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
@@ -1965,6 +1981,7 @@ router.post('/documents/:id/comment', requireApi(async (ctx) => {
   const doc = getDocument(ctx.params.id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
   if (!ctx.body.message?.trim()) throw httpError(400, 'ข้อความว่างเปล่า');
+  assertMaxLength(ctx.body.message, 5000, 'ข้อความ');
   db.prepare('INSERT INTO comments (id, document_id, user_id, message, created_at) VALUES (?, ?, ?, ?, ?)')
     .run(uuid(), doc.id, ctx.user.id, ctx.body.message.trim(), nowIso());
   audit({ userId: ctx.user.id, action: 'comment_added', tableName: 'documents', recordId: doc.id });

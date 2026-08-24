@@ -3,6 +3,7 @@ import { isGoogleDriveEnabled, deleteFile as deleteDriveFile } from './googleDri
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertMaxLength } from './validate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
@@ -50,9 +51,23 @@ export function getBatch(id) {
   return { ...batch, items };
 }
 
+// เพดานของบัญชีทำลายหนังสือหนึ่งบัญชี — บัญชีนี้เป็นเอกสารราชการถาวรที่ต้องพิมพ์เก็บไว้ตรวจสอบย้อนหลัง
+// รายชื่อคณะกรรมการตามระเบียบมีแค่ 3 คนขึ้นไป ไม่มีทางยาวถึงหลักหมื่นตัวอักษร
+const MAX_COMMITTEE_NAMES = 1000;
+const MAX_BATCH_REASON = 2000;
+const MAX_BATCH_ITEMS = 500;
+
 export function createDestructionBatch({ documentIds, committeeNames, reason, actorUser }) {
-  if (!documentIds?.length) throw httpError(400, 'กรุณาเลือกเอกสารอย่างน้อย 1 รายการ');
+  // ต้องเช็คว่าเป็นอาเรย์จริง ไม่ใช่แค่ว่ามี length — สตริงก็มี length เหมือนกัน แล้วจะไปพังที่
+  // documentIds.filter ต่อ กลายเป็น error 500 พร้อมข้อความ JavaScript ดิบๆ ใส่หน้าผู้ใช้
+  if (!Array.isArray(documentIds) || documentIds.length === 0) throw httpError(400, 'กรุณาเลือกเอกสารอย่างน้อย 1 รายการ');
+  if (documentIds.length > MAX_BATCH_ITEMS) {
+    throw httpError(400, `ทำลายได้ครั้งละไม่เกิน ${MAX_BATCH_ITEMS} ฉบับ (เลือกมา ${documentIds.length} ฉบับ) — กรุณาแบ่งเป็นหลายบัญชี`);
+  }
+  if (new Set(documentIds).size !== documentIds.length) throw httpError(400, 'มีเอกสารซ้ำกันในรายการที่เลือก');
   if (!committeeNames?.trim()) throw httpError(400, 'กรุณาระบุรายชื่อคณะกรรมการทำลายหนังสือ (อย่างน้อย 3 คนตามระเบียบ)');
+  assertMaxLength(committeeNames, MAX_COMMITTEE_NAMES, 'รายชื่อคณะกรรมการ');
+  assertMaxLength(reason, MAX_BATCH_REASON, 'เหตุผล');
 
   const eligible = new Set(listEligibleForDestruction().map((d) => d.id));
   const invalid = documentIds.filter((id) => !eligible.has(id));

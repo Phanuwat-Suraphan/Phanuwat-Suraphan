@@ -31,6 +31,7 @@ const { createDelegation } = await import('../src/services/delegation.js');
 const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, planBackupCleanup, thaiDateParts } = await import('../src/services/dbBackup.js');
 const sqliteModule = await import('node:sqlite');
 const { createDestructionBatch, approveDestructionBatch } = await import('../src/services/retention.js');
+const { MAX_STAMP_TEXT } = await import('../src/services/pdfStamp.js');
 const zlib = await import('node:zlib');
 
 const seed = db._seed;
@@ -95,6 +96,30 @@ async function dispatchGet(user, path, query = {}) {
   await routerForTest.dispatch('GET', path, ctx);
   const buffer = Buffer.concat(chunks);
   return { status, headers, buffer, body: buffer.toString('utf8') };
+}
+
+// เหมือน dispatchGet แต่เป็น POST พร้อม body — ใช้ตรวจว่าเส้นทางปฏิเสธค่าที่ไม่ถูกต้อง "ก่อน" ที่จะ
+// ไปแตะฐานข้อมูล ซึ่งเทสต์ระดับฟังก์ชันมองไม่เห็น เพราะการตรวจบางอย่างอยู่ในตัวเส้นทางเอง
+async function dispatchPost(user, path, body = {}) {
+  if (!routerForTest) {
+    ({ router: routerForTest } = await import('../src/router.js'));
+    await import('../src/routes/index.js');
+  }
+  let status = 0;
+  const chunks = [];
+  const headers = {};
+  const res = {
+    headersSent: false,
+    setHeader() {},
+    writeHead(code, h) { status = code; Object.assign(headers, h || {}); this.headersSent = true; return this; },
+    end(chunk) { if (chunk) chunks.push(String(chunk)); },
+  };
+  const ctx = { req: { method: 'POST', headers: {} }, res, url: new URL(`http://x${path}`), query: {}, user, body, ip: '127.0.0.1' };
+  await routerForTest.dispatch('POST', path, ctx);
+  const text = chunks.join('');
+  let json = {};
+  try { json = JSON.parse(text); } catch { /* หน้าเว็บธรรมดา ไม่ใช่ JSON */ }
+  return { status, headers, body: text, json };
 }
 
 describe('auth: login + rate limiting', () => {
@@ -1403,6 +1428,70 @@ describe('ทะเบียนหนังสือ: ตัวกรองล�
     // ลิงก์ส่งออกไฟล์ต้องใช้ตัวประกอบตัวเดียวกับลิงก์เปลี่ยนหน้า ไม่งั้นไฟล์ที่ได้จะเป็นทั้งทะเบียน
     // ทั้งที่ผู้ใช้กรองไว้แล้ว ซึ่งเป็นความผิดพลาดที่ผู้ใช้ไม่มีทางสังเกตเห็นจากปุ่มเลย
     assert.match(fn, /const exportLink = \(path\) => `\$\{path\}\?\$\{filterQs\(\)/);
+  });
+});
+
+// เพดานความยาวของทุกช่องข้อความที่ผู้ใช้กรอกเองได้
+//
+// ไล่ยิงทุกช่องด้วยข้อความ 50,000 ตัวอักษร พบว่าหลายช่องรับเข้าไปเก็บทั้งอย่างนั้น ที่หนักที่สุดคือ
+// ความเห็นที่จะถูก "ประทับลงบนไฟล์ PDF จริง" — วัดด้วย chromium แล้วพบว่ากล่องความเห็นล้นออกหน้า 2
+// ตั้งแต่ประมาณ 700 ตัวอักษร (แม้ระบบจะเลื่อนกล่องขึ้นให้ครบ 8 ครั้งตาม fit-retry loop แล้วก็ตาม)
+// ซึ่ง qpdf --overlay --to=1 ทับให้แค่หน้าแรก = ตราประทับหายทั้งกล่อง
+describe('เพดานความยาวของช่องข้อความ', () => {
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  const LONG = 'ก'.repeat(50000);
+
+  test('ข้อความในขั้นตอน workflow ทุกจุดมีเพดาน', () => {
+    const doc = makeDoc({ title: 'ทดสอบเพดานข้อความ' });
+    assert.throws(() => assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, instruction: LONG, actorUser: reg() }), /ยาวเกินไป/);
+    assert.throws(() => voidDocument({ documentId: doc.id, reason: LONG, actorUser: reg() }), /ยาวเกินไป/);
+
+    assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, instruction: 'เสนอ', actorUser: reg() });
+    const step = currentStep(doc.id);
+    const director = loadUserForTest(seed.userIds.director01);
+    assert.throws(() => approveAndForward({ stepId: step.id, nextAssigneeId: seed.userIds.head_acad, comment: LONG, actorUser: director }), /ยาวเกินไป/);
+    assert.throws(() => acknowledgeAndComplete({ stepId: step.id, comment: LONG, actorUser: director }), /ยาวเกินไป/);
+    assert.throws(() => rejectStep({ stepId: step.id, reason: LONG, actorUser: director }), /ยาวเกินไป/);
+    assert.throws(() => returnStep({ stepId: step.id, reason: LONG, actorUser: director }), /ยาวเกินไป/);
+    // ข้อความความยาวปกติต้องยังผ่าน ไม่ใช่ปิดตายไปเลย
+    acknowledgeAndComplete({ stepId: step.id, comment: 'รับทราบแล้ว ดำเนินการต่อได้', actorUser: director });
+    assert.equal(getDocRow(doc.id).status, 'completed');
+  });
+
+  // ตรวจ "ก่อน" ที่การตัดสินใจจะถูกบันทึก ไม่ใช่ตอนประทับตรา — ถ้าตรวจทีหลัง ผลจะเป็น: เรื่องถูกอนุมัติ
+  // และส่งต่อไปคนถัดไปเรียบร้อยแล้ว แต่ความเห็นของ ผอ. ไม่ได้ขึ้นบนหนังสือ และย้อนกลับไปแก้ไม่ได้อีก
+  test('ความเห็นที่จะประทับลงหนังสือ ถูกปฏิเสธก่อนขั้นตอนจะถูกบันทึก', async () => {
+    const doc = makeDoc({ title: 'ทดสอบความเห็นยาวเกินกล่องตราประทับ' });
+    assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, instruction: 'เสนอ', actorUser: reg() });
+    const step = currentStep(doc.id);
+    const director = loadUserForTest(seed.userIds.director01);
+
+    const res = await dispatchPost(director, `/documents/${doc.id}/workflow/${step.id}/acknowledge`, {
+      pin: userPin('director01'), comment: 'ok', decisionNote: 'ก'.repeat(MAX_STAMP_TEXT + 1),
+    });
+    assert.equal(res.status, 400, `ควรถูกปฏิเสธ แต่ได้ ${res.status} ${res.body.slice(0, 120)}`);
+    assert.match(res.json.error || '', /ประทับลงหนังสือ/);
+    // และที่สำคัญที่สุด: ขั้นตอนต้องยังไม่ถูกบันทึก เรื่องต้องยังค้างอยู่ที่เดิม
+    assert.equal(db.prepare('SELECT status FROM workflow_steps WHERE id = ?').get(step.id).status, 'waiting',
+      'ขั้นตอนถูกบันทึกไปแล้วทั้งที่ความเห็นยาวเกิน — ความเห็นจะหายจากหนังสือโดยแก้ย้อนหลังไม่ได้');
+    assert.notEqual(getDocRow(doc.id).status, 'completed');
+  });
+
+  test('เพดานตราประทับตั้งจากค่าที่วัดจริง ไม่ใช่ตัวเลขที่เดาเอา', () => {
+    // 500 ตัวอักษรยังพอดีหน้าเดียวตอนวัด, 700 ล้น — ตั้งไว้ต่ำกว่านั้นเผื่อฟอนต์ไทยจริงที่กว้างกว่า
+    assert.ok(MAX_STAMP_TEXT > 0 && MAX_STAMP_TEXT <= 500,
+      `เพดานตราประทับควรอยู่ในช่วงที่วัดแล้วว่าพอดีหน้าเดียว แต่ตั้งไว้ ${MAX_STAMP_TEXT}`);
+  });
+
+  test('บัญชีทำลายหนังสือมีเพดาน และไม่ 500 เมื่อส่งค่าผิดชนิด', () => {
+    const actor = reg();
+    assert.throws(() => createDestructionBatch({ documentIds: 'ไม่ใช่อาเรย์', committeeNames: 'ก ข ค', actorUser: actor }),
+      (err) => {
+        assert.ok(!/is not a function/.test(err.message), `ข้อความ JavaScript ดิบหลุดถึงผู้ใช้: ${err.message}`);
+        return true;
+      });
+    assert.throws(() => createDestructionBatch({ documentIds: ['x'], committeeNames: LONG, actorUser: actor }), /ยาวเกินไป/);
+    assert.throws(() => createDestructionBatch({ documentIds: ['x', 'x'], committeeNames: 'ก ข ค', actorUser: actor }), /ซ้ำกัน/);
   });
 });
 
