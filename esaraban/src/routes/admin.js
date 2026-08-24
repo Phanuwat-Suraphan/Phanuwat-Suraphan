@@ -4,6 +4,7 @@ import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { db, uuid, nowIso, hashSecret, audit } from '../db.js';
 import { readTable, planUserImport, applyUserImport, templateCsv, generatePassword, generatePin } from '../services/userImport.js';
 import { httpError } from '../services/workflow.js';
+import { positionInput } from '../services/positions.js';
 import {
   isGoogleDriveEnabled, isGoogleDriveConnected, getOAuthClientConfig, exchangeCodeForTokens, DRIVE_SCOPE, AUTH_URL,
   listAllAttachmentFiles, deleteFile,
@@ -73,7 +74,7 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
           </div>
           <div class="field"><label>นามสกุล</label><input type="text" id="lastName" required /></div>
           <div class="field"><label>อีเมล</label><input type="email" id="email" /></div>
-          <div class="field"><label>ตำแหน่ง</label><input type="text" id="position" /></div>
+          <div class="field"><label>ตำแหน่ง</label>${positionInput({ id: 'position', listId: 'posNew' })}</div>
           <div class="field"><label>ฝ่าย</label><select id="departmentId">${depts.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
           <div class="field"><label>บทบาท</label><select id="roleId">${roles.map((r) => `<option value="${r.id}">${esc(r.name_th)}</option>`).join('')}</select></div>
           <div class="field"><label>รหัสผ่านเริ่มต้น</label><input type="text" id="password" required placeholder="เช่น Welcome@2569" /></div>
@@ -297,7 +298,7 @@ function userEditPage(ctx, target, { error, depts, roles, currentRoleId }) {
           <div class="field"><label>อีเมล</label>
             <input type="email" name="email" value="${esc(target.email || '')}" /></div>
           <div class="field"><label>ตำแหน่ง</label>
-            <input type="text" name="position" value="${esc(target.position || '')}" placeholder="เช่น ครู, หัวหน้าฝ่ายวิชาการ" /></div>
+            ${positionInput({ name: 'position', value: target.position || '', listId: 'posEdit' })}</div>
           <div class="field"><label>ฝ่าย</label>
             <select name="departmentId">
               <option value="">— ไม่ระบุ —</option>

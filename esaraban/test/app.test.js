@@ -1,7 +1,7 @@
 // Zero-dependency test suite (node:test, built into Node 22 — no npm packages needed).
 // Uses a throwaway SQLite file per run (DB_PATH) so it never touches data/esaraban.db.
 // Run with: node --test test/
-import { test, describe, before } from 'node:test';
+import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -25,8 +25,9 @@ const { readWorkbook } = await import('../src/services/xlsx.js');
 const { buildXlsx } = await import('../src/services/xlsxWrite.js');
 const { parseUploadedWorkbook, looksLikeHeader } = await import('../src/services/dailySummaryParse.js');
 const {
-  createLeaveRequest, approveLeaveRequest, rejectLeaveRequest, canSeeLeaveRequest, getLeaveRequest,
+  createLeaveRequest, approveLeaveRequest, rejectLeaveRequest, canSeeLeaveRequest, getLeaveRequest, canApproveLeave,
 } = await import('../src/services/leave.js');
+const { SCHOOL_POSITIONS } = await import('../src/services/positions.js');
 const { createDelegation } = await import('../src/services/delegation.js');
 const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, planBackupCleanup, thaiDateParts } = await import('../src/services/dbBackup.js');
 const sqliteModule = await import('node:sqlite');
@@ -62,12 +63,14 @@ function makeDoc(overrides = {}) {
 
 // ผู้ใช้พร้อม roleCodes/department_id เหมือนที่ ctx.user ได้ตอนล็อกอินจริง — ตัวตรวจสิทธิ์ใช้ทั้งสองอย่าง
 function loadUserForTest(userId) {
-  const u = db.prepare('SELECT id, employee_code, department_id FROM users WHERE id = ?').get(userId);
+  // คืนแถวเต็มเหมือนที่ getSessionUser คืนตอนล็อกอินจริง — หน้าเว็บใช้ทั้ง prefix/first_name/position
+  // ไม่ใช่แค่ id กับ roleCodes ถ้าคืนมาไม่ครบ หน้าที่ใช้ฟิลด์อื่นจะพังในเทสต์ทั้งที่ของจริงไม่พัง
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   if (!u) return null;
   const roleCodes = db.prepare(`
     SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ?
   `).all(userId).map((r) => r.name);
-  return { ...u, roleCodes };
+  return { ...u, roleCodes, roles: roleCodes.map((name) => ({ name })), unreadCount: 0 };
 }
 
 function getDocRow(id) {
@@ -1552,6 +1555,101 @@ describe('ทะเบียนหนังสือ: ตัวกรองล�
     // ลิงก์ส่งออกไฟล์ต้องใช้ตัวประกอบตัวเดียวกับลิงก์เปลี่ยนหน้า ไม่งั้นไฟล์ที่ได้จะเป็นทั้งทะเบียน
     // ทั้งที่ผู้ใช้กรองไว้แล้ว ซึ่งเป็นความผิดพลาดที่ผู้ใช้ไม่มีทางสังเกตเห็นจากปุ่มเลย
     assert.match(fn, /const exportLink = \(path\) => `\$\{path\}\?\$\{filterQs\(\)/);
+  });
+});
+
+// ใครมีอำนาจอนุญาต/อนุมัติการลา
+//
+// เดิมไม่จำกัดเลยทั้งหน้าเว็บและฝั่งเซิร์ฟเวอร์ — ครูเลือก "ครูคนไหนก็ได้" เป็นผู้อนุญาตของตัวเองได้
+// แล้วครูคนนั้นกดอนุญาตได้จริง (ทดสอบยืนยันแล้วก่อนแก้: ตอบ 200 สถานะกลายเป็น approved และ
+// ลายเซ็นของครูคนนั้นไปปรากฏบนใบลาในฐานะผู้อนุญาต) ผลคือใบลาใช้เป็นหลักฐานทางราชการไม่ได้เลย
+describe('ผู้อนุญาต/อนุมัติการลา ต้องมีอำนาจจริง', () => {
+  const roleId = (name) => db.prepare('SELECT id FROM roles WHERE name = ?').get(name).id;
+  function userWithRole(code, role) {
+    const id = `approver-${code}`;
+    db.prepare('DELETE FROM user_roles WHERE user_id = ?').run(id);
+    db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    db.prepare(`
+      INSERT INTO users (id, employee_code, first_name, last_name, department_id, password_hash, status, created_at, updated_at)
+      VALUES (?, ?, 'ทดสอบ', 'สิทธิ์อนุมัติ', ?, ?, 'active', ?, ?)
+    `).run(id, code, deptId, hashSecret('Welcome@2569'), nowIso(), nowIso());
+    db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)').run(id, roleId(role));
+    return id;
+  }
+  const submit = (approverId) => createLeaveRequest({
+    requesterId: teacherUser.id, leaveType: 'sick', startDate: '2026-12-01', endDate: '2026-12-02',
+    reason: 'ทดสอบสิทธิ์ผู้อนุญาต', approverId,
+  });
+
+
+  test('ตั้งครูธรรมดาเป็นผู้อนุญาตไม่ได้ แม้ยิงคำขอตรงเข้ามาเอง', () => {
+    for (const role of ['teacher', 'registrar']) {
+      const id = userWithRole(`noauth_${role}`, role);
+      assert.throws(() => submit(id), /ไม่มีอำนาจอนุญาต/, `${role} ไม่ควรเป็นผู้อนุญาตได้`);
+    }
+  });
+
+  test('ผู้มีอำนาจตามสายบังคับบัญชายังยื่นให้อนุญาตได้ตามปกติ', () => {
+    for (const role of ['director', 'vice_director', 'head']) {
+      const id = userWithRole(`auth_${role}`, role);
+      assert.ok(submit(id).id, `${role} ควรเป็นผู้อนุญาตได้`);
+    }
+    // ผู้ดูแลระบบใช้บัญชีที่มีอยู่แล้ว ไม่สร้างเพิ่ม — จำนวนผู้ดูแลในระบบเป็นเงื่อนไขของเทสต์อื่น
+    assert.equal(canApproveLeave(seed.userIds.admin), true, 'ผู้ดูแลระบบควรเป็นผู้อนุญาตได้');
+    assert.ok(submit(seed.userIds.admin).id);
+  });
+
+  test('รายการผู้อนุญาตในหน้าเว็บต้องมีแต่ผู้มีอำนาจ', async () => {
+    const res = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/leave/new', {});
+    const select = res.body.match(/<select id="approverId"[^>]*>([\s\S]*?)<\/select>/)[1];
+    const ids = [...select.matchAll(/<option value="([^"]+)"/g)].map((m) => m[1]);
+    assert.ok(ids.length > 0, 'ต้องมีผู้อนุญาตให้เลือกอย่างน้อยหนึ่งคน');
+    for (const id of ids) {
+      assert.equal(canApproveLeave(id), true, `มีคนที่ไม่มีอำนาจอนุญาตอยู่ในรายการ: ${id}`);
+    }
+    // ผู้รักษาการแทนคือคนที่มาทำงานแทน ไม่ใช่ผู้มีอำนาจอนุญาต — ต้องยังเลือกครูด้วยกันได้
+    const delegateSelect = res.body.match(/<select id="delegateId"[^>]*>([\s\S]*?)<\/select>/)[1];
+    const delegateIds = [...delegateSelect.matchAll(/<option value="([^"]+)"/g)].map((m) => m[1]).filter(Boolean);
+    assert.ok(delegateIds.some((id) => !canApproveLeave(id)),
+      'รายการผู้รักษาการแทนไม่ควรถูกจำกัดเฉพาะผู้มีอำนาจอนุญาต');
+  });
+});
+
+// ตำแหน่งของบุคลากรในโรงเรียน — ถูกคัดลอกไปเป็น "ตำแหน่งผู้ลงนาม" บนตราประทับในไฟล์ PDF และบนใบลา
+// ถ้าปล่อยให้พิมพ์เองอิสระ ตำแหน่งเดียวกันจะถูกเขียนคนละแบบในเอกสารของโรงเรียนเดียวกัน
+describe('รายการตำแหน่งในโรงเรียน', () => {
+  test('ครอบคลุมตำแหน่งจริงของโรงเรียนครบทุกกลุ่ม', () => {
+    const groups = SCHOOL_POSITIONS.map((g) => g.group);
+    for (const need of ['ผู้บริหารสถานศึกษา', 'หัวหน้ากลุ่มงาน', 'ข้าราชการครู', 'บุคลากรทางการศึกษาและลูกจ้าง']) {
+      assert.ok(groups.includes(need), `ขาดกลุ่ม "${need}"`);
+    }
+    const all = SCHOOL_POSITIONS.flatMap((g) => g.items);
+    // ตำแหน่งที่โรงเรียนขนาดนี้ต้องมีแน่ๆ
+    for (const need of ['ผู้อำนวยการโรงเรียน', 'รองผู้อำนวยการโรงเรียน', 'ครูผู้ช่วย', 'ครู (คศ.1)',
+      'พนักงานราชการ', 'ครูอัตราจ้าง', 'เจ้าหน้าที่ธุรการ', 'นักการภารโรง', 'หัวหน้าฝ่ายบริหารวิชาการ']) {
+      assert.ok(all.includes(need), `ขาดตำแหน่ง "${need}"`);
+    }
+    assert.equal(new Set(all).size, all.length, 'มีตำแหน่งซ้ำกันในรายการ');
+    assert.ok(all.length >= 20, `ตำแหน่งน้อยเกินไป (${all.length})`);
+  });
+
+  test('ทุกหน้าที่กรอกตำแหน่งต้องมีรายการให้เลือก และยังพิมพ์เองได้', async () => {
+    const admin = loadUserForTest(seed.userIds.admin);
+    for (const [label, path] of [['หน้าโปรไฟล์', '/profile'], ['หน้าจัดการผู้ใช้', '/admin/users']]) {
+      const body = (await dispatchGet(admin, path, {})).body;
+      const list = body.match(/<datalist id="[^"]+">([\s\S]*?)<\/datalist>/);
+      assert.ok(list, `${label} ไม่มีรายการตำแหน่งให้เลือก`);
+      assert.ok(list[1].includes('ครูผู้ช่วย'), `${label} รายการตำแหน่งไม่ครบ`);
+      // ต้องเป็น input+datalist ไม่ใช่ select — ไม่งั้นตำแหน่งเฉพาะของโรงเรียนที่ไม่มีในรายการจะกรอกไม่ได้
+      assert.match(body, /<input[^>]*list="[^"]+"/, `${label} ต้องยังพิมพ์ตำแหน่งเองได้`);
+    }
+  });
+
+  test('ตำแหน่งเดิมที่พิมพ์เองไว้ก่อนหน้านี้ ต้องไม่หายไปจากฟอร์ม', async () => {
+    const custom = 'ครูผู้รับผิดชอบโครงการพิเศษของโรงเรียน';
+    db.prepare('UPDATE users SET position = ? WHERE id = ?').run(custom, seed.userIds.teacher001);
+    const body = (await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/profile', {})).body;
+    assert.ok(body.includes(custom), 'ค่าที่พิมพ์เองไว้เดิมหายไปจากฟอร์มตอนเปิดมาแก้');
   });
 });
 

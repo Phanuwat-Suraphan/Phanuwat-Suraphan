@@ -3,6 +3,7 @@ import { layout, esc, fmtDate, avatarContent, parseUserAgent } from '../render.j
 import { requirePage, requireApi } from '../middleware.js';
 import { db, nowIso, hashSecret, verifySecret, audit, isWeakPin } from '../db.js';
 import { revokeOtherSessions } from '../auth.js';
+import { positionInput } from '../services/positions.js';
 
 // อวตารอิโมจิให้เลือก (UX Bible Part 21 §8) — คัดเฉพาะที่เหมาะกับบุคลากรโรงเรียน
 const AVATAR_EMOJIS = ['👩‍🏫', '👨‍🏫', '🧑‍🏫', '👩‍💼', '👨‍💼', '🧑‍💼', '🎓', '📚', '🦉', '🐱', '🐶', '🦊', '🐰', '🐢', '🐼', '🌿', '⭐', '😊'];
@@ -46,7 +47,8 @@ router.get('/profile', requirePage((ctx) => {
           </div>
           <div class="field"><label>นามสกุล</label><input type="text" id="lastName" value="${esc(ctx.user.last_name)}" required /></div>
           <div class="field"><label>อีเมล</label><input type="email" id="email" value="${esc(ctx.user.email || '')}" /></div>
-          <div class="field"><label>ตำแหน่ง</label><input type="text" id="position" value="${esc(ctx.user.position || '')}" /></div>
+          <div class="field"><label>ตำแหน่ง</label>${positionInput({ id: 'position', value: ctx.user.position || '', listId: 'posProfile' })}
+            <div class="help-text">เลือกจากรายการ หรือพิมพ์เองได้ — ตำแหน่งนี้จะถูกใช้เป็นตำแหน่งผู้ลงนามบนตราประทับและใบลา</div></div>
           <button class="btn btn-primary" type="submit">บันทึกข้อมูล</button>
         </form>
 

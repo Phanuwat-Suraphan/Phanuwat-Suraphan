@@ -12,6 +12,7 @@ import {
   approveLeaveRequest, rejectLeaveRequest, cancelLeaveRequest, canSeeLeaveRequest,
   listLeaveSignatures, listLeaveAttachments, getLeaveAttachment, insertLeaveAttachment,
   assertAllowedLeaveFile, MAX_LEAVE_FILE_BYTES, httpError,
+  listLeaveApprovers,
 } from '../services/leave.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream } from '../services/googleDrive.js';
 
@@ -26,13 +27,20 @@ function leaveStatusBadge(status, leaveType) {
   return `<span class="badge ${STATUS_BADGE[status] || 'badge-muted'}">${esc(label)}</span>`;
 }
 
-function listApproverOptions(excludeId) {
+// ผู้รักษาการแทนคือคนที่มาทำงานแทนระหว่างที่เจ้าตัวไม่อยู่ ไม่ใช่ผู้มีอำนาจอนุญาต — ครูด้วยกันเป็นได้
+function listDelegateOptions(excludeId) {
   return db.prepare(`
     SELECT u.*, GROUP_CONCAT(r.name_th) as role_names FROM users u
     LEFT JOIN user_roles ur ON ur.user_id = u.id LEFT JOIN roles r ON r.id = ur.role_id
     WHERE u.deleted_at IS NULL AND u.status = 'active' GROUP BY u.id ORDER BY u.first_name
   `).all()
     .filter((u) => u.id !== excludeId)
+    .map((u) => `<option value="${u.id}">${esc(u.prefix || '')}${esc(u.first_name)} ${esc(u.last_name)} — ${esc(u.role_names || u.position || '')}</option>`).join('');
+}
+
+function listApproverOptions(excludeId) {
+  // เฉพาะผู้ที่มีอำนาจอนุญาต/อนุมัติการลาตามสายบังคับบัญชา (ดู APPROVER_ROLES ใน services/leave.js)
+  return listLeaveApprovers(excludeId)
     .map((u) => `<option value="${u.id}">${esc(u.prefix || '')}${esc(u.first_name)} ${esc(u.last_name)} — ${esc(u.role_names || u.position || '')}</option>`).join('');
 }
 
@@ -115,7 +123,7 @@ router.get('/leave/new', requirePage((ctx) => {
         </div>
         <div class="field">
           <label>มอบหมายผู้รักษาการแทน (ถ้ามี)</label>
-          <select id="delegateId"><option value="">— ไม่มอบหมาย —</option>${listApproverOptions(ctx.user.id)}</select>
+          <select id="delegateId"><option value="">— ไม่มอบหมาย —</option>${listDelegateOptions(ctx.user.id)}</select>
           <div class="help-text">ถ้าเลือกไว้ เมื่อคำขอนี้ได้รับการอนุมัติ/อนุญาตแล้ว ผู้ที่เลือกจะดำเนินการ (อนุมัติ/ส่งต่อ/รับทราบ) แทนคุณได้ทันทีตลอดช่วงวันที่ลานี้</div>
         </div>
         <button class="btn btn-primary" type="submit">ยื่นคำขอ</button>

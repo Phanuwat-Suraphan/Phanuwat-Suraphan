@@ -29,6 +29,34 @@ const MAX_LEAVE_DAYS = 366;
 const MAX_LEAVE_REASON = 2000;
 const MAX_LEAVE_TEXT = 500; // สถานที่ไปราชการ / ข้อมูลติดต่อ
 
+// บทบาทที่มีอำนาจอนุญาต/อนุมัติการลาได้จริงตามสายบังคับบัญชาของโรงเรียน
+//
+// เดิมไม่มีการจำกัดเลย ทั้งหน้าเว็บและฝั่งเซิร์ฟเวอร์ — ครูเลือก "ครูคนไหนก็ได้" เป็นผู้อนุญาตของตัวเองได้
+// แล้วครูคนนั้นก็กดอนุญาตได้จริง (ทดสอบยืนยันแล้ว: ครูธรรมดาอนุมัติใบลาป่วยของครูอีกคนสำเร็จ 200
+// สถานะกลายเป็น approved และลายเซ็นของเขาไปปรากฏบนใบลาในฐานะผู้อนุญาต)
+//
+// ผลคือใบลาที่ระบบออกให้ใช้เป็นหลักฐานทางราชการไม่ได้เลย เพราะคนอนุญาตไม่มีอำนาจอนุญาต —
+// ซึ่งขัดกับเหตุผลทั้งหมดที่โมดูลนี้มีอยู่
+export const APPROVER_ROLES = ['admin', 'director', 'vice_director', 'head'];
+
+export function canApproveLeave(userId) {
+  return !!db.prepare(`
+    SELECT 1 x FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+    WHERE ur.user_id = ? AND r.name IN (${APPROVER_ROLES.map(() => '?').join(', ')})
+  `).get(userId, ...APPROVER_ROLES);
+}
+
+/** ผู้ที่เลือกเป็นผู้อนุญาต/อนุมัติได้ — ใช้ทั้งในหน้าเว็บและตรวจซ้ำฝั่งเซิร์ฟเวอร์ */
+export function listLeaveApprovers(excludeId) {
+  return db.prepare(`
+    SELECT u.*, GROUP_CONCAT(r.name_th) as role_names FROM users u
+    JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
+    WHERE u.deleted_at IS NULL AND u.status = 'active'
+      AND r.name IN (${APPROVER_ROLES.map(() => '?').join(', ')})
+    GROUP BY u.id ORDER BY u.first_name
+  `).all(...APPROVER_ROLES).filter((u) => u.id !== excludeId);
+}
+
 // ผู้ใช้ที่ยังใช้งานอยู่จริงเท่านั้น — ถ้าไม่ตรวจ ค่าที่ส่งมาจะไปตกที่ FOREIGN KEY constraint ของ SQLite
 // แล้วเด้งข้อความภาษาอังกฤษดิบๆ ใส่หน้าครู และในฐานข้อมูลที่อัปเกรดมาจากรุ่นเก่า คอลัมน์ delegate_id
 // ถูกเพิ่มด้วย ALTER TABLE ซึ่งไม่มี FK ติดมาด้วย ค่ามั่วจึงบันทึกผ่านได้ แล้วไปพังตอน "อนุมัติ" แทน
@@ -62,6 +90,10 @@ export function createLeaveRequest({ requesterId, leaveType, startDate, endDate,
   // ตัวเองเป็นผู้อนุมัติแล้วกดอนุมัติใบลาตัวเองได้ (ทดสอบแล้วว่าเคยทำได้จริง)
   if (approverId === requesterId) throw httpError(400, 'เลือกตัวเองเป็นผู้อนุมัติ/อนุญาตไม่ได้');
   assertActiveUser(approverId, 'ผู้อนุมัติ/อนุญาต');
+  // ห้ามเชื่อรายการใน dropdown อย่างเดียว — คนที่ยิงคำขอตรงเข้ามาเองจะตั้งครูคนไหนก็ได้เป็นผู้อนุญาต
+  if (!canApproveLeave(approverId)) {
+    throw httpError(400, 'ผู้ที่เลือกไม่มีอำนาจอนุญาต/อนุมัติการลา — ต้องเป็นผู้อำนวยการ รองผู้อำนวยการ หัวหน้าฝ่าย หรือผู้ดูแลระบบ');
+  }
   if (delegateId) assertActiveUser(delegateId, 'ผู้รักษาการแทน');
 
   const id = uuid();
