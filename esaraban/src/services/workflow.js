@@ -271,6 +271,29 @@ export function getWorkflowSteps(documentId) {
   `).all(documentId);
 }
 
+// ขั้นตอนที่ "ลงนามไปแล้วจริง" — อนุมัติหรือรับทราบ ซึ่งทั้งสองอย่างผ่านการยืนยัน PIN มาแล้ว
+export const SIGNED_STEP_STATUSES = ['approved', 'acknowledged'];
+export const isSignedStep = (step) => SIGNED_STEP_STATUSES.includes(step?.status);
+
+/**
+ * ชื่อและตำแหน่งของผู้ลงนาม "ณ วันที่ลงนาม" สำหรับใช้เป็นหลักฐานบนหนังสือ
+ *
+ * ต้องอ่านจากคอลัมน์สำเนา (signer_name / signer_position) ก่อนเสมอ ไม่ใช่จาก users — เดิมทั้งหน้าพิมพ์
+ * "บันทึกข้อความ" และไทม์ไลน์บนหน้าเอกสารดึงชื่อ/ตำแหน่งปัจจุบันจากตาราง users มาแสดงใต้ลายเซ็น พอครูคนนั้น
+ * เลื่อนวิทยฐานะ (ครูผู้ช่วย → ครู คศ.1 ซึ่งเกิดขึ้นเป็นปกติทุกปี) เปลี่ยนนามสกุล หรือย้ายโรงเรียน ตำแหน่งใต้
+ * ลายเซ็นบนหนังสือที่ลงนามและเก็บเข้าแฟ้มไปแล้ว "ทุกฉบับย้อนหลัง" จะเปลี่ยนตามไปด้วย ทั้งที่ตอนลงนามจริง
+ * เขายังเป็นอีกตำแหน่งหนึ่ง — หนังสือที่พิมพ์วันนี้กับที่พิมพ์เมื่อปีที่แล้วจะไม่ตรงกัน ใช้อ้างอิงไม่ได้
+ *
+ * ค่าจาก users เหลือไว้เป็นทางถอยสำหรับขั้นตอนเก่าที่บันทึกไว้ก่อนจะมีคอลัมน์สำเนา (สำเนาเป็น NULL)
+ */
+export function signerIdentity(step) {
+  const liveName = `${step.prefix || ''}${step.first_name || ''} ${step.last_name || ''}`.trim();
+  return {
+    name: (step.signer_name || '').trim() || liveName || 'ไม่ทราบชื่อ',
+    position: (step.signer_position || '').trim() || (step.position || '').trim(),
+  };
+}
+
 export function currentStep(documentId) {
   return db.prepare(`
     SELECT * FROM workflow_steps WHERE document_id = ? AND status = 'waiting'

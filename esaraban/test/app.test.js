@@ -1923,6 +1923,153 @@ describe('แก้ไขข้อมูลผู้ใช้', () => {
   });
 });
 
+// พบตอนไล่เส้นทางการใช้งานจริงครบวงจร (ธุรการลงรับ → เสนอ ผอ. → ผอ. สั่งการ → หัวหน้าฝ่ายรับทราบ →
+// ปิดเรื่อง → พิมพ์ออกมาเก็บเข้าแฟ้ม) ทุกขั้นตอนผ่านหมด แต่กระดาษที่พิมพ์ออกมาตอนท้าย — ซึ่งคือของจริง
+// ที่โรงเรียนเก็บไว้เป็นหลักฐาน — กลับผิด 2 เรื่อง
+describe('หน้าพิมพ์ "บันทึกข้อความ": ผู้ลงนามต้องครบและตรงกับวันที่ลงนามจริง', () => {
+  const printPage = async (docId, user) => (await dispatchGet(user, `/documents/${docId}/print`, {})).body;
+
+  // โรงเรียนส่วนใหญ่ไม่ได้สแกนลายเซ็นเก็บไว้ในระบบ — ผอ. ยืนยันด้วย PIN ในระบบ แล้วเซ็นด้วยปากกาบน
+  // กระดาษที่พิมพ์ออกมา ซึ่งใช้ไม่ได้เลยถ้ากระดาษไม่มีทั้งชื่อผู้อนุมัติและเส้นให้เซ็น
+  test('ลงนามด้วย PIN โดยไม่มีรูปลายเซ็น หน้าพิมพ์ต้องยังขึ้นชื่อ+ตำแหน่ง+ที่ว่างให้เซ็น', async () => {
+    const doc = makeDoc({ title: 'ขออนุมัติเดินทางไปราชการ' });
+    const stepId = assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, actorUser: registrarUser });
+    db.prepare('UPDATE users SET signature_image = NULL WHERE id = ?').run(seed.userIds.director01);
+    acknowledgeAndComplete({ stepId, actorUser: loadUserForTest(seed.userIds.director01) });
+
+    const body = await printPage(doc.id, registrarUser);
+    assert.doesNotMatch(body, /ยังไม่มีผู้ลงนามในขั้นตอนใดเลย/,
+      'ลงนามด้วย PIN ครบแล้ว หน้าพิมพ์ต้องไม่บอกว่ายังไม่มีใครลงนาม');
+    const signer = db.prepare('SELECT signer_name, signer_position FROM workflow_steps WHERE id = ?').get(stepId);
+    assert.ok(body.includes(signer.signer_name), 'ต้องขึ้นชื่อผู้ลงนามบนกระดาษ');
+    assert.ok(body.includes(signer.signer_position), 'ต้องขึ้นตำแหน่งผู้ลงนามบนกระดาษ');
+    assert.match(body, /sig-space/, 'ผู้ที่ไม่มีรูปลายเซ็น ต้องเว้นที่ว่างไว้ให้เซ็นด้วยปากกา');
+  });
+
+  // ครูเลื่อนวิทยฐานะ (ครูผู้ช่วย → ครู คศ.1) และเปลี่ยนนามสกุลกันเป็นปกติทุกปี ถ้าหน้าพิมพ์ดึงชื่อ/ตำแหน่ง
+  // ปัจจุบันมาแสดง หนังสือเก่าที่ลงนามและเก็บเข้าแฟ้มไปแล้วทุกฉบับจะเปลี่ยนตามย้อนหลัง ใช้อ้างอิงไม่ได้
+  test('เจ้าตัวเปลี่ยนชื่อ/ตำแหน่งภายหลัง หน้าพิมพ์ต้องคงชื่อ ณ วันที่ลงนามไว้เหมือนเดิม', async () => {
+    const doc = makeDoc({ title: 'ขอความอนุเคราะห์วิทยากร' });
+    const stepId = assignStep({ documentId: doc.id, assigneeId: seed.userIds.head_acad, actorUser: registrarUser });
+    acknowledgeAndComplete({ stepId, actorUser: loadUserForTest(seed.userIds.head_acad) });
+    const atSigning = db.prepare('SELECT signer_name, signer_position FROM workflow_steps WHERE id = ?').get(stepId);
+
+    db.prepare("UPDATE users SET last_name = 'นามสกุลใหม่หลังลงนาม', position = 'ย้ายไปโรงเรียนอื่นแล้ว' WHERE id = ?")
+      .run(seed.userIds.head_acad);
+
+    const body = await printPage(doc.id, registrarUser);
+    assert.ok(body.includes(atSigning.signer_name), 'ต้องคงชื่อ ณ วันที่ลงนามไว้');
+    assert.ok(body.includes(atSigning.signer_position), 'ต้องคงตำแหน่ง ณ วันที่ลงนามไว้');
+    assert.ok(!body.includes('นามสกุลใหม่หลังลงนาม') && !body.includes('ย้ายไปโรงเรียนอื่นแล้ว'),
+      'ต้องไม่เอาชื่อ/ตำแหน่งปัจจุบันมาแทนที่หลักฐานบนหนังสือที่ลงนามไปแล้ว');
+
+    // ไทม์ไลน์บนหน้าเอกสารเป็นหลักฐานชุดเดียวกัน จึงต้องยึดสำเนา ณ ขณะลงนามเหมือนกัน
+    const detail = (await dispatchGet(registrarUser, `/documents/${doc.id}`, {})).body;
+    assert.ok(detail.includes(atSigning.signer_name), 'ไทม์ไลน์ต้องแสดงชื่อ ณ วันที่ลงนามด้วย');
+  });
+});
+
+// ประวัติการดำเนินการเป็นหลักฐานว่าใครสั่งการหนังสือฉบับไหนเมื่อไหร่ — แต่แถวของงาน workflow เก็บ
+// record_id เป็น id ของ "ขั้นตอน" ไม่ใช่ของหนังสือ พอหน้า audit เทแถวล่าสุดออกมาเฉยๆ จึงตอบคำถามที่
+// ต้องใช้จริง ("ฉบับนี้ใครสั่งการ") ไม่ได้เลย และของเก่าหลุดพ้นเพดานไปเรื่อยๆ โดยไม่มีหน้าถัดไป
+describe('ประวัติการดำเนินการ (audit): ต้องสืบย้อนรายฉบับได้ ไม่ใช่เทแถวล่าสุดออกมาเฉยๆ', () => {
+  const adminUser = () => loadUserForTest(seed.userIds.admin);
+
+  async function journeyDoc() {
+    const doc = makeDoc({ title: 'หนังสือสำหรับตรวจประวัติการดำเนินการ' });
+    const step1 = assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, actorUser: registrarUser });
+    approveAndForward({
+      stepId: step1, nextAssigneeId: seed.userIds.head_acad, comment: 'มอบฝ่ายวิชาการ',
+      actorUser: loadUserForTest(seed.userIds.director01),
+    });
+    const step2 = db.prepare('SELECT id FROM workflow_steps WHERE document_id = ? ORDER BY step_order DESC LIMIT 1').get(doc.id).id;
+    acknowledgeAndComplete({ stepId: step2, actorUser: loadUserForTest(seed.userIds.head_acad) });
+    return doc;
+  }
+
+  // นับแถวจริงในตาราง ไม่ใช่แค่หาข้อความ — หน้าที่เทแถวล่าสุดของทั้งระบบออกมาโดยไม่สนใจตัวกรอง
+  // ก็ "มีข้อความนั้นอยู่" เหมือนกัน ทั้งที่ตอบคำถามว่าฉบับนี้ใครสั่งการไม่ได้เลย
+  const rowCount = (body) => (body.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1].match(/<tr>/g) || []).length;
+
+  test('กรองตาม id หนังสือ แล้วต้องได้ครบทุกขั้นตั้งแต่ลงรับจนปิดเรื่อง และเฉพาะของฉบับนั้น', async () => {
+    const doc = await journeyDoc();
+    const res = await dispatchGet(adminUser(), '/admin/audit', { document: doc.id });
+    assert.equal(res.status, 200);
+    const expected = ['document_received', 'workflow_assigned', 'workflow_approved_forward', 'workflow_acknowledged_completed'];
+    for (const action of expected) {
+      assert.ok(res.body.includes(action), `ประวัติของหนังสือฉบับนี้ต้องมี ${action}`);
+    }
+    assert.equal(rowCount(res.body), expected.length,
+      'ต้องได้เฉพาะแถวของหนังสือฉบับนี้เท่านั้น ไม่ใช่เทแถวล่าสุดของทั้งระบบออกมา');
+  });
+
+  test('กรองด้วยเลขที่หนังสือที่อ่านจากกระดาษได้ด้วย ไม่ใช่ต้องรู้ id ในระบบ', async () => {
+    const doc = await journeyDoc();
+    const number = db.prepare('SELECT doc_number_display d FROM documents WHERE id = ?').get(doc.id).d;
+    const res = await dispatchGet(adminUser(), '/admin/audit', { document: number });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.includes('workflow_acknowledged_completed'), `ค้นด้วยเลขที่ ${number} ต้องเจอประวัติของฉบับนั้น`);
+    assert.equal(rowCount(res.body), 4, `ค้นด้วยเลขที่ ${number} ต้องได้เฉพาะของฉบับนั้น`);
+  });
+
+  test('ตัวกรองต้องคัดของฉบับอื่นออกจริง ไม่ใช่แสดงทั้งหมดเหมือนเดิม', async () => {
+    const mine = await journeyDoc();
+    const other = makeDoc({ title: 'หนังสือคนละฉบับที่ต้องไม่ปนเข้ามา' });
+    assignStep({ documentId: other.id, assigneeId: seed.userIds.director01, actorUser: registrarUser });
+
+    const res = await dispatchGet(adminUser(), '/admin/audit', { document: mine.id });
+    assert.ok(!res.body.includes(other.id), 'ประวัติของหนังสือฉบับอื่นต้องไม่ปนเข้ามาในผลลัพธ์');
+    assert.ok(!res.body.includes('หนังสือคนละฉบับที่ต้องไม่ปนเข้ามา'), 'ชื่อเรื่องของฉบับอื่นต้องไม่โผล่มาด้วย');
+    assert.equal(rowCount(res.body), 4);
+  });
+
+  test('ทุกแถวต้องบอกได้ว่าเป็นของหนังสือฉบับไหน พร้อมลิงก์เปิดฉบับนั้น', async () => {
+    const doc = await journeyDoc();
+    const number = db.prepare('SELECT doc_number_display d FROM documents WHERE id = ?').get(doc.id).d;
+    const res = await dispatchGet(adminUser(), '/admin/audit', { document: doc.id });
+    assert.ok(res.body.includes(`/documents/${doc.id}`), 'ต้องลิงก์กลับไปที่หนังสือฉบับนั้นได้');
+    assert.ok(res.body.includes(number), 'ต้องแสดงเลขที่หนังสือให้เทียบกับกระดาษได้');
+    assert.equal((res.body.match(new RegExp(`/documents/${doc.id}`, 'g')) || []).length, 4,
+      'ทุกแถวของฉบับนี้ต้องมีลิงก์ไปหนังสือ ไม่ใช่แค่บางแถว');
+  });
+
+  test('แสดงชื่อการกระทำเป็นภาษาไทยควบคู่รหัสเดิม', async () => {
+    const doc = await journeyDoc();
+    const res = await dispatchGet(adminUser(), '/admin/audit', { document: doc.id });
+    for (const th of ['ลงรับหนังสือ', 'เสนอ/มอบหมายงาน', 'อนุมัติและส่งต่อ', 'รับทราบและปิดเรื่อง']) {
+      assert.ok(res.body.includes(th), `ต้องอ่านออกว่า "${th}" ไม่ใช่มีแต่รหัสอังกฤษ`);
+    }
+  });
+
+  test('มีหน้าถัดไป — ของเก่าต้องไม่หลุดหายไปเมื่อบันทึกสะสมมากขึ้น', async () => {
+    const before = db.prepare('SELECT COUNT(*) c FROM audit_logs').get().c;
+    for (let i = 0; i < 120; i++) makeDoc({ title: `หนังสือถมประวัติ ${i}` });
+    assert.ok(db.prepare('SELECT COUNT(*) c FROM audit_logs').get().c > before + 100);
+
+    const page1 = await dispatchGet(adminUser(), '/admin/audit', {});
+    assert.match(page1.body, /หน้า 1 จาก \d+/, 'ต้องบอกว่าอยู่หน้าไหนจากทั้งหมดกี่หน้า');
+    assert.ok(page1.body.includes('/admin/audit?page=2'), 'ต้องมีลิงก์ไปหน้าถัดไป');
+    const page2 = await dispatchGet(adminUser(), '/admin/audit', { page: '2' });
+    assert.equal(page2.status, 200);
+    assert.match(page2.body, /หน้า 2 จาก \d+/);
+  });
+
+  test('หน้าเกินจำนวนจริง/ค่าที่ไม่ใช่ตัวเลข ต้องไม่พังและไม่ขึ้นหน้าว่าง', async () => {
+    for (const page of ['999999', 'abc', '-3', '0']) {
+      const res = await dispatchGet(adminUser(), '/admin/audit', { page });
+      assert.equal(res.status, 200, `page=${page} ต้องไม่พัง`);
+      assert.ok(!res.body.includes('ยังไม่มีบันทึก'), `page=${page} ต้องเด้งกลับไปหน้าที่มีข้อมูลจริง`);
+    }
+  });
+
+  test('เฉพาะแอดมินเท่านั้นที่เปิดประวัติการดำเนินการได้', async () => {
+    for (const code of ['teacher001', 'reg001', 'director01']) {
+      const res = await dispatchGet(loadUserForTest(seed.userIds[code]), '/admin/audit', {});
+      assert.equal(res.status, 403, `${code} ต้องเปิดหน้า audit ไม่ได้`);
+    }
+  });
+});
+
 // เพดานความยาวของทุกช่องข้อความที่ผู้ใช้กรอกเองได้
 //
 // ไล่ยิงทุกช่องด้วยข้อความ 50,000 ตัวอักษร พบว่าหลายช่องรับเข้าไปเก็บทั้งอย่างนั้น ที่หนักที่สุดคือ

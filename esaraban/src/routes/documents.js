@@ -7,6 +7,7 @@ import {
   getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
   voidDocument, archiveDocument, forceDeleteDocument, httpError, assertStepBelongsToDocument,
+  isSignedStep, signerIdentity,
 } from '../services/workflow.js';
 import { renderPdfFirstPageImage } from '../services/pdfPreview.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream, deleteFile } from '../services/googleDrive.js';
@@ -949,25 +950,37 @@ router.get('/documents/:id/print', requirePage((ctx) => {
       content: emptyState('🔍', 'ไม่พบเอกสารนี้ หรือคุณไม่มีสิทธิ์เข้าถึง') }));
   }
   const steps = getWorkflowSteps(doc.id);
-  const signedSteps = steps.filter((s) => ['approved', 'acknowledged'].includes(s.status) && s.signature_image);
+  // เดิมกรอง `&& s.signature_image` ด้วย ทำให้หนังสือที่ ผอ. กับหัวหน้าฝ่ายลงนามด้วย PIN ครบแล้ว แต่ยังไม่มี
+  // ใครอัปโหลดรูปลายเซ็นไว้ในโปรไฟล์ พิมพ์ออกมาแล้วขึ้นว่า "ยังไม่มีผู้ลงนามในขั้นตอนใดเลย" — ไม่มีทั้งชื่อ
+  // ผู้อนุมัติและเส้นให้เซ็นด้วยปากกา ซึ่งเป็นวิธีที่โรงเรียนใช้จริงเป็นหลัก (ส่วนใหญ่ไม่ได้สแกนลายเซ็นเก็บไว้)
+  // ตอนนี้ขึ้นบล็อกผู้ลงนามทุกขั้นที่ลงนามแล้ว มีรูปก็ใส่รูป ไม่มีก็เว้นที่ว่างไว้ให้เซ็นสด
+  const signedSteps = steps.filter(isSignedStep);
 
   // เรียน: หนังสือส่ง -> หน่วยงาน/บุคคลปลายทางจริง; หนังสือรับ -> ผู้รับขั้นแรกในสายงาน (คนที่บันทึกนี้
   // ถูกเสนอให้ภายในโรงเรียน) เพราะ correspondent_name ของหนังสือรับคือ "ผู้ส่งจากภายนอก" ไม่ใช่ผู้รับ
+  //
+  // ใช้ signerIdentity เหมือนบล็อกลายเซ็น เพื่อให้บรรทัด "เรียน" ของหนังสือที่ดำเนินการจบไปแล้วคงเดิม
+  // แม้เจ้าตัวจะเปลี่ยนชื่อ/ย้ายโรงเรียนภายหลัง (ถ้าขั้นนั้นยังไม่ได้ลงนาม ก็ยังเป็นชื่อปัจจุบันตามเดิม)
   const addressee = doc.direction === 'outgoing'
     ? doc.correspondent_name
-    : (steps[0] ? `${steps[0].prefix || ''}${steps[0].first_name} ${steps[0].last_name}` : 'ผู้เกี่ยวข้อง');
+    : (steps[0] ? signerIdentity(steps[0]).name : 'ผู้เกี่ยวข้อง');
 
   const referenceLine = doc.direction === 'incoming'
     ? `<p>อ้างถึง หนังสือจาก ${esc(doc.correspondent_name)}${doc.external_doc_number ? ` ที่ ${esc(doc.external_doc_number)}` : ''}${doc.external_doc_date ? ` ลงวันที่ ${fmtThaiDateLong(doc.external_doc_date)}` : ''}</p>`
     : '';
 
-  const signatureBlocksHtml = signedSteps.length ? signedSteps.map((s) => `
+  const signatureBlocksHtml = signedSteps.length ? signedSteps.map((s) => {
+    const who = signerIdentity(s);
+    return `
     <div class="sig-block">
-      <img src="${esc(s.signature_image)}" alt="ลายเซ็น ${esc(s.signer_name || `${s.first_name} ${s.last_name}`)}" />
-      <div class="sig-line">(${esc(s.prefix || '')}${esc(s.first_name)} ${esc(s.last_name)})</div>
-      ${s.position ? `<div class="sig-line">${esc(s.position)}</div>` : ''}
+      ${s.signature_image
+        ? `<img src="${esc(s.signature_image)}" alt="ลายเซ็น ${esc(who.name)}" />`
+        : '<div class="sig-space"></div>'}
+      <div class="sig-line">(${esc(who.name)})</div>
+      ${who.position ? `<div class="sig-line">${esc(who.position)}</div>` : ''}
       <div class="sig-line">${fmtThaiDateLong(s.decided_at)}</div>
-    </div>`).join('') : '<p class="text-muted" style="text-align:center;padding:1rem 0">ยังไม่มีผู้ลงนามในขั้นตอนใดเลย</p>';
+    </div>`;
+  }).join('') : '<p class="text-muted" style="text-align:center;padding:1rem 0">ยังไม่มีผู้ลงนามในขั้นตอนใดเลย</p>';
 
   const content = `<!doctype html>
 <html lang="th"><head><meta charset="utf-8" />
@@ -984,6 +997,8 @@ router.get('/documents/:id/print', requirePage((ctx) => {
   .body-text { margin: 1.2rem 0; text-indent: 2.5em; white-space: pre-wrap; }
   .sig-block { text-align: center; margin: 0 0 0 auto; width: 220px; margin-top: 2.5rem; }
   .sig-block img { max-height: 70px; max-width: 200px; }
+  /* ผู้ลงนามที่ไม่ได้เก็บรูปลายเซ็นไว้ในโปรไฟล์ — เว้นช่องสูงเท่ารูปไว้ให้เซ็นด้วยปากกาบนกระดาษที่พิมพ์ออกมา */
+  .sig-block .sig-space { height: 70px; }
   .sig-line { border-top: 1px dotted #111; margin-top: .3rem; padding-top: .2rem; font-size: 14pt; }
   .sig-block .sig-line:first-of-type { border-top: none; margin-top: 0; padding-top: 0; }
   @media print {
@@ -1060,17 +1075,22 @@ router.get('/documents/:id', requirePage((ctx) => {
     ${steps.map((s) => {
       const cls = s.status === 'waiting' ? '' : (s.status === 'rejected' || s.status === 'returned' ? 'rejected' : 'done');
       const statusText = { waiting: 'รอดำเนินการ', approved: 'อนุมัติ ส่งต่อแล้ว', acknowledged: 'รับทราบ/เสร็จสิ้น', rejected: 'ไม่อนุมัติ', returned: 'ส่งกลับแก้ไข' }[s.status];
-      const showSignature = ['approved', 'acknowledged'].includes(s.status) && s.signature_image;
+      // ขั้นที่ลงนามแล้วต้องขึ้นบล็อกหลักฐานเสมอ ไม่ใช่เฉพาะคนที่มีรูปลายเซ็น — คนที่ยืนยันด้วย PIN
+      // อย่างเดียวก็ลงนามโดยสมบูรณ์เท่ากัน และชื่อ/ตำแหน่งต้องเป็นสำเนา ณ วันที่ลงนาม (ดู signerIdentity)
+      const signed = isSignedStep(s);
+      const who = signerIdentity(s);
       return `<li class="${cls}">
         <div class="t-title">ขั้นที่ ${s.step_order}: ${esc(s.prefix || '')}${esc(s.first_name)} ${esc(s.last_name)} — ${statusText}</div>
         <div class="t-meta">มอบหมาย ${fmtDate(s.created_at)}${s.decided_at ? ' · ดำเนินการ ' + fmtDate(s.decided_at) : ''}</div>
         ${s.instruction ? `<div class="t-note">${esc(s.instruction).replace(/\n/g, '<br/>')}</div>` : ''}
-        ${showSignature ? `
+        ${signed ? `
         <div class="t-note" style="text-align:center;max-width:220px;margin-top:.4rem;color:var(--primary)">
-          <img src="${esc(s.signature_image)}" alt="ลายเซ็น ${esc(s.signer_name || `${s.first_name} ${s.last_name}`)}" style="max-height:60px;max-width:180px" />
+          ${s.signature_image
+            ? `<img src="${esc(s.signature_image)}" alt="ลายเซ็น ${esc(who.name)}" style="max-height:60px;max-width:180px" />`
+            : '<div style="font-size:.78rem;opacity:.75">🔐 ลงนามด้วย PIN</div>'}
           <div style="border-top:1px solid var(--primary);padding-top:.25rem;font-size:.82rem">
-            <div>(${esc(s.prefix || '')}${esc(s.first_name)} ${esc(s.last_name)})</div>
-            ${s.position ? `<div>${esc(s.position)}</div>` : ''}
+            <div>(${esc(who.name)})</div>
+            ${who.position ? `<div>${esc(who.position)}</div>` : ''}
             <div>${fmtThaiDateLong(s.decided_at)}</div>
           </div>
         </div>` : ''}
@@ -1284,6 +1304,7 @@ router.get('/documents/:id', requirePage((ctx) => {
         ${attachments.length ? `<a class="btn btn-outline btn-sm" href="/documents/${doc.id}/print" target="_blank" rel="noopener">📝 บันทึกข้อความ/สรุปลายเซ็น</a>` : ''}
         ${canVoid ? `<button class="btn btn-outline btn-sm" onclick="actionWithReason(this, '/documents/${doc.id}/void', 'ระบุเหตุผลที่ยกเลิกเอกสาร (เลขที่จะยังคงอยู่ในลำดับ ไม่ถูกนำไปใช้ซ้ำ)')">ยกเลิกเอกสาร</button>` : ''}
         ${canArchive ? `<button class="btn btn-outline btn-sm" onclick="fetch('/documents/${doc.id}/archive',{method:'POST'}).then(()=>location.reload())">📦 จัดเก็บเข้าแฟ้ม</button>` : ''}
+        ${canForceDelete ? `<a class="btn btn-outline btn-sm" href="/admin/audit?document=${esc(doc.id)}">🧾 ประวัติการดำเนินการ (audit)</a>` : ''}
         ${canForceDelete ? `<button class="btn btn-danger btn-sm" onclick="forceDeleteThisDoc(this)">🗑️ ลบเอกสาร (แอดมิน)</button>` : ''}
       </div>
     </div>

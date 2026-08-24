@@ -436,23 +436,108 @@ router.post('/admin/users/:id/delete', requireApi(async (ctx) => {
   json(ctx, 200, { ok: true });
 }));
 
+// คำอธิบายภาษาไทยของ action ที่บันทึกไว้เป็นรหัสอังกฤษ — คนที่ต้องอ่าน audit log จริงคือ ผอ./ธุรการ
+// ตอนถูกถามว่า "หนังสือฉบับนี้ใครสั่งการ เมื่อไหร่" ไม่ใช่โปรแกรมเมอร์ แถวที่ขึ้นว่า
+// workflow_approved_forward เฉยๆ ตอบคำถามนั้นไม่ได้ (รหัสที่ไม่รู้จักจะแสดงตามเดิม ไม่ซ่อน)
+const AUDIT_ACTION_TH = {
+  document_received: 'ลงรับหนังสือ',
+  document_created: 'บันทึกหนังสือใหม่',
+  workflow_assigned: 'เสนอ/มอบหมายงาน',
+  workflow_approved_forward: 'อนุมัติและส่งต่อ',
+  workflow_acknowledged_completed: 'รับทราบและปิดเรื่อง',
+  workflow_rejected: 'ไม่อนุมัติ',
+  workflow_returned: 'ส่งกลับแก้ไข',
+  document_voided: 'ยกเลิกหนังสือ',
+  document_archived: 'จัดเก็บเข้าแฟ้ม',
+  document_force_deleted: 'ลบถาวร',
+  user_created: 'เพิ่มผู้ใช้',
+  user_updated: 'แก้ไขผู้ใช้',
+  user_deleted: 'ลบ/ระงับผู้ใช้',
+  user_password_reset: 'ตั้งรหัสผ่านใหม่ให้ผู้ใช้',
+};
+
+const AUDIT_PAGE_SIZE = 100;
+
 router.get('/admin/audit', requireRole('admin')(requirePage((ctx) => {
+  // เดิมหน้านี้เป็นการเทแถวล่าสุด 300 แถวของทั้งระบบออกมาเฉยๆ ไม่มีตัวกรอง ไม่มีหน้าถัดไป และไม่บอกด้วยซ้ำ
+  // ว่าแต่ละแถวเป็นของหนังสือฉบับไหน (record_id ของงาน workflow คือ id ของ "ขั้นตอน" ไม่ใช่ของหนังสือ)
+  // ทั้งที่หน้านี้คือหลักฐานว่าใครทำอะไรกับหนังสือราชการ — คำถามที่ต้องตอบจริงคือ "ฉบับนี้ใครสั่งการ"
+  // ซึ่งเดิมตอบไม่ได้เลย และโรงเรียนที่ลงรับปีละพันฉบับจะดันของเก่าหลุดพ้น 300 แถวภายในไม่กี่วัน
+  const page = Math.max(1, Number.parseInt(ctx.query.page, 10) || 1);
+  const docFilter = String(ctx.query.document || '').trim();
+  const q = String(ctx.query.q || '').trim();
+
+  // จับคู่แถว audit กับหนังสือ: แถวที่บันทึกไว้บนตาราง documents ใช้ record_id ตรงๆ ส่วนแถวของ
+  // workflow_steps ต้องย้อนจาก id ขั้นตอนกลับไปหาหนังสือของขั้นตอนนั้น
+  const DOC_ID_SQL = `COALESCE(
+    CASE WHEN a.table_name = 'documents' THEN a.record_id END,
+    (SELECT ws.document_id FROM workflow_steps ws WHERE ws.id = a.record_id))`;
+
+  const where = [];
+  const params = {};
+  if (docFilter) {
+    // รับได้ทั้ง id ของหนังสือและเลขที่หนังสือที่คนอ่านจากกระดาษ (เช่น 0066/2569)
+    where.push(`(${DOC_ID_SQL} = :doc OR ${DOC_ID_SQL} IN (SELECT id FROM documents WHERE doc_number_display = :doc))`);
+    params.doc = docFilter;
+  }
+  if (q) {
+    where.push('(a.action LIKE :q OR a.detail LIKE :q OR u.first_name LIKE :q OR u.last_name LIKE :q)');
+    params.q = `%${q}%`;
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const total = db.prepare(`
+    SELECT COUNT(*) c FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id ${whereSql}`).get(params).c;
+  const pages = Math.max(1, Math.ceil(total / AUDIT_PAGE_SIZE));
+  const safePage = Math.min(page, pages);
   const rows = db.prepare(`
-    SELECT a.*, u.first_name, u.last_name FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
-    ORDER BY a.created_at DESC LIMIT 300`).all();
+    SELECT a.*, u.first_name, u.last_name,
+      ${DOC_ID_SQL} AS doc_id,
+      (SELECT d.doc_number_display FROM documents d WHERE d.id = ${DOC_ID_SQL}) AS doc_number,
+      (SELECT d.title FROM documents d WHERE d.id = ${DOC_ID_SQL}) AS doc_title
+    FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
+    ${whereSql}
+    ORDER BY a.created_at DESC LIMIT :limit OFFSET :offset`)
+    .all({ ...params, limit: AUDIT_PAGE_SIZE, offset: (safePage - 1) * AUDIT_PAGE_SIZE });
+
+  const pageLink = (n) => `/admin/audit?page=${n}${docFilter ? `&document=${encodeURIComponent(docFilter)}` : ''}${q ? `&q=${encodeURIComponent(q)}` : ''}`;
+
   const content = `
     <h2>🧾 Audit Log</h2>
-    <p class="text-muted">บันทึกทุกการกระทำในระบบแบบ append-only (ห้ามลบ/แก้ไข)</p>
+    <p class="text-muted">บันทึกทุกการกระทำในระบบแบบ append-only (ห้ามลบ/แก้ไข) — ทั้งหมด ${String(total).replace(/\B(?=(\d{3})+(?!\d))/g, ',')} รายการ</p>
     <div class="card">
+      <form method="get" action="/admin/audit" class="filter-row" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1rem">
+        <div style="flex:1;min-width:180px">
+          <label for="auditDoc">เลขที่หนังสือ</label>
+          <input type="text" id="auditDoc" name="document" value="${esc(docFilter)}" placeholder="เช่น 0066/2569" />
+        </div>
+        <div style="flex:1;min-width:180px">
+          <label for="auditQ">ค้นหา (การกระทำ / ผู้ใช้ / รายละเอียด)</label>
+          <input type="text" id="auditQ" name="q" value="${esc(q)}" placeholder="เช่น ยกเลิก, สมชาย" />
+        </div>
+        <div style="display:flex;gap:.5rem">
+          <button type="submit" class="btn">ค้นหา</button>
+          ${docFilter || q ? '<a class="btn btn-secondary" href="/admin/audit">ล้างตัวกรอง</a>' : ''}
+        </div>
+      </form>
       ${rows.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>เวลา</th><th>ผู้ใช้</th><th>การกระทำ</th><th>ตาราง</th><th>รายละเอียด</th></tr></thead>
+        <thead><tr><th>เวลา</th><th>ผู้ใช้</th><th>การกระทำ</th><th>หนังสือ</th><th>รายละเอียด</th></tr></thead>
         <tbody>${rows.map((a) => `<tr>
           <td class="text-muted">${fmtDate(a.created_at)}</td>
           <td>${a.first_name ? esc(a.first_name) + ' ' + esc(a.last_name) : '-'}</td>
-          <td><code>${esc(a.action)}</code></td><td>${esc(a.table_name || '-')}</td>
+          <td>${esc(AUDIT_ACTION_TH[a.action] || a.action)}<br/><code class="text-muted" style="font-size:.75rem">${esc(a.action)}</code></td>
+          <td>${a.doc_id
+            ? `<a href="/documents/${esc(a.doc_id)}">${esc(a.doc_number || 'เปิดหนังสือ')}</a>${a.doc_title ? `<br/><span class="text-muted" style="font-size:.78rem">${esc(a.doc_title)}</span>` : ''}`
+            : `<span class="text-muted">${esc(a.table_name || '-')}</span>`}</td>
           <td style="max-width:280px;white-space:normal">${esc(a.detail || '')}</td>
         </tr>`).join('')}</tbody>
-      </table></div>` : emptyState('🧾', 'ยังไม่มีบันทึก')}
+      </table></div>
+      ${pages > 1 ? `<div style="display:flex;gap:.5rem;align-items:center;justify-content:center;margin-top:1rem">
+        ${safePage > 1 ? `<a class="btn btn-secondary" href="${pageLink(safePage - 1)}">← ก่อนหน้า</a>` : ''}
+        <span class="text-muted">หน้า ${safePage} จาก ${pages}</span>
+        ${safePage < pages ? `<a class="btn btn-secondary" href="${pageLink(safePage + 1)}">ถัดไป →</a>` : ''}
+      </div>` : ''}`
+      : emptyState('🧾', docFilter || q ? 'ไม่พบบันทึกที่ตรงกับตัวกรอง' : 'ยังไม่มีบันทึก')}
     </div>`;
   html(ctx, 200, layout({ user: ctx.user, title: 'Audit Log', path: '/admin/audit', content }));
 })));
