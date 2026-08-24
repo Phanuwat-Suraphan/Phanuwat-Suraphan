@@ -18,8 +18,22 @@ function httpError(statusCode, message) {
   return Object.assign(new Error(message), { statusCode });
 }
 
+// ใครโพสต์/ลบประกาศได้
+//
+// เดิมจำกัดไว้ที่ 'admin' อย่างเดียว ซึ่งเป็นบทบาทเชิงเทคนิค (คนดูแลระบบ) ไม่ใช่คนที่ประกาศเรื่องของ
+// โรงเรียนจริง — ผลคือ ผอ. ประกาศเรื่องถึงคณะครูเองไม่ได้ และธุรการซึ่งเป็นคนติดประกาศตัวจริง
+// ก็ทำไม่ได้ ต้องไปรบกวนคนดูแลระบบทุกครั้ง
+const CAN_POST_ROLES = ['admin', 'director', 'vice_director', 'registrar'];
+const canPostAnnouncement = (user) => user.roleCodes.some((r) => CAN_POST_ROLES.includes(r));
+
+// เพดานความยาว — ประกาศแสดงเต็มหน้าจอทุกคนที่เปิดเข้ามา ถ้าปล่อยให้ยาวไม่จำกัด ประกาศเดียว
+// ทำให้หน้าประกาศพองจนเปิดไม่ไหวบนมือถือ (ทดสอบแล้ว: หัวข้อ 50,000 ตัวอักษรและเนื้อหา 500,000
+// ตัวอักษรถูกบันทึกได้ทั้งคู่)
+const MAX_TITLE = 300;
+const MAX_BODY = 20000;
+
 router.get('/announcements', requirePage((ctx) => {
-  const isAdmin = ctx.user.roleCodes.includes('admin');
+  const isAdmin = canPostAnnouncement(ctx.user);
   const rows = db.prepare(`
     SELECT a.*, u.first_name, u.last_name FROM announcements a JOIN users u ON u.id = a.created_by
     WHERE a.deleted_at IS NULL ORDER BY a.created_at DESC
@@ -61,7 +75,7 @@ router.get('/announcements', requirePage((ctx) => {
   html(ctx, 200, layout({ user: ctx.user, title: 'ประกาศ/ประชาสัมพันธ์', path: '/announcements', content }));
 }));
 
-router.get('/announcements/new', requireRole('admin')(requirePage((ctx) => {
+router.get('/announcements/new', requireRole(...CAN_POST_ROLES)(requirePage((ctx) => {
   const content = `
     <h2>📢 เพิ่มประกาศ/ประชาสัมพันธ์</h2>
     <div class="card">
@@ -91,10 +105,14 @@ router.get('/announcements/new', requireRole('admin')(requirePage((ctx) => {
   html(ctx, 200, layout({ user: ctx.user, title: 'เพิ่มประกาศ', path: '/announcements/new', content }));
 })));
 
-router.post('/announcements', requireRole('admin')(requireApi(async (ctx) => {
+router.post('/announcements', requireRole(...CAN_POST_ROLES)(requireApi(async (ctx) => {
   const b = ctx.body;
   if (!b.category || !CATEGORIES.includes(b.category)) throw httpError(400, 'กรุณาเลือกประเภทให้ถูกต้อง');
   if (!b.title?.trim()) throw httpError(400, 'กรุณากรอกหัวข้อ');
+  if (b.title.length > MAX_TITLE) throw httpError(400, `หัวข้อยาวเกินไป (${b.title.length} ตัวอักษร) — จำกัดไม่เกิน ${MAX_TITLE} ตัวอักษร`);
+  if (typeof b.body === 'string' && b.body.length > MAX_BODY) {
+    throw httpError(400, `เนื้อหายาวเกินไป (${b.body.length} ตัวอักษร) — จำกัดไม่เกิน ${MAX_BODY} ตัวอักษร`);
+  }
 
   let fileFields = {};
   if (b.fileDataBase64) {
@@ -131,7 +149,7 @@ router.post('/announcements', requireRole('admin')(requireApi(async (ctx) => {
   json(ctx, 201, { redirect: '/announcements' });
 })));
 
-router.post('/announcements/:id/delete', requireRole('admin')(requireApi(async (ctx) => {
+router.post('/announcements/:id/delete', requireRole(...CAN_POST_ROLES)(requireApi(async (ctx) => {
   const ann = db.prepare('SELECT * FROM announcements WHERE id = ? AND deleted_at IS NULL').get(ctx.params.id);
   if (!ann) throw httpError(404, 'ไม่พบประกาศนี้');
   if (ann.file_storage_provider === 'google_drive' && ann.file_drive_id) {

@@ -1558,6 +1558,45 @@ describe('ทะเบียนหนังสือ: ตัวกรองล�
   });
 });
 
+// ระบบประกาศ/ประชาสัมพันธ์
+describe('ประกาศ/ประชาสัมพันธ์', () => {
+  const asUser = (code) => loadUserForTest(seed.userIds[code]);
+
+  // เดิมจำกัดไว้ที่บทบาท admin อย่างเดียว ซึ่งเป็นบทบาทเชิงเทคนิค ไม่ใช่คนที่ประกาศเรื่องของโรงเรียนจริง
+  // ผอ. ประกาศถึงคณะครูเองไม่ได้ และธุรการซึ่งเป็นคนติดประกาศตัวจริงก็ทำไม่ได้
+  test('ผอ./รอง ผอ./ธุรการ ประกาศได้ ครูทั่วไปประกาศไม่ได้', async () => {
+    for (const code of ['director01', 'vicedir01', 'reg001', 'admin']) {
+      const res = await dispatchPost(asUser(code), '/announcements', { category: 'ประกาศ', title: `ประกาศโดย ${code}`, body: 'เนื้อหา' });
+      assert.ok(res.status < 400, `${code} ควรประกาศได้ แต่ได้ ${res.status}`);
+    }
+    const teacher = await dispatchPost(asUser('teacher001'), '/announcements', { category: 'ประกาศ', title: 'ครูประกาศเอง', body: 'x' });
+    assert.equal(teacher.status, 403, 'ครูทั่วไปต้องประกาศไม่ได้');
+  });
+
+  test('ครูทั่วไปลบประกาศไม่ได้', async () => {
+    const id = db.prepare('SELECT id FROM announcements WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 1').get()?.id;
+    assert.ok(id, 'ต้องมีประกาศอยู่ก่อน ไม่งั้นเทสต์นี้ไม่ได้ตรวจอะไร');
+    assert.equal((await dispatchPost(asUser('teacher001'), `/announcements/${id}/delete`, {})).status, 403);
+    assert.ok(db.prepare('SELECT deleted_at FROM announcements WHERE id = ?').get(id).deleted_at === null, 'ประกาศต้องยังอยู่');
+  });
+
+  // ประกาศแสดงเต็มหน้าจอทุกคนที่เปิดเข้ามา ถ้าปล่อยให้ยาวไม่จำกัด ประกาศเดียวทำให้หน้าประกาศ
+  // พองจนเปิดไม่ไหวบนมือถือ (ทดสอบก่อนแก้: หัวข้อ 50,000 และเนื้อหา 500,000 ตัวอักษร บันทึกได้ทั้งคู่)
+  test('หัวข้อและเนื้อหามีเพดานความยาว', async () => {
+    const admin = asUser('admin');
+    for (const [label, body] of [
+      ['หัวข้อยาวเกินกำหนด', { category: 'ประกาศ', title: 'ก'.repeat(50000), body: 'x' }],
+      ['เนื้อหายาวเกินกำหนด', { category: 'ประกาศ', title: 'ก', body: 'ข'.repeat(500000) }],
+      ['หมวดหมู่ที่ไม่รู้จัก', { category: 'hack', title: 'ก', body: 'x' }],
+      ['ไม่กรอกหัวข้อ', { category: 'ประกาศ', title: '   ', body: 'x' }],
+    ]) {
+      assert.equal((await dispatchPost(admin, '/announcements', body)).status, 400, `ควรปฏิเสธ: ${label}`);
+    }
+    assert.ok((await dispatchPost(admin, '/announcements', { category: 'ประกาศ', title: 'ประกาศปกติ', body: 'เนื้อหาปกติ' })).status < 400,
+      'ประกาศความยาวปกติต้องยังโพสต์ได้');
+  });
+});
+
 // ใครมีอำนาจอนุญาต/อนุมัติการลา
 //
 // เดิมไม่จำกัดเลยทั้งหน้าเว็บและฝั่งเซิร์ฟเวอร์ — ครูเลือก "ครูคนไหนก็ได้" เป็นผู้อนุญาตของตัวเองได้
