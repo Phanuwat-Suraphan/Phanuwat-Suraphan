@@ -588,16 +588,51 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
     .map((r) => r.regex.source.replace(/^\^/, '').replace(/\$$/, '').replace(/\\(.)/g, '$1'))
     .filter((p) => !SKIP.has(p));
 
+  // หน้าที่มี :id ในเส้นทาง (หน้ารายละเอียดเอกสาร หน้าใบลา หน้าแก้ไขผู้ใช้ ฯลฯ) ไม่เคยถูกกวาดเลย
+  // เพราะเทสต์เดิมกรองเอาเฉพาะเส้นทางที่ไม่มีพารามิเตอร์ — ทั้งที่เป็นหน้าที่ใช้งานหนักที่สุดในระบบ
+  // เติม id จริงเข้าไปแล้วกวาดด้วย จะได้ครอบคลุมทั้งหมด (ยกเว้นหน้าที่ส่งไฟล์ ซึ่งไม่ใช่ HTML)
+  let detailPages = [];
+
   test('พบรายการหน้าจาก router (กันกรณี filter ผิดแล้วเทสต์ผ่านเพราะไม่ได้ยิงอะไรเลย)', () => {
     assert.ok(pages.length >= 15, `ควรเจอหน้ามากกว่านี้ แต่เจอ ${pages.length}: ${pages.join(', ')}`);
     assert.ok(pages.includes('/tasks') && pages.includes('/'), pages.join(', '));
+  });
+
+  // ทุกเทสต์ในกลุ่มนี้กวาดหน้าเว็บทั้งระบบ ถ้าหน้าไหนยังไม่มีข้อมูลเลย ส่วนที่แสดงเฉพาะเมื่อมีรายการ
+  // (ปุ่มลบ ปุ่มยกเลิก แถวในตาราง) จะไม่ถูก render ออกมา แล้วเทสต์จะเขียวทั้งที่ไม่ได้ตรวจส่วนนั้นเลย
+  // — พิสูจน์แล้ว: ใส่ชื่อฟังก์ชันผิดในปุ่มยกเลิกการมอบหมาย แต่เทสต์ยังผ่าน เพราะไม่มีการมอบหมายสักรายการ
+  before(() => {
+    const doc = makeDoc({ title: 'เอกสารตัวอย่างสำหรับกวาดหน้าเว็บ', dueDate: '2026-08-25' });
+    assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, instruction: 'เพื่อพิจารณา', actorUser: registrarUser });
+    createLeaveRequest({
+      requesterId: teacherUser.id, leaveType: 'sick', startDate: '2026-08-24', endDate: '2026-08-26',
+      reason: 'ไม่สบาย', approverId: seed.userIds.director01,
+    });
+    createDelegation({
+      delegatorId: seed.userIds.director01, delegateId: teacherUser.id,
+      startDate: '2026-08-24', endDate: '2026-08-26', reason: 'ผอ. ไปราชการ', createdBy: seed.userIds.director01,
+    });
+    db.prepare(`
+      INSERT INTO announcements (id, category, title, body, created_by, created_at, updated_at)
+      VALUES (?, 'ประกาศ', 'ประกาศตัวอย่างสำหรับกวาดหน้าเว็บ', 'เนื้อหาประกาศ', ?, ?, ?)
+    `).run('ann-' + Math.random().toString(36).slice(2), seed.userIds.admin, nowIso(), nowIso());
+
+    // เอกสารฉบับนี้ยังค้างอยู่ที่ ผอ. ปุ่มอนุมัติ/รับทราบ/ไม่อนุมัติ จึงถูก render ออกมาให้ตรวจได้จริง
+    // ตอนกวาดในบทบาทของ director01 (ถ้าไม่มีขั้นตอนค้าง ปุ่มพวกนี้จะไม่ขึ้นเลย แล้วเทสต์จะไม่ได้ตรวจ)
+    const leaveId = db.prepare('SELECT id FROM leave_requests ORDER BY created_at DESC LIMIT 1').get()?.id;
+    detailPages = [
+      `/documents/${doc.id}`,
+      `/documents/${doc.id}/print`,
+      leaveId && `/leave/${leaveId}`,
+      `/admin/users/${seed.userIds.teacher001}/edit`,
+    ].filter(Boolean);
   });
 
   for (const code of ['admin', 'director01', 'reg001', 'teacher001']) {
     test(`เปิดทุกหน้าในบทบาทของ ${code} ได้โดยไม่ระเบิด`, async () => {
       const user = userAs(code);
       const broken = [];
-      for (const pathname of pages) {
+      for (const pathname of [...pages, ...detailPages]) {
         try {
           const res = await openPage(pathname, user);
           // 403 ถือว่าถูกต้อง (หน้าเฉพาะแอดมิน) แต่ 500 คือระบบพัง
@@ -621,7 +656,7 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
     const offenders = [];
     for (const code of ['admin', 'director01', 'reg001', 'teacher001']) {
       const user = userAs(code);
-      for (const pathname of pages) {
+      for (const pathname of [...pages, ...detailPages]) {
         const res = await openPage(pathname, user);
         if (!String(res.headers['Content-Type'] || '').includes('text/html')) continue;
         // เอาเฉพาะ <script> ที่มีโค้ดอยู่ในตัว (ไม่ใช่ src=) เพราะนั่นคือส่วนที่ประกอบจากเซิร์ฟเวอร์
@@ -639,30 +674,90 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
       `สคริปต์ในหน้าเว็บมีไวยากรณ์ผิด (ปุ่มทั้งก้อนจะไม่ทำงาน):\n  ${[...new Set(offenders)].join('\n  ')}`);
   });
 
+  // ปุ่มที่เรียกฟังก์ชันซึ่งไม่มีอยู่จริง จะ "กดแล้วไม่มีอะไรเกิดขึ้น" เงียบๆ เหมือนกัน — เซิร์ฟเวอร์ตอบ 200
+  // ปกติ ไม่มี error อะไรให้เห็นนอกจากใน console ของเบราว์เซอร์ที่ไม่มีใครเปิดดู เกิดได้ง่ายมากเวลาเปลี่ยนชื่อ
+  // ฟังก์ชันใน public/app.js แล้วลืมแก้หน้าที่เรียกใช้ หรือพิมพ์ชื่อผิดใน onclick
+  test('ทุกปุ่มที่เรียกฟังก์ชันจาก onclick ต้องมีฟังก์ชันนั้นอยู่จริง', async () => {
+    const appJs = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+    const globals = new Set([...appJs.matchAll(/window\.(\w+)\s*=/g)].map((m) => m[1]));
+    for (const m of appJs.matchAll(/^\s*function\s+(\w+)/gm)) globals.add(m[1]);
+    const BUILTIN = new Set(['alert', 'confirm', 'prompt', 'print', 'open', 'fetch', 'Number', 'String',
+      'Boolean', 'Math', 'JSON', 'Date', 'Array', 'Object', 'setTimeout', 'encodeURIComponent',
+      'decodeURIComponent', 'parseInt', 'parseFloat', 'if', 'for', 'while', 'switch', 'return', 'catch', 'function']);
+    const offenders = [];
+    let checked = 0;
+    for (const code of ['admin', 'director01', 'reg001', 'teacher001']) {
+      const user = userAs(code);
+      for (const pathname of [...pages, ...detailPages]) {
+        const res = await openPage(pathname, user);
+        if (!String(res.headers['Content-Type'] || '').includes('text/html')) continue;
+        // ฟังก์ชันที่ประกาศอยู่ในสคริปต์ของหน้านั้นเอง
+        const inline = [...res.body.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+        const local = new Set([...inline.matchAll(/function\s+(\w+)/g)].map((m) => m[1]));
+        for (const m of inline.matchAll(/(?:var|let|const)\s+(\w+)\s*=\s*(?:function|\()/g)) local.add(m[1]);
+        for (const m of inline.matchAll(/window\.(\w+)\s*=/g)) local.add(m[1]);
+
+        for (const attr of res.body.matchAll(/\bon(?:click|change|submit|input)="([^"]*)"/g)) {
+          for (const call of attr[1].matchAll(/([A-Za-z_$][\w$]*)\s*\(/g)) {
+            // เมธอดของออบเจกต์ (a.b()) ไม่ใช่ฟังก์ชันระดับบนสุด ข้ามไป
+            if (/[.\w]$/.test(attr[1].slice(0, call.index))) continue;
+            checked++;
+            const fn = call[1];
+            if (BUILTIN.has(fn) || globals.has(fn) || local.has(fn)) continue;
+            offenders.push(`${pathname} (${code}): เรียก ${fn}() แต่ไม่มีการประกาศไว้ที่ไหนเลย`);
+          }
+        }
+      }
+    }
+    assert.ok(checked > 100, `ตรวจน้อยเกินไป (${checked} จุด) — น่าจะดึง onclick ออกมาไม่ได้`);
+    assert.deepEqual([...new Set(offenders)], [], `ปุ่มที่กดแล้วจะไม่มีอะไรเกิดขึ้น:\n  ${[...new Set(offenders)].join('\n  ')}`);
+  });
+
+  // ฟอร์มหรือ fetch ที่ยิงไปยังเส้นทางที่ไม่มีอยู่จริง ก็เงียบแบบเดียวกัน — ได้ 404 กลับมาแล้วจบ
+  // เกิดเวลาเปลี่ยนชื่อเส้นทางฝั่งเซิร์ฟเวอร์แล้วลืมแก้หน้าเว็บที่เรียกใช้
+  test('ทุกฟอร์ม/fetch ต้องยิงไปยังเส้นทางที่ router รู้จักจริง', async () => {
+    const matchesRoute = (method, path) => router.routes.some((r) => r.method === method && r.regex.test(path));
+    const offenders = [];
+    const seen = new Set();
+    for (const code of ['admin', 'director01', 'reg001', 'teacher001']) {
+      const user = userAs(code);
+      for (const pathname of [...pages, ...detailPages]) {
+        const res = await openPage(pathname, user);
+        if (!String(res.headers['Content-Type'] || '').includes('text/html')) continue;
+        const targets = [];
+        for (const m of res.body.matchAll(/<form[^>]*\baction="(\/[^"'`${}]*)"[^>]*>/g)) {
+          targets.push([/method="post"/i.test(m[0]) ? 'POST' : 'GET', m[1].split('?')[0]]);
+        }
+        // เอาเฉพาะ fetch ที่เป็นสตริงตายตัวล้วน — ที่ต่อสตริงกับตัวแปร (fetch('/x/' + id)) เดา path ไม่ได้
+        for (const m of res.body.matchAll(/fetch\(\s*'(\/[^'"`${}]*)'\s*(,|\))/g)) {
+          const after = res.body.slice(m.index + m[0].length - 1);
+          const method = (after.match(/^\s*,\s*\{[^}]*method\s*:\s*'(\w+)'/) || [])[1] || 'GET';
+          targets.push([method.toUpperCase(), m[1].split('?')[0]]);
+        }
+        for (const [method, path] of targets) {
+          const key = `${method} ${path}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          if (!matchesRoute(method, path)) offenders.push(`${pathname} (${code}) -> ${key}`);
+        }
+      }
+    }
+    assert.ok(seen.size > 10, `ตรวจน้อยเกินไป (${seen.size} เส้นทาง)`);
+    assert.deepEqual(offenders, [], `ฟอร์ม/fetch ที่ยิงไปยังเส้นทางที่ไม่มีอยู่:\n  ${offenders.join('\n  ')}`);
+  });
+
   // ทั้งระบบใช้ปีพุทธศักราชและชื่อเดือนไทย ถ้าที่ไหนลืมแปลง วันที่ดิบจากฐานข้อมูล (2026-08-25) จะโผล่มา
   // ให้ครูอ่านเอง ซึ่งเป็น ค.ศ. และเรียงคนละแบบ — เคยหลุดมาแล้วทั้งหน้ารายละเอียดเอกสาร หน้าลา
   // หน้ามอบหมายรักษาการแทน และหน้าอายุการเก็บ เพราะไม่มีอะไรคอยจับ
   test('ไม่มีวันที่ดิบแบบ 2026-08-25 หลุดออกมาให้ผู้ใช้เห็น', async () => {
-    // ต้องสร้างข้อมูลที่มีวันที่ในทุกโมดูลที่แสดงวันที่ก่อน ไม่งั้นหน้าที่ยังไม่มีรายการจะผ่านไปเฉยๆ
-    // ทั้งที่ไม่ได้ตรวจอะไรเลย (ลองแล้ว: ใส่บั๊กกลับเข้าหน้า /leave แต่เทสต์ยังเขียว เพราะไม่มีใบลาสักใบ)
-    const doc = makeDoc({ title: 'เอกสารตรวจรูปแบบวันที่', dueDate: '2026-08-25' });
-    assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, instruction: 'เพื่อพิจารณา', actorUser: registrarUser });
-    createLeaveRequest({
-      requesterId: teacherUser.id, leaveType: 'sick', startDate: '2026-08-24', endDate: '2026-08-26',
-      reason: 'ไม่สบาย', approverId: seed.userIds.director01,
-    });
-    createDelegation({
-      delegatorId: seed.userIds.director01, delegateId: teacherUser.id,
-      startDate: '2026-08-24', endDate: '2026-08-26', reason: 'ผอ. ไปราชการ', createdBy: seed.userIds.director01,
-    });
-
+    // ข้อมูลตัวอย่างถูกสร้างไว้ใน before() ของกลุ่มนี้แล้ว
     // Audit Log แสดง detail ดิบของแต่ละเหตุการณ์ตามที่บันทึกไว้ เพื่อใช้สอบทานย้อนหลัง — ตรงนั้น
     // ต้องเป็นค่าดิบจริงๆ ไม่ใช่ค่าที่จัดรูปแบบใหม่ ไม่งั้นหลักฐานไม่ตรงกับที่เก็บ
     const RAW_OK = new Set(['/admin/audit']);
     const offenders = [];
     for (const code of ['admin', 'director01', 'reg001']) {
       const user = userAs(code);
-      for (const pathname of pages.filter((p) => !RAW_OK.has(p))) {
+      for (const pathname of [...pages, ...detailPages].filter((p) => !RAW_OK.has(p))) {
         const res = await openPage(pathname, user);
         // ตรวจเฉพาะหน้าเว็บ — /health (JSON) และ /reports/export.csv (เปิดใน Excel) ต้องเป็น ISO
         // ตามรูปแบบที่เครื่องอ่าน ไม่ใช่ พ.ศ. ที่คนอ่าน
