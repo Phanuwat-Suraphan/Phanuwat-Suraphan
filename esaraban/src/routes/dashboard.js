@@ -83,7 +83,8 @@ router.get('/', requirePage((ctx) => {
   let execKpiHtml = '';
   if (isExecutive) {
     const avgDays = db.prepare(`
-      SELECT AVG(julianday(d.updated_at) - julianday(d.created_at)) as avg_days FROM documents d
+      -- completed_at คือเวลาที่เรื่องปิดจริง ส่วน updated_at ขยับทุกครั้งที่แตะเอกสารทีหลัง (ดู db.js)
+      SELECT AVG(julianday(COALESCE(d.completed_at, d.updated_at)) - julianday(d.created_at)) as avg_days FROM documents d
       WHERE d.status = 'completed' AND d.deleted_at IS NULL AND ${visible.sql}
     `).get(visible.params).avg_days;
     const byDept = db.prepare(`

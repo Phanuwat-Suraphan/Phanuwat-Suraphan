@@ -63,7 +63,10 @@ export function contentDispositionHeader(filename, fallback = 'document.pdf', di
   // ผู้ใช้กลายเป็นไฟล์ซ่อนที่ไม่มีชื่อ — ต้องดูเฉพาะ "ส่วนชื่อ" ไม่รวมนามสกุล เพราะนามสกุลเป็น ASCII อยู่แล้ว
   // จึงผ่านการตรวจเสมอถ้าดูทั้งสตริง
   const stem = stripped.replace(/\.[^.]*$/, '');
-  const asciiFallback = /[A-Za-z0-9]/.test(stem) ? stripped : fallback;
+  // ต้องเหลือ "ตัวอักษร" ไม่ใช่แค่ตัวเลข — ชื่อไทยที่มีปีอยู่ด้วย เช่น "รายงานหนังสือ-2569.csv" หรือ
+  // "ประกาศ2569.pdf" พอตัดอักขระไทยออกจะเหลือ "-2569.csv" / "2569.pdf" ซึ่งผ่านการตรวจแบบเดิม
+  // (เพราะมีตัวเลข) แล้วกลายเป็นชื่อไฟล์ที่บอกไม่ได้ว่าเป็นไฟล์อะไร หรือขึ้นต้นด้วยขีดจนดูเหมือนไฟล์เสีย
+  const asciiFallback = /[A-Za-z]/.test(stem) ? stripped : fallback;
   return `${disposition}; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 

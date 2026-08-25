@@ -972,6 +972,12 @@ describe('ดาวน์โหลดไฟล์: ชื่อไฟล์ภ�
     assert.match(header, /filename="announcement\.pdf"/, `ควรถอยไปใช้ชื่อสำรอง แต่ได้: ${header}`);
     // ชื่อที่มีตัวอักษร ASCII ปนอยู่ ต้องเก็บส่วนนั้นไว้ ไม่ใช่ทิ้งไปใช้ชื่อสำรองทั้งหมด
     assert.match(contentDispositionHeader('รายงาน-PA-2569.pdf'), /filename="-PA-2569\.pdf"/);
+
+    // ชื่อไทยที่มีแต่ "ตัวเลข" ปนอยู่ (ปี พ.ศ.) เคยผ่านการตรวจแบบเดิมแล้วได้ชื่อสำรองที่บอกอะไรไม่ได้เลย
+    // อย่าง "-2569.csv" (ขึ้นต้นด้วยขีดจนดูเหมือนไฟล์เสีย) หรือ "2569.pdf" — ตัวเลขอย่างเดียวไม่พอ
+    assert.match(contentDispositionHeader('รายงานหนังสือ-2569.csv', 'documents-report-2569.csv', 'attachment'),
+      /filename="documents-report-2569\.csv"/, 'ชื่อไทยที่มีแต่ตัวเลขปน ต้องถอยไปใช้ชื่อสำรอง');
+    assert.match(contentDispositionHeader('ประกาศ2569.pdf', 'announcement.pdf'), /filename="announcement\.pdf"/);
   });
 
   test('Node ยอมรับหัวนี้จริง ไม่ใช่แค่ผ่าน regex', async () => {
@@ -1893,6 +1899,141 @@ describe('รายการตำแหน่งในโรงเรียน'
 // เดิมทุกคำสั่งบนหน้านี้ไม่มีการกรองสิทธิ์เลยแม้แต่ที่เดียว ที่ร้ายแรงที่สุดคือรายการ "เอกสารล่าสุด"
 // ซึ่งดึง 8 ฉบับล่าสุดของทั้งระบบมาแสดง — ทดสอบยืนยันแล้วว่าครูธรรมดาเห็นชื่อเรื่องของหนังสือ
 // ชั้นลับมากที่ตัวเองเปิดอ่านไม่ได้ โดยไม่ต้องพยายามอะไรเลย แค่ล็อกอินเข้ามาก็เห็น
+// "ระยะเวลาเฉลี่ยจนเสร็จสิ้น" เป็นตัวเลขที่โรงเรียนรายงาน สพฐ. และใช้ประเมินตนเอง (SAR) — เดิมคิดจาก
+// updated_at ซึ่งขยับทุกครั้งที่แตะเอกสารทีหลัง จึงพองตามเรื่องที่ไม่เกี่ยวกับความเร็วในการทำงานเลย
+describe('เวลาที่ดำเนินการเสร็จสิ้น ต้องไม่ขยับตามการแตะเอกสารทีหลัง', () => {
+  const hoursOf = (id) => db.prepare(`
+    SELECT (julianday(COALESCE(completed_at, updated_at)) - julianday(created_at)) * 24 h
+    FROM documents WHERE id = ?`).get(id).h;
+
+  function completedDoc(title) {
+    const doc = makeDoc({ title });
+    const stepId = assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, actorUser: registrarUser });
+    acknowledgeAndComplete({ stepId, actorUser: loadUserForTest(seed.userIds.director01) });
+    // ย้อนวันให้เหมือนของจริง: ลงรับเมื่อ 90 วันก่อน ดำเนินการเสร็จภายในวันเดียว
+    db.prepare(`UPDATE documents SET created_at = datetime('now','-90 days'),
+      updated_at = datetime('now','-89 days'), completed_at = datetime('now','-89 days') WHERE id = ?`).run(doc.id);
+    return doc;
+  }
+
+  test('บันทึกเวลาที่ปิดเรื่องไว้ตอนกดรับทราบ', () => {
+    const doc = makeDoc({ title: 'ทดสอบว่าบันทึกเวลาปิดเรื่อง' });
+    assert.equal(getDocRow(doc.id).completed_at, null, 'ยังไม่ปิดเรื่องต้องยังไม่มีเวลา');
+    const stepId = assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, actorUser: registrarUser });
+    acknowledgeAndComplete({ stepId, actorUser: loadUserForTest(seed.userIds.director01) });
+    assert.ok(getDocRow(doc.id).completed_at, 'ปิดเรื่องแล้วต้องมีเวลาที่ปิด');
+  });
+
+  test('กดจัดเก็บเข้าแฟ้มหลายเดือนให้หลัง ต้องไม่ทำให้เวลาที่ใช้ดำเนินการพองขึ้น', () => {
+    const doc = completedDoc('หนังสือที่เสร็จเร็วแต่เพิ่งมาจัดเก็บทีหลัง');
+    const before = hoursOf(doc.id);
+    assert.ok(Math.abs(before - 24) < 1, `ตั้งต้นต้องเป็น ~24 ชม. ได้ ${before}`);
+    archiveDocument({ documentId: doc.id, actorUser: registrarUser });
+    const after = hoursOf(doc.id);
+    assert.ok(Math.abs(after - before) < 1,
+      `กดจัดเก็บแล้วเวลาดำเนินการเปลี่ยนจาก ${before.toFixed(0)} เป็น ${after.toFixed(0)} ชม.`);
+  });
+
+  test('เลื่อนตำแหน่งตราประทับทีหลัง ต้องไม่ทำให้เวลาที่ใช้ดำเนินการพองขึ้น', async () => {
+    const doc = completedDoc('หนังสือที่ถูกเลื่อนตราประทับทีหลัง');
+    const before = hoursOf(doc.id);
+    await dispatchPost(registrarUser, `/documents/${doc.id}/stamp-position`, { x: 60, y: 70 });
+    assert.ok(Math.abs(hoursOf(doc.id) - before) < 1, 'การเลื่อนตราประทับไม่ควรนับเป็นเวลาดำเนินการ');
+  });
+
+  // หนังสือถูกทำลายเมื่อครบอายุเก็บอีก 5–10 ปีข้างหน้า ถ้าเวลานั้นไปนับเป็นเวลาดำเนินการ
+  // ค่าเฉลี่ยของทั้งโรงเรียนจะกลายเป็นหน่วยปีทันทีที่เริ่มทำลายหนังสือเก่าชุดแรก
+  test('ทำลายหนังสือเมื่อครบอายุเก็บ ต้องไม่ทำให้เวลาที่ใช้ดำเนินการพองขึ้น', () => {
+    const doc = completedDoc('หนังสือที่จะถูกทำลายเมื่อครบอายุ');
+    const before = hoursOf(doc.id);
+    db.prepare(`UPDATE documents SET status = 'destroyed', destroyed_at = ?, updated_at = ? WHERE id = ?`)
+      .run(nowIso(), nowIso(), doc.id);
+    assert.ok(Math.abs(hoursOf(doc.id) - before) < 1, 'การทำลายเมื่อครบอายุไม่ควรนับเป็นเวลาดำเนินการ');
+  });
+
+  test('หนังสือเก่าที่ปิดไปก่อนมีคอลัมน์นี้ ต้องถูกเติมเวลาย้อนหลังจากขั้นตอนสุดท้าย', () => {
+    const doc = makeDoc({ title: 'หนังสือเก่าที่ยังไม่มีเวลาปิดเรื่อง' });
+    const stepId = assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, actorUser: registrarUser });
+    acknowledgeAndComplete({ stepId, actorUser: loadUserForTest(seed.userIds.director01) });
+    const decidedAt = db.prepare('SELECT decided_at FROM workflow_steps WHERE id = ?').get(stepId).decided_at;
+    // จำลองฐานข้อมูลรุ่นเก่าจริงๆ: ตัดคอลัมน์ทิ้งแล้วขยับ updated_at ไปไกลเหมือนถูกแตะทีหลัง
+    // (ถ้าแค่ล้างค่าเป็น NULL จะไม่ได้ทดสอบอะไร เพราะ migrate() ข้ามเมื่อคอลัมน์มีอยู่แล้ว)
+    db.prepare(`UPDATE documents SET updated_at = datetime('now','+400 days') WHERE id = ?`).run(doc.id);
+    db.exec('ALTER TABLE documents DROP COLUMN completed_at');
+    assert.ok(!db.prepare('PRAGMA table_info(documents)').all().some((c) => c.name === 'completed_at'));
+
+    migrate();
+
+    assert.ok(db.prepare('PRAGMA table_info(documents)').all().some((c) => c.name === 'completed_at'),
+      'migrate() ต้องเพิ่มคอลัมน์กลับมา');
+    assert.equal(getDocRow(doc.id).completed_at, decidedAt,
+      'ต้องเติมจากเวลาที่ขั้นตอนสุดท้ายถูกตัดสิน ไม่ใช่ updated_at ที่ถูกแตะทีหลัง');
+  });
+});
+
+// รายงานที่โรงเรียนต้องส่ง สพฐ. และใช้ประเมินตนเองเป็นรายปีงบประมาณเสมอ — เดิมหน้านี้เป็นตัวเลข
+// สะสมตั้งแต่เปิดใช้ระบบอย่างเดียว ไม่มีตัวกรองช่วงเวลาเลย จึงเปรียบเทียบปีต่อปีไม่ได้
+describe('รายงานสรุป: แยกตามปีงบประมาณ', () => {
+  const admin = () => loadUserForTest(seed.userIds.admin);
+  const totalOf = (body) => Number(/kpi-value">(\d+)<\/div><div class="kpi-label">เอกสารทั้งหมด/.exec(body)?.[1]);
+  const countInRange = (start, end) => db.prepare(
+    'SELECT COUNT(*) c FROM documents WHERE deleted_at IS NULL AND date(created_at) BETWEEN ? AND ?').get(start, end).c;
+
+  test('ปีงบประมาณไทยเริ่ม 1 ตุลาคม — ตัวเลขต้องตรงกับที่นับจากฐานข้อมูลจริง', async () => {
+    const fy = fiscalYearRange(todayInBangkok());
+    const res = await dispatchGet(admin(), '/reports', { fy: String(fy.yearBe) });
+    assert.equal(res.status, 200);
+    assert.equal(totalOf(res.body), countInRange(fy.start, fy.end));
+    assert.ok(res.body.includes(`ปีงบประมาณ ${fy.yearBe}`), 'ต้องบอกว่ากำลังดูปีไหนอยู่');
+  });
+
+  test('เลือก "ทั้งหมด" ได้ และต้องไม่น้อยกว่าปีเดียว', async () => {
+    const fy = fiscalYearRange(todayInBangkok());
+    const all = totalOf((await dispatchGet(admin(), '/reports', { fy: 'all' })).body);
+    const one = totalOf((await dispatchGet(admin(), '/reports', { fy: String(fy.yearBe) })).body);
+    assert.ok(all >= one, `ทั้งหมด (${all}) ต้องไม่น้อยกว่าปีเดียว (${one})`);
+    assert.equal(all, db.prepare('SELECT COUNT(*) c FROM documents WHERE deleted_at IS NULL').get().c);
+  });
+
+  test('ปีที่ไม่มีหนังสือเลยต้องได้ 0 ไม่ใช่ตกกลับไปนับทั้งหมด', async () => {
+    const res = await dispatchGet(admin(), '/reports', { fy: '2500' });
+    assert.equal(res.status, 200);
+    assert.equal(totalOf(res.body), 0, 'ปี 2500 ไม่ควรมีหนังสือ');
+  });
+
+  test('ค่าปีที่กรอกมั่วต้องไม่ทำให้หน้าพัง และตกกลับไปปีปัจจุบัน', async () => {
+    const fy = fiscalYearRange(todayInBangkok());
+    const expected = countInRange(fy.start, fy.end);
+    for (const fyParam of ['abc', '9999', '0', '-5', '', '2569; DROP TABLE documents']) {
+      const res = await dispatchGet(admin(), '/reports', { fy: fyParam });
+      assert.equal(res.status, 200, `fy=${fyParam} ต้องไม่พัง`);
+      assert.equal(totalOf(res.body), expected, `fy=${fyParam} ควรตกกลับไปปีปัจจุบัน`);
+    }
+    assert.ok(db.prepare('SELECT COUNT(*) c FROM documents').get().c > 0, 'ตาราง documents ต้องยังอยู่');
+  });
+
+  test('ไฟล์ CSV ต้องครอบคลุมช่วงเดียวกับที่เห็นบนหน้าจอ', async () => {
+    const fy = fiscalYearRange(todayInBangkok());
+    const page = totalOf((await dispatchGet(admin(), '/reports', { fy: String(fy.yearBe) })).body);
+    const csv = await dispatchGet(admin(), '/reports/export.csv', { fy: String(fy.yearBe) });
+    const dataRows = csv.body.trim().split('\r\n').length - 1;
+    assert.equal(dataRows, page, 'จำนวนแถวใน CSV ต้องตรงกับตัวเลขบนหน้าจอ');
+    // ชื่อไฟล์จริงเป็นภาษาไทย (ผ่าน filename*=UTF-8'') ส่วน filename= เป็นชื่อสำรอง ASCII สำหรับเบราว์เซอร์เก่า
+    assert.match(csv.headers['Content-Disposition'] || '', new RegExp(`documents-report-${fy.yearBe}\\.csv`),
+      'ชื่อไฟล์สำรองต้องบอกว่าเป็นของปีไหน');
+  });
+
+  test('ตัวกรองปีต้องไม่ทำให้สิทธิ์หลุด', async () => {
+    const secret = makeDoc({ title: 'ลับมากที่ต้องไม่โผล่ในรายงานของครู', secretLevel: 'top_secret', createdBy: seed.userIds.reg001 });
+    const teacher = loadUserForTest(seed.userIds.teacher001);
+    assert.equal(canUserSeeDocument(teacher, getDocRow(secret.id)), false);
+    for (const fy of ['all', String(fiscalYearRange(todayInBangkok()).yearBe)]) {
+      const csv = await dispatchGet(teacher, '/reports/export.csv', { fy });
+      assert.ok(!csv.body.includes('ลับมากที่ต้องไม่โผล่ในรายงานของครู'), `fy=${fy} ทำให้หนังสือลับหลุด`);
+    }
+  });
+});
+
 describe('แดชบอร์ด: ตัวเลขและรายการต้องนับเฉพาะที่ผู้ใช้มีสิทธิ์เห็น', () => {
   const SECRET_TITLE = 'ลับมากเรื่องที่ครูคนนี้ไม่เกี่ยวข้องเลย';
   let secretDoc;

@@ -401,7 +401,12 @@ export function acknowledgeAndComplete({ stepId, comment, actorUser }) {
   db.prepare(`UPDATE workflow_steps SET status = 'acknowledged', instruction = COALESCE(instruction,'') || ?, decided_at = ? WHERE id = ?`)
     .run(comment ? `\n[รับทราบ] ${comment}` : '', nowIso(), stepId);
   snapshotSignature(stepId, actorUser.id);
-  db.prepare(`UPDATE documents SET status = 'completed', updated_at = ? WHERE id = ?`).run(nowIso(), step.document_id);
+  // completed_at ต้องเป็นคอลัมน์แยกของตัวเอง ห้ามใช้ updated_at แทน — updated_at ขยับทุกครั้งที่มีการ
+  // แตะเอกสารทีหลัง (กดจัดเก็บเข้าแฟ้ม เลื่อนตำแหน่งตราประทับ หรือทำลายเมื่อครบอายุอีก 10 ปีข้างหน้า)
+  // ตัวเลข "ระยะเวลาเฉลี่ยจนเสร็จสิ้น" บนแดชบอร์ดและหน้ารายงานจึงพองตาม (วัดจริงแล้ว: หนังสือที่เสร็จ
+  // ภายใน 1 วัน พอกดจัดเก็บอีก 90 วันให้หลัง กลายเป็น 2,160 ชั่วโมง) ซึ่งเป็นตัวเลขที่โรงเรียนรายงาน สพฐ.
+  db.prepare(`UPDATE documents SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`)
+    .run(nowIso(), nowIso(), step.document_id);
 
   notifyUser({
     userId: doc.created_by, documentId: doc.id,

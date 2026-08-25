@@ -487,6 +487,24 @@ export function migrate() {
     }
   }
 
+  // เวลาที่ "ดำเนินการเสร็จสิ้น" จริงๆ — แยกจาก updated_at ซึ่งขยับทุกครั้งที่แตะเอกสารทีหลัง
+  // (จัดเก็บเข้าแฟ้ม / เลื่อนตำแหน่งตราประทับ / ทำลายเมื่อครบอายุอีกสิบปีข้างหน้า) เดิมแดชบอร์ดและ
+  // หน้ารายงานคิด "ระยะเวลาเฉลี่ยจนเสร็จสิ้น" จาก updated_at ตัวเลขจึงพองตามการแตะเหล่านั้น
+  //
+  // ของเก่าย้อนหลังได้จากเวลาที่ขั้นตอนสุดท้ายถูกตัดสิน ซึ่งคือเวลาที่เรื่องปิดจริง — ถ้าไม่มีขั้นตอนเลย
+  // (เอกสารที่ถูกปิดด้วยวิธีอื่น) ค่อยถอยไปใช้ updated_at ตามเดิม
+  const documentColsForCompleted = db.prepare("PRAGMA table_info(documents)").all().map((c) => c.name);
+  if (!documentColsForCompleted.includes('completed_at')) {
+    db.exec('ALTER TABLE documents ADD COLUMN completed_at TEXT');
+    const filled = db.prepare(`
+      UPDATE documents SET completed_at = COALESCE(
+        (SELECT MAX(ws.decided_at) FROM workflow_steps ws WHERE ws.document_id = documents.id AND ws.decided_at IS NOT NULL),
+        updated_at)
+      WHERE status IN ('completed', 'archived', 'destroyed')
+    `).run().changes;
+    if (filled) console.warn(`[data] เติมเวลาดำเนินการเสร็จสิ้นย้อนหลังให้หนังสือ ${filled} ฉบับ`);
+  }
+
   const documentCols = db.prepare("PRAGMA table_info(documents)").all().map((c) => c.name);
   if (!documentCols.includes('stamp_x')) {
     db.exec('ALTER TABLE documents ADD COLUMN stamp_x REAL');
