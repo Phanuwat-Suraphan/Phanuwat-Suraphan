@@ -1,5 +1,5 @@
 import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, stampDateThai, stampTimeThai, priorityBadge, secretBadge, statusBadge, emptyState, fmtCount, LABELS } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, stampDateThai, stampTimeThai, priorityBadge, secretBadge, statusBadge, emptyState, fmtCount, LABELS, SCHOOL_NAME } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, nowIso, audit, todayInBangkok, RETENTION_LABEL } from '../db.js';
 import {
@@ -1775,7 +1775,6 @@ async function deletePreviousStampedCopy(prev, attachmentId) {
   }
 }
 
-const SCHOOL_NAME = 'โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ ๑';
 
 // เครื่องหมาย "ทราบ" + ลายเซ็นแบบง่าย — ทุกคนในสาย workflow ที่ตัดสินใจ (อนุมัติ/ส่งต่อ/รับทราบ/ไม่อนุมัติ)
 // ได้เครื่องหมายของตัวเองคนละอัน ไม่จำกัดแค่ผู้อำนวยการ (มีกี่คนตอบก็มีลายเซ็นเท่านั้นบนไฟล์) ตำแหน่ง/

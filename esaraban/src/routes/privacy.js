@@ -7,9 +7,8 @@
 //
 // เนื้อหาต้องตรงกับสิ่งที่ระบบทำจริงเสมอ — ถ้าเพิ่มการเก็บข้อมูลใหม่ ต้องมาแก้หน้านี้ด้วย
 import { router, html } from '../router.js';
-import { layout, esc } from '../render.js';
+import { layout, esc, SCHOOL_NAME } from '../render.js';
 
-const SCHOOL_NAME = 'โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ ๑';
 // อีเมลผู้ดูแล ตั้งผ่าน env var ได้ เพราะเป็นข้อมูลของแต่ละโรงเรียน ไม่ควรฝังตายในโค้ด
 const CONTACT_EMAIL = process.env.PRIVACY_CONTACT_EMAIL || '';
 

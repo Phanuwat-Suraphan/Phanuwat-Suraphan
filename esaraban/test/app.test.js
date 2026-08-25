@@ -11,7 +11,7 @@ const tmpDb = path.join(os.tmpdir(), `esaraban-test-${Date.now()}-${Math.random(
 process.env.DB_PATH = tmpDb;
 process.env.SESSION_SECRET = 'test-secret-not-for-production';
 
-const { db, computeRetentionUntil, beYear, todayInBangkok, hashSecret, verifySecret, isWeakPin, nowIso } = await import('../src/db.js');
+const { db, computeRetentionUntil, beYear, todayInBangkok, hashSecret, verifySecret, isWeakPin, nowIso, migrate, uuid } = await import('../src/db.js');
 const { login, getSessionUser, revokeOtherSessions, verifyPin } = await import('../src/auth.js');
 const { contentDispositionHeader } = await import('../src/router.js');
 const { daysUntil, fmtDate, fmtThaiDateShort, fmtThaiDateLong, stampDateThai, stampTimeThai, bangkokHour } = await import('../src/render.js');
@@ -25,7 +25,8 @@ const { readWorkbook } = await import('../src/services/xlsx.js');
 const { buildXlsx } = await import('../src/services/xlsxWrite.js');
 const { parseUploadedWorkbook, looksLikeHeader } = await import('../src/services/dailySummaryParse.js');
 const {
-  createLeaveRequest, approveLeaveRequest, rejectLeaveRequest, canSeeLeaveRequest, getLeaveRequest, canApproveLeave,
+  createLeaveRequest, approveLeaveRequest, rejectLeaveRequest, cancelLeaveRequest, canSeeLeaveRequest, getLeaveRequest,
+  canApproveLeave, leaveStatsForFiscalYear, fiscalYearRange,
 } = await import('../src/services/leave.js');
 const { SCHOOL_POSITIONS } = await import('../src/services/positions.js');
 const { createDelegation } = await import('../src/services/delegation.js');
@@ -59,6 +60,17 @@ function makeDoc(overrides = {}) {
     // เพราะตอนนั้นฝั่งเซิร์ฟเวอร์ยังไม่ได้ตรวจสิทธิ์ในสองฟังก์ชันนั้นเลย
     createdBy: registrarUser.id, ...overrides,
   });
+}
+
+// ช่วงวันลาที่ไม่ซ้ำกับใบไหนเลย — ระบบกันไม่ให้คนเดียวยื่นใบลาทับช่วงเดิมของตัวเอง (โดยตั้งใจ) fixture
+// ที่ใช้วันที่ตายตัวร่วมกันจึงชนกันเองข้ามเทสต์ ตัวช่วยนี้เดินหน้าไปเรื่อยๆ ให้แต่ละใบได้ช่วงของตัวเอง
+// เริ่มไกลจากวันนี้มากพอที่จะไม่ทับกับเทสต์ที่จงใจใช้วันที่ใกล้ๆ ปัจจุบัน
+let leaveWindowCursor = 2000;
+function nextLeaveWindow(days = 2) {
+  const start = leaveWindowCursor;
+  leaveWindowCursor += days + 5; // เว้นช่องว่างระหว่างใบ กันการชนขอบ
+  const at = (n) => new Date(Date.parse(`${todayInBangkok()}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+  return { startDate: at(start), endDate: at(start + days - 1) };
 }
 
 // ผู้ใช้พร้อม roleCodes/department_id เหมือนที่ ctx.user ได้ตอนล็อกอินจริง — ตัวตรวจสิทธิ์ใช้ทั้งสองอย่าง
@@ -1112,7 +1124,7 @@ describe('ลา/ไปราชการ: สิทธิ์ต้องบั�
 
   function newLeave(overrides = {}) {
     return createLeaveRequest({
-      requesterId: teacherUser.id, leaveType: 'personal', startDate: '2026-10-01', endDate: '2026-10-02',
+      requesterId: teacherUser.id, leaveType: 'personal', ...nextLeaveWindow(2),
       reason: 'ธุระส่วนตัว', approverId: directorUser.id, ...overrides,
     });
   }
@@ -1312,7 +1324,7 @@ describe('หลักฐานการลงนาม: ต้องตรึ�
       .run('data:image/png;base64,BBBB', requester.id, approver.id);
 
     const { id } = leave.createLeaveRequest({
-      requesterId: requester.id, leaveType: 'sick', startDate: '2026-10-01', endDate: '2026-10-01',
+      requesterId: requester.id, leaveType: 'sick', ...nextLeaveWindow(1),
       reason: 'ทดสอบหลักฐานใบลา', approverId: approver.id,
     });
     let sigs = leave.listLeaveSignatures(id);
@@ -1616,7 +1628,7 @@ describe('ผู้อนุญาต/อนุมัติการลา ต�
     return id;
   }
   const submit = (approverId) => createLeaveRequest({
-    requesterId: teacherUser.id, leaveType: 'sick', startDate: '2026-12-01', endDate: '2026-12-02',
+    requesterId: teacherUser.id, leaveType: 'sick', ...nextLeaveWindow(2),
     reason: 'ทดสอบสิทธิ์ผู้อนุญาต', approverId,
   });
 
@@ -1651,6 +1663,190 @@ describe('ผู้อนุญาต/อนุมัติการลา ต�
     const delegateIds = [...delegateSelect.matchAll(/<option value="([^"]+)"/g)].map((m) => m[1]).filter(Boolean);
     assert.ok(delegateIds.some((id) => !canApproveLeave(id)),
       'รายการผู้รักษาการแทนไม่ควรถูกจำกัดเฉพาะผู้มีอำนาจอนุญาต');
+  });
+});
+
+// พบตอนไล่เส้นทางการใช้งานจริงของโมดูลลา — ทั้งสามข้อทดสอบยืนยันแล้วว่าเกิดขึ้นได้จริงก่อนแก้
+describe('ใบลา: ช่วงวันที่ต้องสมเหตุสมผลและไม่ทับกันเอง', () => {
+  const dayOffset = (n) => {
+    const t = Date.parse(`${todayInBangkok()}T00:00:00Z`) + n * 86400000;
+    return new Date(t).toISOString().slice(0, 10);
+  };
+  const submit = (over = {}) => createLeaveRequest({
+    requesterId: teacherUser.id, leaveType: 'personal', reason: 'ทดสอบช่วงวันลา',
+    approverId: seed.userIds.director01, startDate: dayOffset(400), endDate: dayOffset(401), ...over,
+  });
+
+  test('ยื่นใบลาทับช่วงเดิมของตัวเองไม่ได้ ไม่ว่าจะทับหัว ทับท้าย หรือคร่อมทั้งช่วง', () => {
+    const base = { startDate: dayOffset(500), endDate: dayOffset(504) };
+    assert.ok(submit(base).id, 'ใบแรกต้องยื่นได้');
+    const overlaps = [
+      ['ทับท้าย', dayOffset(503), dayOffset(507)],
+      ['ทับหัว', dayOffset(497), dayOffset(501)],
+      ['อยู่ข้างในทั้งช่วง', dayOffset(501), dayOffset(502)],
+      ['คร่อมทั้งช่วง', dayOffset(495), dayOffset(510)],
+      ['ตรงกันเป๊ะ', dayOffset(500), dayOffset(504)],
+    ];
+    for (const [label, startDate, endDate] of overlaps) {
+      assert.throws(() => submit({ startDate, endDate, leaveType: 'sick' }), /ทับกับใบลาเดิม/, `ควรถูกปฏิเสธ: ${label}`);
+    }
+  });
+
+  test('ช่วงที่ชนกันแค่ปลายเดียวโดยไม่ทับวันจริง ต้องยังยื่นได้', () => {
+    assert.ok(submit({ startDate: dayOffset(600), endDate: dayOffset(602) }).id);
+    // เริ่มวันถัดจากวันที่ใบเดิมจบพอดี = ไม่ทับกัน
+    assert.ok(submit({ startDate: dayOffset(603), endDate: dayOffset(604) }).id, 'วันติดกันแต่ไม่ทับ ต้องยื่นได้');
+  });
+
+  test('ใบที่ถูกยกเลิก/ไม่อนุญาตไปแล้ว ต้องไม่กันช่วงวันนั้นไว้อีก', () => {
+    const cancelled = submit({ startDate: dayOffset(700), endDate: dayOffset(702) });
+    cancelLeaveRequest({ id: cancelled.id, actorUser: teacherUser });
+    assert.ok(submit({ startDate: dayOffset(700), endDate: dayOffset(702) }).id,
+      'ยกเลิกใบเดิมแล้วต้องยื่นช่วงเดิมใหม่ได้ — ไม่งั้นแก้ไขใบลาไม่ได้เลย');
+
+    const rejected = submit({ startDate: dayOffset(800), endDate: dayOffset(802) });
+    rejectLeaveRequest({ id: rejected.id, note: 'ไม่อนุญาต', actorUser: loadUserForTest(seed.userIds.director01) });
+    assert.ok(submit({ startDate: dayOffset(800), endDate: dayOffset(802) }).id, 'ใบที่ไม่อนุญาตต้องไม่กันวันไว้');
+  });
+
+  test('คนละคนลาวันเดียวกันได้ตามปกติ', () => {
+    const range = { startDate: dayOffset(900), endDate: dayOffset(901) };
+    assert.ok(submit(range).id);
+    assert.ok(createLeaveRequest({
+      requesterId: seed.userIds.reg001, leaveType: 'personal', reason: 'คนละคน',
+      approverId: seed.userIds.director01, ...range,
+    }).id, 'การกันวันซ้ำต้องดูเฉพาะใบลาของคนเดียวกัน');
+  });
+
+  // ลาป่วยกะทันหันต้องยื่นย้อนหลังตอนกลับมาปฏิบัติงาน จึงห้ามบล็อกการย้อนหลังทั้งหมด —
+  // ที่ย้อนเกิน 1 ปีคือกรอกปีผิด (พ.ศ. หลุดลงช่อง ค.ศ.) ซึ่งจะไปเพี้ยนสถิติของปีงบประมาณที่ปิดไปแล้ว
+  test('ยื่นย้อนหลังตามปกติได้ แต่ย้อนเกิน 1 ปีต้องถูกปฏิเสธ', () => {
+    assert.ok(submit({ startDate: dayOffset(-20), endDate: dayOffset(-19), leaveType: 'sick' }).id,
+      'ลาป่วยย้อนหลัง 20 วันต้องยื่นได้');
+    assert.throws(() => submit({ startDate: dayOffset(-400), endDate: dayOffset(-399), leaveType: 'sick' }),
+      /เกิน 1 ปี/, 'ย้อนหลังเกินหนึ่งปีต้องถูกปฏิเสธ');
+  });
+
+  // ใบลาที่ค่าวันที่พังจากยุคก่อนมีการตรวจสอบ ถ้าปล่อยไว้จะค้าง "รออนุญาต" ตลอดกาล และตอนนี้ยัง
+  // ไปกันไม่ให้เจ้าตัวยื่นใบลาช่วงนั้นได้อีกเลยเพราะการตรวจการลาทับช่วง
+  test('ใบลาเก่าที่ช่วงวันที่เป็นไปไม่ได้ ต้องถูกยกเลิกตอนอัปเกรดฐานข้อมูล', () => {
+    const insert = db.prepare(`
+      INSERT INTO leave_requests (id, requester_id, leave_type, start_date, end_date, days_count, reason, status, approver_id, created_at, updated_at)
+      VALUES (?, ?, 'sick', ?, ?, ?, 'ข้อมูลเก่าที่วันที่พัง', 'pending', ?, ?, ?)`);
+    const broken = [
+      ['พ.ศ. หลุดลงช่อง ค.ศ.', '2569-10-01', '2569-10-05', 5],
+      ['พิมพ์ปีผิดจนยาว 100 ปี', '2026-10-01', '2126-10-02', 36526],
+      ['วันสิ้นสุดมาก่อนวันเริ่ม', '2026-10-05', '2026-10-01', 1],
+    ];
+    const madeIds = [];
+    for (const [label, s, e, days] of broken) {
+      const id = `broken-leave-${madeIds.length}`;
+      insert.run(id, teacherUser.id, s, e, days, seed.userIds.director01, nowIso(), nowIso());
+      madeIds.push([id, label]);
+    }
+    const stillPending = () => madeIds.filter(([id]) =>
+      db.prepare("SELECT status FROM leave_requests WHERE id = ?").get(id).status === 'pending');
+    assert.equal(stillPending().length, 3, 'เตรียมข้อมูลพังไว้ 3 ใบ');
+
+    migrate();
+    for (const [id, label] of madeIds) {
+      assert.equal(db.prepare('SELECT status FROM leave_requests WHERE id = ?').get(id).status, 'cancelled',
+        `ต้องถูกยกเลิก: ${label}`);
+    }
+    // ใบลาปกติต้องไม่โดนลูกหลง
+    const ok = submit({ startDate: dayOffset(950), endDate: dayOffset(951) });
+    migrate();
+    assert.equal(db.prepare('SELECT status FROM leave_requests WHERE id = ?').get(ok.id).status, 'pending',
+      'ใบลาปกติต้องไม่ถูกยกเลิกตอนอัปเกรด');
+  });
+});
+
+// โรงเรียนยังต้องมีใบลากระดาษเก็บเข้าแฟ้มตามระเบียบ — เดิมโมดูลนี้ไม่มีหน้าพิมพ์เลย ครูจึงต้องไปกรอก
+// แบบฟอร์มกระดาษซ้ำอีกใบด้วยมือ ทั้งที่ข้อมูลอยู่ในระบบครบแล้ว (ฝั่งหนังสือมีหน้าพิมพ์มาตั้งแต่แรก)
+describe('แบบใบลาสำหรับพิมพ์', () => {
+  const dayOffset = (n) => new Date(Date.parse(`${todayInBangkok()}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+  function approvedLeave(over = {}) {
+    const { id } = createLeaveRequest({
+      requesterId: teacherUser.id, leaveType: 'sick', reason: 'เป็นไข้ พักรักษาตัว',
+      approverId: seed.userIds.director01, startDate: dayOffset(1000), endDate: dayOffset(1002), ...over,
+    });
+    approveLeaveRequest({ id, note: 'อนุญาตตามที่ขอ', actorUser: loadUserForTest(seed.userIds.director01) });
+    return id;
+  }
+
+  test('พิมพ์ได้ และมีทุกช่องที่แบบใบลาราชการต้องมี', async () => {
+    const id = approvedLeave({ startDate: dayOffset(1100), endDate: dayOffset(1102) });
+    const res = await dispatchGet(teacherUser, `/leave/${id}/print`, {});
+    assert.equal(res.status, 200);
+    for (const field of ['เขียนที่', 'เรื่อง', 'เรียน', 'ข้าพเจ้า', 'ตำแหน่ง', 'มีกำหนด',
+      'ความเห็นผู้บังคับบัญชา', 'คำสั่ง', 'สถิติการลาในปีงบประมาณ']) {
+      assert.ok(res.body.includes(field), `แบบใบลาต้องมีช่อง "${field}"`);
+    }
+    assert.ok(res.body.includes('อนุญาตตามที่ขอ'), 'ต้องมีความเห็นของผู้อนุญาต');
+    assert.match(res.body, /☑ อนุญาต/, 'ใบที่อนุญาตแล้วต้องติ๊กช่อง "อนุญาต"');
+  });
+
+  test('ตารางสถิติการลานับเฉพาะใบที่อนุญาตแล้วในปีงบประมาณเดียวกัน และไม่นับใบนี้ซ้ำ', () => {
+    const requesterId = seed.userIds.head_acad;
+    const fy = fiscalYearRange(todayInBangkok());
+    const inYear = (n) => {
+      // วันที่ n วันหลังต้นปีงบประมาณ — อยู่ในปีงบประมาณเดียวกันแน่นอน
+      return new Date(Date.parse(`${fy.start}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+    };
+    db.prepare('DELETE FROM leave_requests WHERE requester_id = ?').run(requesterId);
+    const mk = (leaveType, from, days, status) => {
+      const id = uuid();
+      db.prepare(`
+        INSERT INTO leave_requests (id, requester_id, leave_type, start_date, end_date, days_count, reason, status, approver_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'สร้างสำหรับนับสถิติ', ?, ?, ?, ?)`)
+        .run(id, requesterId, leaveType, inYear(from), inYear(from + days - 1), days, status, seed.userIds.admin, nowIso(), nowIso());
+      return id;
+    };
+    mk('sick', 10, 3, 'approved');
+    mk('sick', 20, 2, 'approved');
+    mk('personal', 30, 1, 'approved');
+    mk('sick', 40, 9, 'pending');    // ยังไม่อนุญาต — ต้องไม่ถูกนับ
+    mk('sick', 50, 7, 'rejected');   // ไม่อนุญาต — ต้องไม่ถูกนับ
+    const thisOne = mk('sick', 60, 4, 'approved');
+
+    const stats = leaveStatsForFiscalYear({ requesterId, onDate: inYear(60), excludeLeaveId: thisOne });
+    assert.equal(stats.byType.sick?.days, 5, 'ลาป่วยที่อนุญาตแล้วก่อนหน้านี้ต้องเป็น 3+2 = 5 วัน (ไม่รวมใบนี้/รอ/ไม่อนุญาต)');
+    assert.equal(stats.byType.personal?.days, 1);
+    assert.equal(stats.yearBe, fy.yearBe);
+  });
+
+  test('ปีงบประมาณไทยเริ่ม 1 ตุลาคม', () => {
+    assert.deepEqual(fiscalYearRange('2026-09-30'), { start: '2025-10-01', end: '2026-09-30', yearBe: 2569 });
+    assert.deepEqual(fiscalYearRange('2026-10-01'), { start: '2026-10-01', end: '2027-09-30', yearBe: 2570 });
+  });
+
+  test('ชื่อและตำแหน่งบนใบลาต้องเป็นสำเนา ณ วันที่ลงนาม ไม่เปลี่ยนตามโปรไฟล์', async () => {
+    const id = approvedLeave({ startDate: dayOffset(1200), endDate: dayOffset(1201) });
+    const at = db.prepare("SELECT signer_name, signer_position FROM leave_signatures WHERE leave_request_id = ? AND step = 'approved'").get(id);
+    db.prepare("UPDATE users SET last_name = 'เปลี่ยนหลังลงนามแล้ว', position = 'ย้ายไปโรงเรียนอื่น' WHERE id = ?")
+      .run(seed.userIds.director01);
+    const res = await dispatchGet(teacherUser, `/leave/${id}/print`, {});
+    assert.ok(res.body.includes(at.signer_name), 'ต้องคงชื่อผู้อนุญาต ณ วันที่ลงนาม');
+    assert.ok(!res.body.includes('เปลี่ยนหลังลงนามแล้ว') && !res.body.includes('ย้ายไปโรงเรียนอื่น'),
+      'ต้องไม่เอาชื่อ/ตำแหน่งปัจจุบันมาแทนหลักฐานบนใบลาที่ลงนามไปแล้ว');
+  });
+
+  test('ผู้อนุญาตที่ไม่มีรูปลายเซ็นต้องยังได้ที่ว่างให้เซ็นด้วยปากกา', async () => {
+    db.prepare('UPDATE users SET signature_image = NULL WHERE id = ?').run(seed.userIds.vicedir01);
+    const id = approvedLeave({ startDate: dayOffset(1300), endDate: dayOffset(1301) });
+    const res = await dispatchGet(teacherUser, `/leave/${id}/print`, {});
+    assert.match(res.body, /sig-space/, 'ต้องเว้นที่ว่างไว้ให้ลงลายมือชื่อจริง');
+    assert.ok(res.body.includes('(ลงชื่อ)'), 'ต้องมีเส้น (ลงชื่อ) ให้เซ็น');
+  });
+
+  // ใบลาป่วยมีข้อมูลสุขภาพซึ่งเป็นเรื่องส่วนตัว หน้าพิมพ์ต้องคุมสิทธิ์เท่ากับหน้ารายละเอียด
+  test('คนที่ไม่เกี่ยวข้องพิมพ์ใบลาของคนอื่นไม่ได้', async () => {
+    const id = approvedLeave({ startDate: dayOffset(1400), endDate: dayOffset(1401) });
+    const outsider = loadUserForTest(seed.userIds.reg001);
+    assert.equal((await dispatchGet(outsider, `/leave/${id}/print`, {})).status, 404);
+    // ผู้ขอกับผู้อนุญาตยังเปิดได้ตามปกติ
+    assert.equal((await dispatchGet(teacherUser, `/leave/${id}/print`, {})).status, 200);
+    assert.equal((await dispatchGet(loadUserForTest(seed.userIds.director01), `/leave/${id}/print`, {})).status, 200);
   });
 });
 
@@ -2145,9 +2341,11 @@ describe('เพดานความยาวของช่องข้อค�
 describe('วันที่ของใบลาและการมอบหมายรักษาการแทน', () => {
   const approver = () => seed.userIds.director01;
   const mkLeave = (over = {}) => createLeaveRequest({
-    requesterId: teacherUser.id, leaveType: 'sick', startDate: '2026-10-01', endDate: '2026-10-02',
+    requesterId: teacherUser.id, leaveType: 'sick', ...nextLeaveWindow(2),
     reason: 'ทดสอบ', approverId: approver(), ...over,
   });
+  // ช่วงวันที่ไม่ซ้ำกับใบอื่น แต่คุมความยาวได้ตามที่เทสต์ต้องการ
+  const spanDays = (days) => nextLeaveWindow(days);
   const mkDelegation = (over = {}) => createDelegation({
     delegatorId: seed.userIds.director01, delegateId: seed.userIds.vicedir01,
     startDate: '2026-10-01', endDate: '2026-10-05', reason: 'ทดสอบ', createdBy: seed.userIds.director01, ...over,
@@ -2183,7 +2381,7 @@ describe('วันที่ของใบลาและการมอบห�
     assert.throws(() => mkLeave({ startDate: '2026-10-01', endDate: '2126-10-02' }), /ยาวผิดปกติ/);
     assert.throws(() => mkDelegation({ startDate: '2026-10-01', endDate: '2126-10-02' }), /ยาวผิดปกติ/);
     // ช่วงที่สมเหตุสมผลต้องยังผ่าน ไม่ใช่ปิดตายไปเลย
-    assert.ok(mkLeave({ startDate: '2026-10-01', endDate: '2026-12-28' }).id, 'ลา ~3 เดือนต้องยังทำได้');
+    assert.ok(mkLeave(spanDays(88)).id, 'ลา ~3 เดือนต้องยังทำได้');
   });
 
   test('ข้อความยาวเกินกำหนดต้องถูกปฏิเสธ', () => {
@@ -2200,8 +2398,8 @@ describe('วันที่ของใบลาและการมอบห�
   });
 
   test('จำนวนวันลาคำนวณถูกต้อง นับรวมวันแรกและวันสุดท้าย', () => {
-    assert.equal(mkLeave({ startDate: '2026-10-01', endDate: '2026-10-01' }).daysCount, 1);
-    assert.equal(mkLeave({ startDate: '2026-10-01', endDate: '2026-10-03' }).daysCount, 3);
+    assert.equal(mkLeave(spanDays(1)).daysCount, 1);
+    assert.equal(mkLeave(spanDays(3)).daysCount, 3);
     // ข้ามเดือนและปีอธิกสุรทิน
     assert.equal(mkLeave({ startDate: '2028-02-27', endDate: '2028-03-01' }).daysCount, 4);
   });

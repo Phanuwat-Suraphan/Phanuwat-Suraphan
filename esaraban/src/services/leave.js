@@ -1,4 +1,4 @@
-import { db, uuid, nowIso, audit } from '../db.js';
+import { db, uuid, nowIso, audit, todayInBangkok } from '../db.js';
 import { fmtThaiDateShort } from '../render.js';
 import { notifyUser } from './notify.js';
 import { createDelegation } from './delegation.js';
@@ -95,6 +95,8 @@ export function createLeaveRequest({ requesterId, leaveType, startDate, endDate,
     throw httpError(400, 'ผู้ที่เลือกไม่มีอำนาจอนุญาต/อนุมัติการลา — ต้องเป็นผู้อำนวยการ รองผู้อำนวยการ หัวหน้าฝ่าย หรือผู้ดูแลระบบ');
   }
   if (delegateId) assertActiveUser(delegateId, 'ผู้รักษาการแทน');
+  assertNotBackdatedTypo(startDate);
+  assertNoOverlappingLeave({ requesterId, startDate, endDate, leaveType });
 
   const id = uuid();
   const now = nowIso();
@@ -117,6 +119,80 @@ export function createLeaveRequest({ requesterId, leaveType, startDate, endDate,
   });
   audit({ userId: requesterId, action: 'leave_request_created', tableName: 'leave_requests', recordId: id, detail: { leaveType, startDate, endDate, daysCount } });
   return { id, daysCount };
+}
+
+// ยื่นใบลาย้อนหลังได้ตามปกติ — ลาป่วยกะทันหันต้องยื่นตอนกลับมาปฏิบัติงานอยู่แล้ว จึงห้ามบล็อกการ
+// ย้อนหลังทั้งหมด แต่ที่ย้อนไปไกลเกินหนึ่งปีคือพิมพ์ปีผิด ไม่ใช่การลาจริง (เจอบ่อยที่สุดคือกรอกปี พ.ศ.
+// ลงในช่องที่เป็น ค.ศ. หรือหยิบปีเก่ามาจากปฏิทินที่เปิดค้างไว้) ถ้าปล่อยผ่าน ใบลานั้นจะไปโผล่ใน
+// สถิติการลาของปีงบประมาณที่ปิดไปแล้ว แล้วยอดวันลาสะสมของคนนั้นผิดทั้งปี โดยไม่มีอะไรฟ้อง
+const MAX_BACKDATE_DAYS = 366;
+function assertNotBackdatedTypo(startDate) {
+  const today = todayInBangkok();
+  const daysBack = Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86400000);
+  if (daysBack > MAX_BACKDATE_DAYS) {
+    throw httpError(400, `วันที่เริ่มลาย้อนหลังไปถึง ${fmtThaiDateShort(startDate)} ซึ่งเกิน 1 ปี — กรุณาตรวจสอบว่ากรอกปีถูกต้องหรือไม่ (ช่องวันที่ใช้ปี ค.ศ. ไม่ใช่ พ.ศ.)`);
+  }
+}
+
+// สถานะที่ถือว่า "จองวันนั้นไว้แล้ว" — คำขอที่ถูกปฏิเสธหรือยกเลิกไปแล้วไม่นับ ยื่นทับได้ตามปกติ
+const BLOCKING_LEAVE_STATUSES = ['pending', 'approved'];
+
+/**
+ * กันไม่ให้คนเดียวยื่นใบลาทับช่วงวันเดิมของตัวเอง
+ *
+ * เดิมยื่นทับกันได้ไม่จำกัด ทดสอบแล้วยืนยัน: ยื่นลากิจ 10–12 แล้วยื่นลาป่วย 11–13 ต่อทันที ระบบรับไว้
+ * ทั้งสองใบและอนุญาตได้ทั้งคู่ ผลคือวันที่ 11–12 ถูกนับเป็นวันลาสองครั้งในสถิติการลาของปีงบประมาณ
+ * (ยอดวันลาสะสมของครูคนนั้นเกินจริง ซึ่งใช้ประกอบการพิจารณาเลื่อนขั้นเงินเดือน) และผู้บริหารดูตาราง
+ * แล้วไม่รู้ว่าวันนั้นครูคนนี้ลาด้วยเหตุอะไรกันแน่ ส่วนใหญ่เกิดจากกดยื่นซ้ำเพราะคิดว่าใบแรกไม่ผ่าน
+ *
+ * ปิดกั้นแทนการเตือน เพราะการลาทับซ้อนของคนคนเดียวไม่มีกรณีที่ถูกต้อง — ถ้าจะเปลี่ยนประเภทหรือ
+ * ขยายวัน ต้องยกเลิกใบเดิมก่อน ซึ่งเป็นสิ่งที่ระเบียบกำหนดให้ทำอยู่แล้ว
+ */
+function assertNoOverlappingLeave({ requesterId, startDate, endDate, leaveType }) {
+  const clash = db.prepare(`
+    SELECT id, leave_type, start_date, end_date, status FROM leave_requests
+    WHERE requester_id = :requester
+      AND status IN (${BLOCKING_LEAVE_STATUSES.map((s) => `'${s}'`).join(',')})
+      -- ช่วงสองช่วงทับกันเมื่อ "เริ่มก่อนที่อีกช่วงจะจบ" และ "จบหลังที่อีกช่วงจะเริ่ม" (เทียบเป็นข้อความได้
+      -- เพราะวันที่เก็บเป็น YYYY-MM-DD ซึ่งเรียงตามลำดับเวลาอยู่แล้ว)
+      AND start_date <= :end AND end_date >= :start
+    ORDER BY start_date LIMIT 1
+  `).get({ requester: requesterId, start: startDate, end: endDate });
+  if (!clash) return;
+  const same = clash.leave_type === leaveType ? '' : `(${LEAVE_TYPE_LABEL[clash.leave_type]}) `;
+  const statusWord = clash.status === 'approved' ? `${decisionVerb(clash.leave_type)}แล้ว` : `รอ${decisionVerb(clash.leave_type)}`;
+  throw httpError(409, `ช่วงวันที่นี้ทับกับใบลาเดิมของคุณ ${same}${fmtThaiDateShort(clash.start_date)} ถึง ${fmtThaiDateShort(clash.end_date)} ซึ่ง${statusWord} — หากต้องการแก้ไข กรุณายกเลิกใบเดิมก่อน`);
+}
+
+/**
+ * ปีงบประมาณไทยของวันที่หนึ่งๆ — เริ่ม 1 ตุลาคม ถึง 30 กันยายน ปีถัดไป
+ * (เช่น 1 ต.ค. 2568 – 30 ก.ย. 2569 คือปีงบประมาณ 2569)
+ */
+export function fiscalYearRange(dateStr) {
+  const [y, m] = dateStr.split('-').map(Number);
+  const startYearAd = m >= 10 ? y : y - 1;
+  return { start: `${startYearAd}-10-01`, end: `${startYearAd + 1}-09-30`, yearBe: startYearAd + 1 + 543 };
+}
+
+/**
+ * สถิติการลาในปีงบประมาณเดียวกับใบลาใบนี้ — ตารางที่อยู่ท้ายแบบใบลาราชการ
+ *
+ * แบบใบลาของทางราชการมีช่อง "ลามาแล้ว / ลาครั้งนี้ / รวมเป็น" ให้เจ้าหน้าที่กรอก ซึ่งเดิมต้องไปไล่นับ
+ * จากแฟ้มใบลาเก่าด้วยมือทุกครั้ง ทั้งที่ระบบมีข้อมูลครบอยู่แล้ว — นับเฉพาะใบที่อนุญาตแล้วและไม่นับ
+ * ใบนี้เอง (ใบนี้คือช่อง "ลาครั้งนี้")
+ */
+export function leaveStatsForFiscalYear({ requesterId, onDate, excludeLeaveId = null }) {
+  const { start, end, yearBe } = fiscalYearRange(onDate);
+  const rows = db.prepare(`
+    SELECT leave_type, SUM(days_count) days, COUNT(*) times FROM leave_requests
+    WHERE requester_id = :requester AND status = 'approved'
+      AND start_date >= :start AND start_date <= :end
+      AND (:exclude IS NULL OR id != :exclude)
+    GROUP BY leave_type
+  `).all({ requester: requesterId, start, end, exclude: excludeLeaveId });
+  const byType = {};
+  for (const r of rows) byType[r.leave_type] = { days: r.days, times: r.times };
+  return { yearBe, start, end, byType };
 }
 
 /**

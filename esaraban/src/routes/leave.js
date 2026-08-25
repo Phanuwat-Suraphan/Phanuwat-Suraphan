@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { router, html, json, contentDispositionHeader } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateShort, fmtThaiDateLong } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateShort, fmtThaiDateLong, SCHOOL_NAME } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, audit, beYear } from '../db.js';
 import {
@@ -12,7 +12,7 @@ import {
   approveLeaveRequest, rejectLeaveRequest, cancelLeaveRequest, canSeeLeaveRequest,
   listLeaveSignatures, listLeaveAttachments, getLeaveAttachment, insertLeaveAttachment,
   assertAllowedLeaveFile, MAX_LEAVE_FILE_BYTES, httpError,
-  listLeaveApprovers,
+  listLeaveApprovers, leaveStatsForFiscalYear,
 } from '../services/leave.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream } from '../services/googleDrive.js';
 
@@ -240,7 +240,10 @@ router.get('/leave/:id', requirePage((ctx) => {
         <button class="btn btn-primary btn-sm" onclick="decide('approve')">✅ ${esc(decisionVerb(req.leave_type))}</button>
         <button class="btn btn-outline btn-sm" onclick="decide('reject')">❌ ไม่${esc(decisionVerb(req.leave_type))}</button>
       </div>` : ''}
-      ${canCancel ? `<button class="btn btn-outline btn-sm" style="margin-top:1rem" onclick="cancelRequest()">ยกเลิกคำขอ</button>` : ''}
+      <div class="chip-row" style="margin-top:1rem">
+        <a class="btn btn-outline btn-sm" href="/leave/${req.id}/print" target="_blank" rel="noopener">🖨️ พิมพ์แบบใบลา / บันทึกเป็น PDF</a>
+        ${canCancel ? `<button class="btn btn-outline btn-sm" onclick="cancelRequest()">ยกเลิกคำขอ</button>` : ''}
+      </div>
     </div>
     ${evidenceHtml}
     ${signatureHtml}
@@ -268,6 +271,152 @@ router.get('/leave/:id', requirePage((ctx) => {
       }
     </script>`;
   html(ctx, 200, layout({ user: ctx.user, title: 'รายละเอียดคำขอ', path: '/leave', content }));
+}));
+
+// ---------------- แบบใบลาสำหรับพิมพ์ ----------------
+//
+// โรงเรียนยังต้องมี "ใบลากระดาษ" เก็บเข้าแฟ้มตามระเบียบ แม้จะยื่นผ่านระบบแล้วก็ตาม — เดิมโมดูลนี้ไม่มี
+// หน้าพิมพ์เลย ครูจึงต้องไปกรอกแบบฟอร์มกระดาษซ้ำอีกใบด้วยมือ ทั้งที่ข้อมูลทั้งหมดอยู่ในระบบครบแล้ว
+// (ฝั่งหนังสือมี /documents/:id/print มาตั้งแต่แรก ฝั่งใบลาตกหล่นไป)
+//
+// จัดหน้าให้ตรงกับแบบใบลาของทางราชการ รวมถึงตาราง "สถิติการลาในปีงบประมาณนี้" ที่เดิมเจ้าหน้าที่ต้อง
+// ไล่นับจากแฟ้มใบลาเก่าด้วยมือทุกครั้ง — ระบบมีข้อมูลอยู่แล้วจึงกรอกให้เสร็จ
+const LEAVE_STAT_TYPES = ['sick', 'personal', 'vacation', 'maternity', 'ordination'];
+
+router.get('/leave/:id/print', requirePage((ctx) => {
+  const req = getLeaveRequest(ctx.params.id);
+  if (!req || !canSeeLeaveRequest(req, ctx.user)) {
+    return html(ctx, 404, layout({ user: ctx.user, title: 'ไม่พบข้อมูล', path: '/leave', content: '<p>ไม่พบคำขอนี้</p>' }));
+  }
+  const signatures = listLeaveSignatures(req.id);
+  const sigOf = (stepName) => signatures.find((s) => s.step === stepName) || null;
+  const requesterSig = sigOf('requested');
+  const decisionSig = sigOf('approved') || sigOf('rejected');
+  const verb = decisionVerb(req.leave_type);
+  const isTravel = req.leave_type === 'official_travel';
+
+  const stats = leaveStatsForFiscalYear({ requesterId: req.requester_id, onDate: req.start_date, excludeLeaveId: req.id });
+  const requesterName = requesterSig?.signer_name
+    || `${req.requester_prefix || ''}${req.requester_first} ${req.requester_last}`;
+  const requesterPosition = requesterSig?.signer_position || '';
+
+  // บล็อกลายเซ็น: มีรูปก็ใส่รูป ไม่มีก็เว้นที่ว่างไว้ให้เซ็นด้วยปากกาบนกระดาษ — เหตุผลเดียวกับหน้าพิมพ์
+  // ของหนังสือ คือส่วนใหญ่ไม่ได้สแกนลายเซ็นเก็บไว้ในระบบ และใบลากระดาษต้องมีลายมือชื่อจริง
+  const sigBlock = (sig, caption, fallbackName = '') => `
+    <div class="sig">
+      ${sig?.signature_image
+        ? `<img src="${esc(sig.signature_image)}" alt="ลายเซ็น ${esc(sig.signer_name)}" />`
+        : '<div class="sig-space"></div>'}
+      <div class="sig-name">(ลงชื่อ) ....................................................</div>
+      <div class="sig-name">( ${esc(sig?.signer_name || fallbackName || '')} )</div>
+      ${sig?.signer_position ? `<div class="sig-name">ตำแหน่ง ${esc(sig.signer_position)}</div>` : '<div class="sig-name">ตำแหน่ง ..............................................</div>'}
+      <div class="sig-cap">${esc(caption)}</div>
+    </div>`;
+
+  const statRows = LEAVE_STAT_TYPES.map((t) => {
+    const before = stats.byType[t]?.days || 0;
+    const thisTime = req.leave_type === t ? req.days_count : 0;
+    return `<tr>
+      <td>${esc(LEAVE_TYPE_LABEL[t])}</td>
+      <td class="num">${before}</td>
+      <td class="num">${thisTime || '-'}</td>
+      <td class="num">${before + thisTime}</td>
+    </tr>`;
+  }).join('');
+
+  const content = `<!doctype html>
+<html lang="th"><head><meta charset="utf-8" />
+<title>${esc(LEAVE_TYPE_LABEL[req.leave_type])} — ${esc(requesterName)}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: "Noto Sans Thai", "TH Sarabun New", "Sarabun", sans-serif; font-size: 16pt; line-height: 1.8;
+    max-width: 210mm; margin: 0 auto; padding: 18mm 20mm; color: #111; }
+  .toolbar { display: flex; justify-content: flex-end; gap: .5rem; margin-bottom: 1.2rem; }
+  .toolbar button, .toolbar a { font-family: inherit; font-size: 11pt; padding: .5rem 1rem; border-radius: 8px;
+    border: 1px solid #ccc; background: #f4f4f4; cursor: pointer; text-decoration: none; color: #111; }
+  h1 { text-align: center; font-size: 20pt; margin: 0 0 .3rem; }
+  .place { text-align: right; margin-bottom: 1rem; line-height: 1.6; }
+  p { margin: .25rem 0; }
+  .indent { text-indent: 2.5em; }
+  .row { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+  .sig { text-align: center; width: 240px; margin-left: auto; margin-top: 1.6rem; }
+  .sig img { max-height: 60px; max-width: 200px; display: block; margin: 0 auto; }
+  /* คนที่ไม่ได้เก็บรูปลายเซ็นไว้ในโปรไฟล์ — เว้นช่องสูงเท่ารูปไว้ให้เซ็นด้วยปากกา */
+  .sig .sig-space { height: 60px; }
+  .sig-name { font-size: 14pt; }
+  .sig-cap { font-size: 13pt; color: #444; margin-top: .2rem; }
+  table.stat { border-collapse: collapse; width: 100%; margin-top: .6rem; font-size: 14pt; }
+  table.stat th, table.stat td { border: 1px solid #111; padding: .25rem .5rem; }
+  table.stat th { background: #f0f0f0; font-weight: 700; }
+  table.stat .num { text-align: center; }
+  .box { border: 1px solid #111; padding: .6rem .8rem; margin-top: 1rem; min-height: 130px; }
+  .box h3 { margin: 0 0 .3rem; font-size: 15pt; }
+  .two-box { display: flex; gap: 1rem; }
+  .two-box > * { flex: 1; }
+  .mark { font-size: 15pt; }
+  @media print { .toolbar { display: none; } body { padding: 0; } }
+</style>
+</head>
+<body>
+  <div class="toolbar">
+    <a href="/leave/${req.id}">← กลับหน้าคำขอ</a>
+    <button onclick="window.print()">🖨️ พิมพ์ / บันทึกเป็น PDF</button>
+  </div>
+
+  <h1>${isTravel ? 'บันทึกข้อความ' : 'แบบใบลา' + esc(LEAVE_TYPE_LABEL[req.leave_type]).replace('ลา', '')}</h1>
+  <div class="place">
+    เขียนที่ ${esc(SCHOOL_NAME)}<br />
+    วันที่ ${fmtThaiDateLong(req.created_at)}
+  </div>
+
+  <p><strong>เรื่อง</strong> ขอ${esc(LEAVE_TYPE_LABEL[req.leave_type])}</p>
+  <p><strong>เรียน</strong> ผู้อำนวยการ${esc(SCHOOL_NAME)}</p>
+
+  <p class="indent">
+    ข้าพเจ้า ${esc(requesterName)} ตำแหน่ง ${esc(requesterPosition || '.....................................')}
+    สังกัด ${esc(SCHOOL_NAME)}
+    ขอ${esc(LEAVE_TYPE_LABEL[req.leave_type])} เนื่องจาก ${esc(req.reason)}
+    ${req.destination ? `ณ ${esc(req.destination)}` : ''}
+    ตั้งแต่วันที่ ${fmtThaiDateLong(req.start_date)} ถึงวันที่ ${fmtThaiDateLong(req.end_date)}
+    มีกำหนด ${req.days_count} วัน
+  </p>
+  <p class="indent">
+    ในระหว่าง${isTravel ? 'ไปราชการ' : 'ลา'} จะติดต่อข้าพเจ้าได้ที่
+    ${esc(req.contact_info || '.................................................................')}
+  </p>
+  ${req.delegate_id ? `<p class="indent">
+    และขอมอบหมายให้ ${esc(req.delegate_prefix || '')}${esc(req.delegate_first)} ${esc(req.delegate_last)}
+    เป็นผู้ปฏิบัติราชการแทนในระหว่างที่ข้าพเจ้าไม่อยู่
+  </p>` : ''}
+
+  ${sigBlock(requesterSig, 'ผู้ขอ' + (isTravel ? 'อนุมัติ' : 'ลา'), requesterName)}
+
+  ${isTravel ? '' : `
+  <h3 style="margin-top:1.6rem;font-size:15pt">สถิติการลาในปีงบประมาณ ${stats.yearBe}</h3>
+  <p style="font-size:12pt;color:#444;margin-top:-.2rem">
+    (นับเฉพาะใบลาที่${esc(verb)}แล้วในระบบ ตั้งแต่ ${fmtThaiDateLong(stats.start)} ถึง ${fmtThaiDateLong(stats.end)})
+  </p>
+  <table class="stat">
+    <thead><tr><th>ประเภทการลา</th><th>ลามาแล้ว (วัน)</th><th>ลาครั้งนี้ (วัน)</th><th>รวมเป็น (วัน)</th></tr></thead>
+    <tbody>${statRows}</tbody>
+  </table>`}
+
+  <div class="two-box">
+    <div class="box">
+      <h3>ความเห็นผู้บังคับบัญชา</h3>
+      <p>${esc(req.decision_note || '')}</p>
+    </div>
+    <div class="box">
+      <h3>คำสั่ง</h3>
+      <p class="mark">${req.status === 'approved' ? '☑' : '☐'} ${esc(verb)}</p>
+      <p class="mark">${req.status === 'rejected' ? '☑' : '☐'} ไม่${esc(verb)}</p>
+      ${req.decided_at ? `<p style="font-size:13pt">เมื่อ ${fmtThaiDateLong(req.decided_at)}</p>` : ''}
+    </div>
+  </div>
+
+  ${sigBlock(decisionSig, `ผู้${esc(verb)}`)}
+</body></html>`;
+  html(ctx, 200, content);
 }));
 
 router.post('/leave', requireApi(async (ctx) => {

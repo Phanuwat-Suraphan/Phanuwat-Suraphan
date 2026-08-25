@@ -538,6 +538,23 @@ export function migrate() {
     console.warn(`[security] ยกเลิกการมอบหมายรักษาการแทน ${brokenDelegations} รายการที่วันที่ไม่ถูกต้อง (รายการเหล่านี้จะมีผลตลอดไปถ้าปล่อยไว้)`);
   }
 
+  // ใบลาที่ช่วงวันที่เป็นไปไม่ได้ ค้างอยู่ในสถานะ "รออนุญาต" ตลอดไป — เกิดจากช่วงที่ยังไม่มีการตรวจวันที่
+  // (พบของจริง 2 ใบ: ใบหนึ่งกรอกปี พ.ศ. ลงในช่องปี ค.ศ. อีกใบยาว 36,526 วันเพราะพิมพ์ปีผิด)
+  // ตอนนี้ต้นทางปฏิเสธค่าแบบนี้แล้ว แต่ถ้าปล่อยแถวเก่าไว้ นอกจากค้างในกล่องรออนุญาตไม่มีวันหมดแล้ว
+  // ยังไปชนกับการตรวจ "ลาทับช่วงเดิม" ทำให้เจ้าตัวยื่นใบลาใหม่ในช่วงนั้นไม่ได้อีกเลย
+  const brokenLeaves = db.prepare(`
+    UPDATE leave_requests SET status = 'cancelled', updated_at = ?
+    WHERE status = 'pending'
+      AND (start_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+        OR end_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+        -- ปี 2100 ขึ้นไปคือพิมพ์ปีผิดแน่นอน (ปี พ.ศ. ที่หลุดมาลงช่อง ค.ศ. จะได้ 25xx/26xx)
+        OR start_date >= '2100-01-01' OR end_date >= '2100-01-01'
+        OR days_count > 366 OR end_date < start_date)
+  `).run(nowIso()).changes;
+  if (brokenLeaves) {
+    console.warn(`[data] ยกเลิกใบลา ${brokenLeaves} ใบที่ช่วงวันที่เป็นไปไม่ได้ (ค้างอยู่ในกล่องรออนุญาตตลอดไปถ้าปล่อยไว้)`);
+  }
+
   const leaveCols = db.prepare("PRAGMA table_info(leave_requests)").all().map((c) => c.name);
   if (!leaveCols.includes('delegate_id')) {
     db.exec('ALTER TABLE leave_requests ADD COLUMN delegate_id TEXT');
