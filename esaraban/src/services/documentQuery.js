@@ -3,8 +3,8 @@
 // สามที่นี้ต้องให้ผลตรงกันเป๊ะ ถ้าปล่อยให้ต่างคนต่างประกอบ SQL เอง สิ่งที่จะเกิดคือธุรการกรองบนหน้าเว็บ
 // ได้ 40 ฉบับ แต่กด "ออก Excel" แล้วได้ 63 ฉบับ (หรือแย่กว่านั้นคือไฟล์ที่ส่งออกมีหนังสือลับที่คนนั้น
 // ไม่มีสิทธิ์เห็นติดไปด้วย) โดยไม่มีอะไรฟ้องเลยจนกว่าจะมีคนเอาสองอันมาเทียบกัน
-import { db, todayInBangkok } from '../db.js';
-import { LABELS } from '../render.js';
+import { db, todayInBangkok, beYear } from '../db.js';
+import { LABELS, fmtThaiDateLong } from '../render.js';
 import { visibleDocumentsSqlFilter } from './workflow.js';
 
 // สถานะที่ถือว่า "ปิดเรื่องแล้ว" — เรื่องพวกนี้ไม่นับว่าเลยกำหนดอีก ต้องตรงกับตัวเลขบนแดชบอร์ด
@@ -46,8 +46,13 @@ export function buildDocumentQuery(user, query = {}) {
     secret: pick(query.secret, Object.keys(LABELS.SECRET_LABEL)),
     from: /^\d{4}-\d{2}-\d{2}$/.test(query.from || '') ? query.from : '',
     to: /^\d{4}-\d{2}-\d{2}$/.test(query.to || '') ? query.to : '',
+    // ทะเบียนหนังสือรับ/ส่งเป็น "เล่มต่อปี" ตามระเบียบงานสารบรรณ (เลขรับเริ่มที่ 1 ใหม่ทุกวันที่ 1 ม.ค.)
+    // เดิมกรองได้แค่ช่วงวันที่ซึ่งธุรการต้องพิมพ์เป็น ค.ศ. เอง ทั้งที่สิ่งที่ต้องการจริงคือ "ทะเบียนปี ๒๕๖๙"
+    // กรองจาก year_be ตรงๆ ไม่ใช่จาก created_at เพราะเลขบนหน้าเอกสารคือปีนั้น
+    year: /^\d{4}$/.test(query.year || '') ? Number(query.year) : '',
     overdue: query.overdue === '1',
   };
+  if (f.year) { where.push('d.year_be = :yearBe'); params.yearBe = f.year; }
   if (f.dept) { where.push('d.department_id = :dept'); params.dept = f.dept; }
   if (f.priority) { where.push('d.priority = :priority'); params.priority = f.priority; }
   if (f.secret) { where.push('d.secret_level = :secret'); params.secret = f.secret; }
@@ -77,6 +82,19 @@ const SELECT_COLUMNS = `
   JOIN document_types dt ON dt.id = d.doc_type_id
   JOIN departments dep ON dep.id = d.department_id`;
 
+/** ปี พ.ศ. ที่มีหนังสืออยู่จริง (เฉพาะที่ผู้ใช้คนนี้เห็นได้) — ใช้สร้างตัวเลือก "ทะเบียนปี ..." */
+export function listRegisterYears(user, direction) {
+  const visible = visibleDocumentsSqlFilter(user);
+  const where = ['d.deleted_at IS NULL', visible.sql];
+  const params = { ...visible.params };
+  if (direction && direction !== 'all') { where.push('d.direction = :direction'); params.direction = direction; }
+  const years = db.prepare(`SELECT DISTINCT d.year_be y FROM documents d WHERE ${where.join(' AND ')} ORDER BY y DESC`)
+    .all(params).map((r) => r.y);
+  // ปีปัจจุบันต้องมีให้เลือกเสมอ แม้ยังไม่มีหนังสือสักฉบับ (ต้นปีที่เพิ่งขึ้นปีใหม่)
+  const current = beYear();
+  return years.includes(current) ? years : [current, ...years];
+}
+
 export function countDocuments({ whereSql, params }) {
   return db.prepare(`SELECT COUNT(*) as c FROM documents d WHERE ${whereSql}`).get(params).c;
 }
@@ -98,8 +116,12 @@ export function describeFilters({ q, statusFilter, f }) {
   }
   if (f.priority) parts.push(`ความเร็ว ${LABELS.PRIORITY_LABEL[f.priority]}`);
   if (f.secret) parts.push(`ชั้นความลับ ${LABELS.SECRET_LABEL[f.secret]}`);
-  if (f.from) parts.push(`ตั้งแต่ ${f.from}`);
-  if (f.to) parts.push(`ถึง ${f.to}`);
+  // ข้อความนี้ถูกพิมพ์กำกับหัว "ทะเบียนหนังสือรับ/ส่ง" ที่เก็บเข้าแฟ้มเป็นเอกสารราชการ — วันที่บนนั้น
+  // ต้องเป็น พ.ศ. แบบไทย ไม่ใช่ค่าดิบจาก <input type="date"> ที่เป็น ค.ศ. (เดิมพิมพ์ออกมาว่า
+  // "เงื่อนไข: ตั้งแต่ 2026-08-01 · ถึง 2026-08-31" ซึ่งอ่านไม่ได้ความในทะเบียนของโรงเรียน)
+  if (f.from) parts.push(`ตั้งแต่ ${fmtThaiDateLong(f.from)}`);
+  if (f.to) parts.push(`ถึง ${fmtThaiDateLong(f.to)}`);
+  if (f.year) parts.push(`ปี พ.ศ. ${f.year}`);
   if (f.overdue) parts.push('เฉพาะที่เลยกำหนดและยังไม่ปิด');
   return parts.join(' · ');
 }

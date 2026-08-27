@@ -29,6 +29,7 @@ const {
   canApproveLeave, leaveStatsForFiscalYear, fiscalYearRange,
 } = await import('../src/services/leave.js');
 const { SCHOOL_POSITIONS } = await import('../src/services/positions.js');
+const { buildDocumentQuery, describeFilters, listRegisterYears } = await import('../src/services/documentQuery.js');
 const { createDelegation } = await import('../src/services/delegation.js');
 const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, planBackupCleanup, thaiDateParts } = await import('../src/services/dbBackup.js');
 const sqliteModule = await import('node:sqlite');
@@ -821,7 +822,13 @@ describe('ทำลายหนังสือ: ผู้เสนอกับ�
 
   function batchReadyToApprove(actorUser = registrarUser) {
     const doc = makeDoc({ title: 'เอกสารครบกำหนดทำลาย' });
-    db.prepare("UPDATE documents SET status = 'completed', retention_until = '2020-01-01' WHERE id = ?").run(doc.id);
+    // ทำให้เป็นหนังสือเก่าจริงๆ ด้วยการย้อน "ปี พ.ศ. ที่ออกเลข" ไม่ใช่ย้อนแค่คอลัมน์วันครบกำหนด —
+    // ระบบคิดวันครบกำหนดใหม่จาก year_be + ชั้นอายุการเก็บอีกครั้งก่อนลงมือทำลายจริง (assertStillEligible)
+    // ถ้าย้อนแต่คอลัมน์ หนังสือจะกลายเป็น "ยังไม่ครบกำหนดแต่ถูกทำเครื่องหมายว่าครบ" ซึ่งเป็นสภาพที่
+    // ระบบตั้งใจปฏิเสธ เพราะการทำลายก่อนกำหนดย้อนคืนไม่ได้
+    const oldYearBe = beYear() - 20;
+    db.prepare("UPDATE documents SET status = 'completed', year_be = ?, retention_until = ? WHERE id = ?")
+      .run(oldYearBe, computeRetentionUntil(oldYearBe, 'normal_10y'), doc.id);
     const batchId = createDestructionBatch({
       documentIds: [doc.id], committeeNames: 'กรรมการ ก\nกรรมการ ข\nกรรมการ ค',
       reason: 'ครบอายุการเก็บ', actorUser,
@@ -847,6 +854,41 @@ describe('ทำลายหนังสือ: ผู้เสนอกับ�
     assert.equal(doc.status, 'destroyed');
     // เลขทะเบียนต้องยังอยู่เป็นหลักฐานว่าเคยมีหนังสือฉบับนี้ ไม่ใช่ลบทิ้งทั้งแถว
     assert.ok(doc.doc_number_display, 'เลขทะเบียนต้องคงอยู่หลังทำลาย');
+  });
+
+  // การอนุมัติคือจุดที่ย้อนกลับไม่ได้ — ไฟล์แนบถูกลบถาวร แต่เดิมตรวจเงื่อนไขแค่ตอน "ตั้งบัญชี" เท่านั้น
+  // ระหว่างรออนุมัติ (ของจริงกินเวลาเป็นสัปดาห์กว่าคณะกรรมการจะประชุมและ ผอ. จะลงนาม) สถานะอาจเปลี่ยนไปแล้ว
+  describe('ตรวจซ้ำก่อนลงมือทำลายจริง', () => {
+    test('ธุรการเปลี่ยนเป็น "เก็บตลอดไป" ระหว่างรออนุมัติ ต้องทำลายไม่ได้', async () => {
+      const { batchId, docId } = batchReadyToApprove(registrarUser);
+      db.prepare("UPDATE documents SET retention_class = 'permanent', retention_until = NULL WHERE id = ?").run(docId);
+      await assert.rejects(() => approveDestructionBatch({ batchId, actorUser: directorUser }), /เก็บตลอดไป/);
+      assert.notEqual(db.prepare('SELECT status FROM documents WHERE id = ?').get(docId).status, 'destroyed');
+    });
+
+    test('เรื่องกลับมาอยู่ระหว่างดำเนินการระหว่างรออนุมัติ ต้องทำลายไม่ได้', async () => {
+      const { batchId, docId } = batchReadyToApprove(registrarUser);
+      db.prepare("UPDATE documents SET status = 'in_progress' WHERE id = ?").run(docId);
+      await assert.rejects(() => approveDestructionBatch({ batchId, actorUser: directorUser }), /ระหว่างดำเนินการ/);
+    });
+
+    // ถ้าคอลัมน์วันครบกำหนดเพี้ยน (นำเข้าข้อมูลผิด/แก้ฐานข้อมูลด้วยมือ) หนังสือที่ต้องเก็บอีกสิบปี
+    // จะถูกจัดว่าครบกำหนดแล้วและถูกทำลายทิ้งโดยไม่มีอะไรทัดทาน
+    test('คอลัมน์วันครบกำหนดที่เพี้ยนไปต้องไม่ทำให้ทำลายหนังสือก่อนกำหนดได้', async () => {
+      const { batchId, docId } = batchReadyToApprove(registrarUser);
+      // ทำให้เป็นหนังสือปีปัจจุบัน (ต้องเก็บอีก 10 ปี) แต่คอลัมน์ยังบอกว่าครบกำหนดไปแล้ว
+      db.prepare("UPDATE documents SET year_be = ?, retention_class = 'normal_10y', retention_until = '2020-01-01' WHERE id = ?")
+        .run(beYear(), docId);
+      await assert.rejects(() => approveDestructionBatch({ batchId, actorUser: directorUser }), /ยังไม่ครบกำหนดเก็บ/);
+      assert.notEqual(db.prepare('SELECT status FROM documents WHERE id = ?').get(docId).status, 'destroyed',
+        'หนังสือที่ยังไม่ครบกำหนดต้องไม่ถูกทำลาย');
+    });
+
+    test('หนังสือที่ครบกำหนดจริงยังทำลายได้ตามปกติ', async () => {
+      const { batchId, docId } = batchReadyToApprove(registrarUser);
+      await approveDestructionBatch({ batchId, actorUser: directorUser });
+      assert.equal(db.prepare('SELECT status FROM documents WHERE id = ?').get(docId).status, 'destroyed');
+    });
   });
 
   // ไฟล์ที่ลบทิ้งแล้วเรียกคืนไม่ได้ ถ้าลบระหว่าง transaction แล้ว transaction ล้มจน ROLLBACK
@@ -1573,6 +1615,128 @@ describe('ทะเบียนหนังสือ: ตัวกรองล�
     // ลิงก์ส่งออกไฟล์ต้องใช้ตัวประกอบตัวเดียวกับลิงก์เปลี่ยนหน้า ไม่งั้นไฟล์ที่ได้จะเป็นทั้งทะเบียน
     // ทั้งที่ผู้ใช้กรองไว้แล้ว ซึ่งเป็นความผิดพลาดที่ผู้ใช้ไม่มีทางสังเกตเห็นจากปุ่มเลย
     assert.match(fn, /const exportLink = \(path\) => `\$\{path\}\?\$\{filterQs\(\)/);
+  });
+
+  // ทะเบียนหนังสือรับ/ส่งเป็น "เล่มต่อปี" ตามระเบียบงานสารบรรณ เลขรับเริ่มที่ 1 ใหม่ทุกวันที่ 1 ม.ค.
+  // เดิมกรองได้แค่ช่วงวันที่ซึ่งต้องพิมพ์เป็น ค.ศ. เอง ทั้งที่สิ่งที่ธุรการต้องการคือ "ทะเบียนประจำปี ๒๕๖๙"
+  describe('กรองทะเบียนตามปี พ.ศ.', () => {
+    const yearOf = (id) => db.prepare('SELECT year_be FROM documents WHERE id = ?').get(id).year_be;
+    const putInYear = (id, yearBe, runningNumber) => db.prepare(
+      'UPDATE documents SET year_be = ?, running_number = ?, doc_number_display = ? WHERE id = ?')
+      .run(yearBe, runningNumber, `${String(runningNumber).padStart(4, '0')}/${yearBe}`, id);
+
+    test('เลือกปีแล้วเหลือเฉพาะหนังสือของปีนั้น', async () => {
+      const thisYear = makeDoc({ title: 'หนังสือของปีนี้' });
+      const lastYear = makeDoc({ title: 'หนังสือของปีที่แล้ว' });
+      putInYear(lastYear.id, yearOf(thisYear.id) - 1, 999);
+
+      const res = await getDocumentsPage(reg(), { direction: 'incoming', year: String(yearOf(thisYear.id)) });
+      const ids = rowIds(res.body);
+      assert.ok(ids.includes(thisYear.id), 'หนังสือของปีที่เลือกต้องอยู่');
+      assert.ok(!ids.includes(lastYear.id), 'หนังสือของปีอื่นต้องไม่ปน');
+    });
+
+    test('กรองจากปีของเลขทะเบียน ไม่ใช่จากวันที่ลงทะเบียน', async () => {
+      // หนังสือที่ออกเลขปีก่อน แต่เพิ่งบันทึกเข้าระบบต้นปีถัดไป — ต้องอยู่ในทะเบียนของ "ปีที่ออกเลข"
+      const oldNumberNewEntry = makeDoc({ title: 'เลขเป็นปีก่อน แต่บันทึกเข้าระบบปีถัดไป' });
+      const oldYear = yearOf(oldNumberNewEntry.id) - 1;
+      putInYear(oldNumberNewEntry.id, oldYear, 888);
+
+      // กลับกัน: เลขเป็นปีปัจจุบัน แต่ created_at ย้อนไปอยู่ในปีก่อน — ต้องไม่โผล่ในทะเบียนปีก่อน
+      const newNumberOldEntry = makeDoc({ title: 'เลขเป็นปีปัจจุบัน แต่วันที่บันทึกย้อนไปปีก่อน' });
+      db.prepare("UPDATE documents SET created_at = datetime('now','-400 days') WHERE id = ?").run(newNumberOldEntry.id);
+
+      const ids = rowIds((await getDocumentsPage(reg(), { direction: 'incoming', year: String(oldYear) })).body);
+      assert.ok(ids.includes(oldNumberNewEntry.id), 'ต้องกรองจาก year_be (ปีบนหน้าเอกสาร)');
+      assert.ok(!ids.includes(newNumberOldEntry.id), 'ต้องไม่กรองจาก created_at');
+    });
+
+    test('ปีที่กรอกมั่วต้องถูกมองข้าม ไม่ใช่ได้ทะเบียนว่างเปล่า', async () => {
+      const doc = makeDoc({ title: 'หนังสือที่ต้องยังเห็นแม้กรอกปีมั่ว' });
+      for (const year of ['abc', '25', '25690', '-1', "2569' OR '1'='1"]) {
+        const ids = rowIds((await getDocumentsPage(reg(), { direction: 'incoming', year })).body);
+        assert.ok(ids.includes(doc.id), `year=${year} ควรถูกมองข้ามแล้วแสดงทุกปีตามเดิม`);
+      }
+      assert.ok(db.prepare('SELECT COUNT(*) c FROM documents').get().c > 0, 'ตาราง documents ต้องยังอยู่');
+    });
+
+    test('ไฟล์ Excel และหน้าพิมพ์ทะเบียนต้องได้ชุดเดียวกับหน้าจอ', async () => {
+      const doc = makeDoc({ title: 'หนังสือเฉพาะปีเก่าที่ต้องไปอยู่ในไฟล์ด้วย' });
+      const oldYear = yearOf(doc.id) - 2;
+      putInYear(doc.id, oldYear, 777);
+      const q = { direction: 'incoming', year: String(oldYear) };
+
+      const page = rowIds((await getDocumentsPage(reg(), q)).body);
+      assert.deepEqual(page, [doc.id], 'หน้าจอต้องเหลือฉบับเดียว');
+
+      const xlsx = await dispatchGet(reg(), '/documents/export.xlsx', q);
+      const sheet = readWorkbook(xlsx.buffer)[0];
+      assert.equal(sheet.rows.length - 1, 1, 'ไฟล์ Excel ต้องมีแถวข้อมูลเดียว');
+      assert.ok(sheet.rows[1].some((c) => String(c).includes(`0777/${oldYear}`)));
+
+      const printed = await dispatchGet(reg(), '/documents/register', q);
+      assert.ok(printed.body.includes(`0777/${oldYear}`), 'หน้าพิมพ์ต้องมีฉบับนั้น');
+      assert.ok(printed.body.includes(`ปี พ.ศ. ${oldYear}`), 'หัวทะเบียนต้องบอกว่าเป็นทะเบียนปีไหน');
+    });
+
+    test('ตัวเลือกปีมีปีปัจจุบันเสมอ แม้ยังไม่มีหนังสือของปีนั้น', () => {
+      const years = listRegisterYears(reg(), 'incoming');
+      assert.ok(years.includes(beYear()), 'ต้นปีที่เพิ่งขึ้นปีใหม่ยังต้องเลือกปีปัจจุบันได้');
+      assert.deepEqual(years, [...years].sort((a, b) => b - a), 'ต้องเรียงปีล่าสุดขึ้นก่อน');
+    });
+
+    test('ตัวเลือกปีต้องไม่บอกใบ้ว่ามีหนังสือลับของปีไหนอยู่', () => {
+      const teacher = loadUserForTest(seed.userIds.teacher001);
+      const secret = makeDoc({ title: 'ลับมากของปีโบราณ', secretLevel: 'top_secret', createdBy: seed.userIds.reg001 });
+      putInYear(secret.id, 2400, 1);
+      assert.equal(canUserSeeDocument(teacher, getDocRow(secret.id)), false);
+      assert.ok(!listRegisterYears(teacher, 'incoming').includes(2400),
+        'ปีที่มีแต่หนังสือลับต้องไม่โผล่ในตัวเลือกของคนที่เห็นไม่ได้');
+      assert.ok(listRegisterYears(reg(), 'incoming').includes(2400), 'ผู้บันทึกเองต้องยังเห็นปีนั้น');
+    });
+  });
+});
+
+// วันที่ที่ไม่ใช่วันที่จริงหลุดเข้าฐานข้อมูลได้ในช่วงที่ยังไม่มีการตรวจค่าที่กรอกเข้ามา — พบของจริงสองแบบ
+// ('ไม่ใช่วันที่' และ '2026-13-45' คือเดือน 13 วันที่ 45) แล้วไปโผล่บนทะเบียนและในไฟล์ที่ส่งให้ สพฐ.
+describe('ล้างวันที่ของหนังสือที่ไม่ใช่วันที่จริง', () => {
+  test('ค่าที่ไม่ใช่วันที่ต้องถูกล้างเป็นค่าว่างตอนอัปเกรดฐานข้อมูล', () => {
+    const doc = makeDoc({ title: 'หนังสือเก่าที่วันที่พัง' });
+    const bad = ['ไม่ใช่วันที่', '2026-13-45', '2026-02-32', '2569-10-01x', ''];
+    for (const value of bad) {
+      db.prepare('UPDATE documents SET external_doc_date = ?, due_date = ? WHERE id = ?').run(value, value, doc.id);
+      migrate();
+      const row = getDocRow(doc.id);
+      assert.equal(row.external_doc_date, null, `ควรถูกล้าง: ${JSON.stringify(value)}`);
+      assert.equal(row.due_date, null, `ควรถูกล้าง: ${JSON.stringify(value)}`);
+    }
+  });
+
+  test('วันที่ที่ถูกต้องต้องไม่โดนลูกหลง', () => {
+    const doc = makeDoc({ title: 'หนังสือที่วันที่ปกติ' });
+    db.prepare("UPDATE documents SET external_doc_date = '2026-02-29', due_date = '2026-12-31' WHERE id = ?").run(doc.id);
+    migrate();
+    const row = getDocRow(doc.id);
+    // 2026 ไม่ใช่ปีอธิกสุรทิน แต่ 29 ก.พ. ยังอยู่ในช่วง 1–31 จึงไม่ถูกล้าง — ตัวตรวจตอนกรอกจับกรณีนี้อยู่แล้ว
+    assert.equal(row.external_doc_date, '2026-02-29');
+    assert.equal(row.due_date, '2026-12-31');
+  });
+});
+
+// หัวทะเบียนที่พิมพ์ออกมาเป็นเอกสารราชการเก็บเข้าแฟ้ม วันที่บนนั้นต้องเป็น พ.ศ. แบบไทย ไม่ใช่ค่าดิบ
+// จาก <input type="date"> ที่เป็น ค.ศ. (เดิมพิมพ์ว่า "เงื่อนไข: ตั้งแต่ 2026-08-01 · ถึง 2026-08-31")
+describe('หัวทะเบียนที่พิมพ์: วันที่ต้องเป็น พ.ศ.', () => {
+  test('ช่วงวันที่ในบรรทัดเงื่อนไขต้องเป็นวันที่ไทย', () => {
+    const q = buildDocumentQuery(loadUserForTest(seed.userIds.reg001),
+      { direction: 'incoming', from: '2026-08-01', to: '2026-08-31' });
+    const note = describeFilters(q);
+    assert.ok(!/\d{4}-\d{2}-\d{2}/.test(note), `ยังมีวันที่ดิบแบบ ค.ศ. อยู่: ${note}`);
+    assert.ok(note.includes('1 สิงหาคม 2569') && note.includes('31 สิงหาคม 2569'), note);
+  });
+
+  test('ปีที่เลือกต้องถูกบรรยายไว้ในบรรทัดเงื่อนไขด้วย', () => {
+    const q = buildDocumentQuery(loadUserForTest(seed.userIds.reg001), { direction: 'incoming', year: '2569' });
+    assert.ok(describeFilters(q).includes('ปี พ.ศ. 2569'));
   });
 });
 
@@ -2768,7 +2932,7 @@ describe('ส่งออกทะเบียนหนังสือ', () => {
     const res = await dispatchGet(reg(), '/documents/register', { direction: 'incoming', priority: 'urgent', from: '2026-08-01' });
     assert.match(res.body, /เงื่อนไข:/);
     assert.match(res.body, /ความเร็ว ด่วน/);
-    assert.match(res.body, /ตั้งแต่ 2026-08-01/);
+    assert.match(res.body, /ตั้งแต่ 1 สิงหาคม 2569/);
     // ทะเบียนที่ไม่ได้กรองต้องไม่ขึ้นบรรทัดเงื่อนไข ไม่งั้นจะดูเหมือนเป็นทะเบียนบางส่วนทั้งที่ครบ
     const all = await dispatchGet(reg(), '/documents/register', { direction: 'incoming' });
     assert.doesNotMatch(all.body, /เงื่อนไข:/);

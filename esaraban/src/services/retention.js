@@ -1,4 +1,4 @@
-import { db, uuid, nowIso, audit, todayInBangkok } from '../db.js';
+import { db, uuid, nowIso, audit, todayInBangkok, computeRetentionUntil } from '../db.js';
 import { isGoogleDriveEnabled, deleteFile as deleteDriveFile } from './googleDrive.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,6 +24,39 @@ export function listEligibleForDestruction() {
       )
     ORDER BY d.retention_until ASC
   `).all({ today: todayInBangkok() });
+}
+
+/**
+ * ตรวจซ้ำก่อน "ลงมือทำลายจริง" ว่าทุกฉบับในบัญชียังครบกำหนดเก็บอยู่
+ *
+ * การอนุมัติคือจุดที่ย้อนกลับไม่ได้ — ไฟล์แนบถูกลบออกจากดิสก์/Google Drive ถาวร กู้คืนไม่ได้เลย
+ * แต่เดิมตรวจเงื่อนไขแค่ตอน "ตั้งบัญชี" เท่านั้น ระหว่างที่บัญชีรออนุมัติ (ซึ่งของจริงกินเวลาเป็นสัปดาห์
+ * กว่าคณะกรรมการจะประชุมและ ผอ. จะลงนาม) สถานะของหนังสืออาจเปลี่ยนไปแล้ว เช่น ธุรการแก้ชั้น
+ * อายุการเก็บเป็น "เก็บตลอดไป" หลังพบว่าเป็นเอกสารประวัติศาสตร์
+ *
+ * และตรวจว่าวันครบกำหนดที่เก็บไว้ตรงกับสูตร (ปี พ.ศ. ที่ออกเลข + อายุตามชั้นการเก็บ) จริงหรือไม่ —
+ * ถ้าคอลัมน์นี้เพี้ยนไปด้วยเหตุใดก็ตาม (นำเข้าข้อมูลผิด แก้ฐานข้อมูลด้วยมือ) หนังสือที่ต้องเก็บอีกสิบปี
+ * จะถูกจัดว่าครบกำหนดแล้วและถูกทำลายทิ้งโดยไม่มีอะไรทัดทาน คิดใหม่จากสูตรตรงนี้จึงกันไว้อีกชั้น
+ */
+function assertStillEligible(batch) {
+  const today = todayInBangkok();
+  const problems = [];
+  for (const item of batch.items) {
+    const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get(item.id);
+    if (!doc || doc.deleted_at) { problems.push(`${item.doc_number_display} ถูกลบไปแล้ว`); continue; }
+    if (doc.status === 'destroyed') { problems.push(`${doc.doc_number_display} ถูกทำลายไปแล้ว`); continue; }
+    if (!['completed', 'archived', 'voided'].includes(doc.status)) {
+      problems.push(`${doc.doc_number_display} กลับมาอยู่ในระหว่างดำเนินการแล้ว`); continue;
+    }
+    const expected = computeRetentionUntil(doc.year_be, doc.retention_class);
+    if (expected === null) { problems.push(`${doc.doc_number_display} ถูกเปลี่ยนเป็นเก็บตลอดไป`); continue; }
+    if (expected > today) {
+      problems.push(`${doc.doc_number_display} ยังไม่ครบกำหนดเก็บ (ครบ ${expected})`);
+    }
+  }
+  if (problems.length) {
+    throw httpError(409, `ทำลายไม่ได้ เพราะมีหนังสือที่เงื่อนไขเปลี่ยนไปหลังตั้งบัญชี: ${problems.slice(0, 5).join(' · ')}${problems.length > 5 ? ` และอีก ${problems.length - 5} ฉบับ` : ''} — กรุณายกเลิกบัญชีนี้แล้วตั้งใหม่`);
+  }
 }
 
 export function listBatches() {
@@ -102,6 +135,7 @@ export async function approveDestructionBatch({ batchId, actorUser, note }) {
   if (batch.created_by === actorUser.id) {
     throw httpError(403, 'ผู้เสนอบัญชีทำลายหนังสือจะอนุมัติบัญชีของตัวเองไม่ได้ ต้องให้ผู้บริหารท่านอื่นเป็นผู้พิจารณา');
   }
+  assertStillEligible(batch);
 
   const now = nowIso();
   const driveFilesToDelete = [];

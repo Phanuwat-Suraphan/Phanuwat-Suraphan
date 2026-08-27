@@ -19,7 +19,7 @@ import {
 import { assertMaxLength } from '../services/validate.js';
 import { getActiveDelegateFor } from '../services/delegation.js';
 import {
-  buildDocumentQuery, countDocuments, listDocuments, describeFilters, CLOSED_STATUSES,
+  buildDocumentQuery, countDocuments, listDocuments, describeFilters, listRegisterYears, CLOSED_STATUSES,
 } from '../services/documentQuery.js';
 import { buildXlsx } from '../services/xlsxWrite.js';
 import { Readable } from 'node:stream';
@@ -164,6 +164,13 @@ router.get('/documents', requirePage((ctx) => {
       <details class="field-more" style="margin-top:.75rem" ${activeFilters ? 'open' : ''}>
         <summary>ตัวกรองละเอียด${activeFilters ? ` <span class="badge badge-info">${activeFilters}</span>` : ''}</summary>
         <div class="form-grid cols-3" style="margin-top:.75rem">
+          <div class="field">
+            <!-- ทะเบียนหนังสือรับ/ส่งเป็นเล่มต่อปี เลขรับเริ่มที่ 1 ใหม่ทุกวันที่ 1 ม.ค. — ธุรการที่ต้องพิมพ์
+                 "ทะเบียนประจำปี ๒๕๖๙" เข้าแฟ้มจึงต้องเลือกปีได้ตรงๆ ไม่ใช่ไปคำนวณช่วงวันที่แบบ ค.ศ. เอง -->
+            <label>ทะเบียนประจำปี (พ.ศ.)</label>
+            <select name="year"><option value="">ทุกปี</option>
+              ${listRegisterYears(ctx.user, direction).map((y) => opt(String(y), String(y), f.year ? String(f.year) : '')).join('')}</select>
+          </div>
           <div class="field">
             <label>ฝ่ายที่รับผิดชอบ</label>
             <select name="dept"><option value="">ทุกฝ่าย</option>${listDeptOptions(f.dept)}</select>
