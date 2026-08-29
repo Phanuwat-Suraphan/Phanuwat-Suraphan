@@ -1952,6 +1952,93 @@ describe('ประกาศ/ประชาสัมพันธ์', () => {
     assert.ok((await dispatchPost(admin, '/announcements', { category: 'ประกาศ', title: 'ประกาศปกติ', body: 'เนื้อหาปกติ' })).status < 400,
       'ประกาศความยาวปกติต้องยังโพสต์ได้');
   });
+
+  // เดิมหน้ารายการดึง "ทุกประกาศที่เคยลงไว้" แล้วพิมพ์เนื้อหาเต็มทุกฉบับลงหน้าเดียว วัดจริงแล้ว:
+  // ประกาศ 160 ฉบับ (สัปดาห์ละ 4 ฉบับ หนึ่งปีการศึกษา) เนื้อหาเฉลี่ยแค่ 500 ตัวอักษร ทำให้หน้านี้
+  // หนัก 1.9MB ต่อการเปิดหนึ่งครั้ง ซึ่งครูต้องโหลดใหม่ทุกครั้งที่เปิดดูประกาศบนมือถือ
+  describe('หน้าประกาศต้องไม่โตตามจำนวนประกาศที่สะสมไว้', () => {
+    const seedAnnouncements = (count, bodyLen) => {
+      const ins = db.prepare(`INSERT INTO announcements (id, category, title, body, created_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      const ids = [];
+      for (let i = 0; i < count; i++) {
+        const id = uuid();
+        ids.push(id);
+        ins.run(id, i % 2 ? 'ประกาศ' : 'ประชาสัมพันธ์', `ประกาศจำนวนมาก ${i}`, 'ก'.repeat(bodyLen),
+          seed.userIds.reg001, new Date(Date.now() - i * 86400000).toISOString(), nowIso());
+      }
+      return ids;
+    };
+    const sizeOf = async () => Buffer.byteLength((await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/announcements', {})).body);
+
+    test('สะสมหนึ่งปีการศึกษาแล้วหน้าต้องไม่พองตาม', async () => {
+      const before = await sizeOf();
+      const ids = seedAnnouncements(160, 500);
+      try {
+        const after = await sizeOf();
+        assert.ok(after < 200 * 1024, `หน้าประกาศหนัก ${(after / 1024).toFixed(0)} KB หลังมี 160 ประกาศ`);
+        assert.ok(after - before < 100 * 1024, 'ขนาดหน้าต้องไม่โตตามจำนวนประกาศแบบไม่มีเพดาน');
+      } finally {
+        for (const id of ids) db.prepare('DELETE FROM announcements WHERE id = ?').run(id);
+      }
+    });
+
+    test('ประกาศที่เขียนยาวต้องไม่ถูกส่งเต็มมากับหน้ารายการ', async () => {
+      const ids = seedAnnouncements(20, 20000);
+      try {
+        const res = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/announcements', {});
+        assert.ok(Buffer.byteLength(res.body) < 200 * 1024,
+          `หน้าประกาศหนัก ${(Buffer.byteLength(res.body) / 1024).toFixed(0)} KB`);
+        // พับด้วย <details> ไม่พอ เพราะเนื้อหาเต็มยังถูกส่งมาทุกไบต์ — ต้องไม่ส่งมาตั้งแต่แรก
+        assert.ok(!res.body.includes('ก'.repeat(1000)), 'เนื้อหาเต็มต้องไม่อยู่ในหน้ารายการ');
+        assert.match(res.body, /อ่านต่อ/, 'ต้องมีลิงก์ไปอ่านฉบับเต็ม');
+      } finally {
+        for (const id of ids) db.prepare('DELETE FROM announcements WHERE id = ?').run(id);
+      }
+    });
+
+    test('ประกาศมีหน้าของตัวเองที่อ่านเนื้อหาเต็มได้', async () => {
+      const [id] = seedAnnouncements(1, 5000);
+      try {
+        const res = await dispatchGet(loadUserForTest(seed.userIds.teacher001), `/announcements/${id}`, {});
+        assert.equal(res.status, 200);
+        assert.ok(res.body.includes('ก'.repeat(5000)), 'หน้าของประกาศต้องแสดงเนื้อหาเต็ม');
+      } finally {
+        db.prepare('DELETE FROM announcements WHERE id = ?').run(id);
+      }
+    });
+
+    // router จับคู่ตามลำดับที่ลงทะเบียน ถ้าเอา :id ไว้ก่อน คำว่า "new" จะถูกจับเป็น id
+    // แล้วหน้าฟอร์มเพิ่มประกาศกลายเป็น 404 (พลาดมาแล้วตอนเพิ่มหน้ารายละเอียด)
+    test('หน้าฟอร์มเพิ่มประกาศต้องไม่ถูก :id ดักไปก่อน', async () => {
+      const res = await dispatchGet(loadUserForTest(seed.userIds.reg001), '/announcements/new', {});
+      assert.equal(res.status, 200);
+      assert.match(res.body, /เพิ่มประกาศ|annForm/, 'ต้องได้ฟอร์มเพิ่มประกาศ ไม่ใช่หน้ารายละเอียด');
+    });
+
+    test('เปิดประกาศที่ไม่มีอยู่/ถูกลบแล้ว ต้องได้ 404 ไม่ใช่พัง', async () => {
+      const teacher = loadUserForTest(seed.userIds.teacher001);
+      assert.equal((await dispatchGet(teacher, '/announcements/ไม่มีอยู่จริง', {})).status, 404);
+      const [id] = seedAnnouncements(1, 10);
+      db.prepare('UPDATE announcements SET deleted_at = ? WHERE id = ?').run(nowIso(), id);
+      assert.equal((await dispatchGet(teacher, `/announcements/${id}`, {})).status, 404);
+      db.prepare('DELETE FROM announcements WHERE id = ?').run(id);
+    });
+
+    test('ประกาศเก่าที่ยาวเกินเพดานต้องถูกตัดตอนอัปเกรดฐานข้อมูล', () => {
+      const id = uuid();
+      db.prepare(`INSERT INTO announcements (id, category, title, body, created_by, created_at, updated_at)
+        VALUES (?, 'ประกาศ', ?, ?, ?, ?, ?)`).run(id, 'ก'.repeat(50000), 'ข'.repeat(500000),
+        seed.userIds.reg001, nowIso(), nowIso());
+
+      migrate();
+
+      const row = db.prepare('SELECT length(title) t, length(body) b FROM announcements WHERE id = ?').get(id);
+      assert.equal(row.t, 300, 'หัวข้อต้องถูกตัดให้พอดีเพดาน');
+      assert.equal(row.b, 20000, 'เนื้อหาต้องถูกตัดให้พอดีเพดาน');
+      db.prepare('DELETE FROM announcements WHERE id = ?').run(id);
+    });
+  });
 });
 
 // ใครมีอำนาจอนุญาต/อนุมัติการลา

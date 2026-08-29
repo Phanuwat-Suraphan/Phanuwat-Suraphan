@@ -32,13 +32,47 @@ const canPostAnnouncement = (user) => user.roleCodes.some((r) => CAN_POST_ROLES.
 const MAX_TITLE = 300;
 const MAX_BODY = 20000;
 
+// จำนวนที่แสดงต่อหมวดในหน้าปกติ และเพดานเมื่อกด "ดูทั้งหมด" — ประกาศเก่ากว่านั้นยังอยู่ในฐานข้อมูล
+// (ไม่ได้ลบ) แต่ไม่ต้องส่งมาให้ทุกคนโหลดทุกครั้งที่เปิดหน้า
+const LIST_LIMIT = 20;
+const MAX_LIST_ALL = 200;
+
+// ความยาวที่แสดงในหน้ารายการ — ประกาศที่ยาวกว่านี้ (ระเบียบ/แนวปฏิบัติ) ตัดแล้วลิงก์ไปหน้าของตัวเอง
+//
+// ตั้งใจไม่ใช้ <details> พับไว้ เพราะการพับซ่อนแค่ "สายตา" แต่เนื้อหาเต็มยังถูกส่งมาทุกไบต์อยู่ดี —
+// วัดแล้วว่าประกาศยาวเต็มเพดานเพียง 20 ฉบับยังทำให้หน้าหนัก 1.3MB ทั้งที่พับไว้หมด
+const BODY_PREVIEW_CHARS = 300;
+function bodyHtml(a) {
+  if (!a.body) return '';
+  const style = 'font-size:.85rem;margin:.3rem 0';
+  if (a.body.length <= BODY_PREVIEW_CHARS) return `<p class="text-muted" style="${style}">${esc(a.body)}</p>`;
+  return `<p class="text-muted" style="${style}">${esc(a.body.slice(0, BODY_PREVIEW_CHARS))}…
+    <a href="/announcements/${a.id}">อ่านต่อ</a></p>`;
+}
+
 router.get('/announcements', requirePage((ctx) => {
   const isAdmin = canPostAnnouncement(ctx.user);
+  // ดึงเฉพาะเท่าที่จะแสดง — เดิมดึง "ทุกประกาศที่เคยลงไว้" แล้วพิมพ์เนื้อหาเต็มทุกฉบับลงหน้าเดียว
+  // วัดจริงแล้ว: ประกาศ 160 ฉบับ (สัปดาห์ละ 4 ฉบับ หนึ่งปีการศึกษา) เนื้อหาเฉลี่ยแค่ 500 ตัวอักษร
+  // ทำให้หน้านี้หนัก 1.9MB ต่อการเปิดหนึ่งครั้ง และถ้ามีฉบับที่เขียนยาวเต็มเพดานสัก 20 ฉบับจะเป็น 3MB
+  // ซึ่งครูต้องโหลดใหม่ทุกครั้งที่เปิดดูประกาศบนมือถือ
   const rows = db.prepare(`
-    SELECT a.*, u.first_name, u.last_name FROM announcements a JOIN users u ON u.id = a.created_by
-    WHERE a.deleted_at IS NULL ORDER BY a.created_at DESC
-  `).all();
-  const grouped = CATEGORIES.map((cat) => ({ cat, items: rows.filter((r) => r.category === cat) }));
+    SELECT a.id, a.category, a.title, a.file_name, a.created_at, u.first_name, u.last_name,
+      -- ตัดตั้งแต่ในฐานข้อมูล ไม่ดึงเนื้อหาเต็มขึ้นมาแล้วค่อยตัดในโค้ด (+1 ไว้ให้รู้ว่ายาวเกินหรือไม่)
+      substr(a.body, 1, :preview + 1) AS body
+    FROM announcements a JOIN users u ON u.id = a.created_by
+    WHERE a.deleted_at IS NULL AND a.category = :cat ORDER BY a.created_at DESC LIMIT :limit
+  `);
+  const totals = db.prepare(`
+    SELECT category, COUNT(*) c FROM announcements WHERE deleted_at IS NULL GROUP BY category
+  `).all().reduce((m, r) => m.set(r.category, r.c), new Map());
+  const showAll = ctx.query.all === '1';
+  const limit = showAll ? MAX_LIST_ALL : LIST_LIMIT;
+  const grouped = CATEGORIES.map((cat) => ({
+    cat,
+    items: rows.all({ cat, limit, preview: BODY_PREVIEW_CHARS }),
+    total: totals.get(cat) || 0,
+  }));
 
   const content = `
     <div class="card-header">
@@ -46,7 +80,7 @@ router.get('/announcements', requirePage((ctx) => {
       ${isAdmin ? `<a class="btn btn-primary btn-sm" href="/announcements/new">+ เพิ่มประกาศ</a>` : ''}
     </div>
     <div class="grid-2">
-      ${grouped.map(({ cat, items }) => `
+      ${grouped.map(({ cat, items, total }) => `
         <div class="card">
           <h3 class="mt-0">${cat === 'ประกาศ' ? '📣' : '📌'} ${esc(cat)}ล่าสุด</h3>
           ${items.length ? items.map((a) => `
@@ -55,12 +89,16 @@ router.get('/announcements', requirePage((ctx) => {
                 <strong>${esc(a.title)}</strong>
                 ${isAdmin ? `<button type="button" class="btn btn-sm btn-outline" onclick="deleteAnnouncement('${a.id}')" title="ลบ">🗑️</button>` : ''}
               </div>
-              ${a.body ? `<p class="text-muted" style="font-size:.85rem;margin:.3rem 0">${esc(a.body)}</p>` : ''}
+              ${bodyHtml(a)}
               <div class="text-muted" style="font-size:.78rem">
                 ผู้ลงประกาศ ${esc(a.first_name)} ${esc(a.last_name)} · วันที่ ${fmtDate(a.created_at)}
                 ${a.file_name ? ` · <a href="/announcement-files/${a.id}" target="_blank" rel="noopener">📄 ${esc(a.file_name)}</a>` : ''}
               </div>
             </div>`).join('') : emptyState('📭', `ยังไม่มี${cat}`)}
+          ${total > items.length ? `<p class="text-muted" style="font-size:.82rem;margin:.6rem 0 0">
+            แสดง ${items.length} จาก ${total} รายการ ·
+            <a href="/announcements?all=1">ดูทั้งหมด</a>
+          </p>` : ''}
         </div>`).join('')}
     </div>
     ${isAdmin ? `<script>
@@ -104,6 +142,36 @@ router.get('/announcements/new', requireRole(...CAN_POST_ROLES)(requirePage((ctx
     </script>`;
   html(ctx, 200, layout({ user: ctx.user, title: 'เพิ่มประกาศ', path: '/announcements/new', content }));
 })));
+
+// ต้องประกาศ *หลัง* /announcements/new เสมอ — router จับคู่ตามลำดับที่ลงทะเบียน ถ้าเอา :id
+// ไว้ก่อน คำว่า "new" จะถูกจับเป็น id แล้วหน้าฟอร์มเพิ่มประกาศจะกลายเป็น 404 (เคยพลาดมาแล้ว)
+// หน้าของประกาศฉบับเดียว — มีไว้เพื่อให้หน้ารายการไม่ต้องแบกเนื้อหาเต็มของทุกฉบับ และเพื่อให้
+// ส่งลิงก์ประกาศให้กันได้ตรงๆ (เดิมประกาศไม่มี URL ของตัวเอง ต้องบอกให้ไปหาเอาเองในหน้ารวม)
+router.get('/announcements/:id', requirePage((ctx) => {
+  const a = db.prepare(`
+    SELECT a.*, u.prefix, u.first_name, u.last_name FROM announcements a JOIN users u ON u.id = a.created_by
+    WHERE a.id = ? AND a.deleted_at IS NULL`).get(ctx.params.id);
+  if (!a) {
+    return html(ctx, 404, layout({ user: ctx.user, title: 'ไม่พบประกาศ', path: '/announcements',
+      content: emptyState('📭', 'ไม่พบประกาศนี้ หรือถูกลบไปแล้ว') }));
+  }
+  const content = `
+    <div class="card-header">
+      <h2 class="mt-0">${a.category === 'ประกาศ' ? '📣' : '📌'} ${esc(a.title)}</h2>
+      <a class="btn btn-outline btn-sm" href="/announcements">← กลับหน้าประกาศ</a>
+    </div>
+    <div class="card">
+      <div class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
+        ${esc(a.category)} · ผู้ลงประกาศ ${esc(a.prefix || '')}${esc(a.first_name)} ${esc(a.last_name)}
+        · วันที่ ${fmtDate(a.created_at)}
+      </div>
+      ${a.body ? `<div style="white-space:pre-wrap;line-height:1.8">${esc(a.body)}</div>` : '<p class="text-muted">ไม่มีเนื้อหาเพิ่มเติม</p>'}
+      ${a.file_name ? `<p style="margin-top:1rem">
+        <a class="btn btn-outline btn-sm" href="/announcement-files/${a.id}" target="_blank" rel="noopener">📄 ${esc(a.file_name)}</a>
+      </p>` : ''}
+    </div>`;
+  html(ctx, 200, layout({ user: ctx.user, title: a.title, path: '/announcements', content }));
+}));
 
 router.post('/announcements', requireRole(...CAN_POST_ROLES)(requireApi(async (ctx) => {
   const b = ctx.body;
