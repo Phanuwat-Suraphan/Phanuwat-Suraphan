@@ -1,4 +1,4 @@
-import { router, html, json, contentDispositionHeader } from '../router.js';
+import { router, html, json, contentDispositionHeader, truncateFilename } from '../router.js';
 import { layout, esc, fmtDate, emptyState } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { db, uuid, nowIso, beYear, audit } from '../db.js';
@@ -131,7 +131,7 @@ router.post('/announcements', requireRole(...CAN_POST_ROLES)(requireApi(async (c
       fs.writeFileSync(path.join(UPLOAD_DIR, safeName), buf);
       fileFields = { file_storage_provider: 'local', file_path: safeName, file_drive_id: null };
     }
-    fileFields.file_name = b.fileName || 'announcement.pdf';
+    fileFields.file_name = truncateFilename(b.fileName) || 'announcement.pdf';
     fileFields.file_size = buf.length;
     fileFields.file_mime = b.fileType;
   }

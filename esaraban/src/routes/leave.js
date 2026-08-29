@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
-import { router, html, json, contentDispositionHeader } from '../router.js';
+import { router, html, json, contentDispositionHeader, truncateFilename } from '../router.js';
 import { layout, esc, fmtDate, fmtThaiDateShort, fmtThaiDateLong, SCHOOL_NAME } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, audit, beYear } from '../db.js';
@@ -468,11 +468,11 @@ router.post('/leave/:id/attachments', requireApi(async (ctx) => {
   if (isGoogleDriveEnabled()) {
     const folderId = await ensureCategoryFolder({ yearBe: beYear(new Date()), typeName: 'ใบลา-หลักฐานแนบ' });
     const driveFileId = await uploadFile({ buffer, filename: `${id}__${fileName || safeName}`, mimeType: fileType, folderId });
-    insertLeaveAttachment({ id, leaveRequestId: req.id, filename: fileName || safeName, storageProvider: 'google_drive',
+    insertLeaveAttachment({ id, leaveRequestId: req.id, filename: truncateFilename(fileName) || safeName, storageProvider: 'google_drive',
       driveFileId, filesize: buffer.length, mimeType: fileType, hash, uploadedBy: ctx.user.id });
   } else {
     fs.writeFileSync(path.join(UPLOAD_DIR, safeName), buffer);
-    insertLeaveAttachment({ id, leaveRequestId: req.id, filename: fileName || safeName, storageProvider: 'local',
+    insertLeaveAttachment({ id, leaveRequestId: req.id, filename: truncateFilename(fileName) || safeName, storageProvider: 'local',
       filepath: safeName, filesize: buffer.length, mimeType: fileType, hash, uploadedBy: ctx.user.id });
   }
   audit({ userId: ctx.user.id, action: 'leave_attachment_uploaded', tableName: 'leave_attachments', recordId: id, detail: { leaveRequestId: req.id, filename: fileName } });

@@ -26,6 +26,22 @@ const HEADER_ALIASES = {
 
 const norm = (s) => String(s ?? '').replace(/\s+/g, '').toLowerCase();
 
+// เพดานจำนวนคนต่อการนำเข้าหนึ่งครั้ง — โรงเรียนที่ใหญ่ที่สุดในสังกัดยังไม่ถึงหลักพัน ไฟล์ที่มีเป็นพัน
+// แถวจึงแปลว่าหยิบไฟล์ผิด (เช่นไฟล์รายชื่อนักเรียนทั้งโรงเรียน) การสร้างบัญชีพันบัญชีแล้วมาไล่ลบทีหลัง
+// เจ็บปวดกว่าการให้แบ่งไฟล์มาก และหน้าที่แสดงรหัสผ่านครั้งเดียวก็ยาวจนพิมพ์แจกไม่ไหว
+export const MAX_IMPORT_ROWS = 500;
+
+// เพดานความยาวของแต่ละช่อง — ค่าที่ยาวเกินจริงมาจากการวางข้อมูลผิดคอลัมน์ในไฟล์ Excel ซึ่งเกิดบ่อย
+// ปล่อยเข้าไปแล้วชื่อผู้ลงนามบนตราประทับ/ใบลาจะเสียรูปทั้งระบบ (เทียบกับเพดานของฝั่งหนังสือใน workflow.js)
+const MAX_FIELD = { employeeCode: 50, prefix: 30, firstName: 100, lastName: 100, email: 200, position: 150 };
+const FIELD_LABEL = {
+  employeeCode: 'รหัสประจำตัว', prefix: 'คำนำหน้า', firstName: 'ชื่อ',
+  lastName: 'นามสกุล', email: 'อีเมล', position: 'ตำแหน่ง',
+};
+
+// ตรวจแบบเดียวกับหน้าโปรไฟล์ — หลวมพอให้อีเมลโรงเรียนทุกแบบผ่าน แต่จับค่าที่ไม่ใช่อีเมลเลยได้
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 /** จับคู่หัวตารางกับชื่อฟิลด์ — คืน { field: columnIndex } */
 export function mapHeaders(headerRow) {
   const map = {};
@@ -75,7 +91,7 @@ export function readTable(buffer, filename = '') {
  * "ดูก่อนนำเข้า" ให้แอดมินตรวจก่อนกดยืนยันได้ — การสร้างบัญชีผู้ใช้ผิดๆ 50 บัญชีแล้วมาไล่ลบทีหลัง
  * เจ็บปวดกว่าการตรวจก่อนมาก
  */
-export function planUserImport(rows, { departments, roles, existingCodes }) {
+export function planUserImport(rows, { departments, roles, existingCodes, existingEmails = [] }) {
   if (!rows.length) throw httpError(400, 'ไฟล์ว่างเปล่า');
   const headerIdx = rows.findIndex((r) => Object.keys(mapHeaders(r)).length >= 3);
   if (headerIdx < 0) {
@@ -94,6 +110,17 @@ export function planUserImport(rows, { departments, roles, existingCodes }) {
   for (const r of roles) { roleByName.set(norm(r.name_th), r); roleByName.set(norm(r.name), r); }
   const seen = new Set();
   const taken = new Set(existingCodes.map(norm));
+  // users.email เป็น UNIQUE ในฐานข้อมูล — เดิมไม่ได้ตรวจตรงนี้เลย ผลคือหน้าตรวจไฟล์บอกว่า "นำเข้าได้
+  // 40 คน" แล้วพอกดยืนยันจริงกลับได้ error 500 พร้อมข้อความ "UNIQUE constraint failed: users.email"
+  // ภาษาอังกฤษดิบๆ ขึ้นเต็มหน้า โดยไม่บอกว่าแถวไหนเป็นตัวปัญหาในไฟล์ 40 แถว (ทดสอบยืนยันแล้ว)
+  // อีเมลซ้ำเกิดง่ายมากในไฟล์ที่พิมพ์เอง — ลากเซลล์ลงมาแล้วลืมแก้ หรือครูสองคนใช้อีเมลกลางของโรงเรียน
+  const takenEmails = new Set(existingEmails.filter(Boolean).map(norm));
+  const seenEmails = new Set();
+
+  const dataRowCount = rows.length - headerIdx - 1;
+  if (dataRowCount > MAX_IMPORT_ROWS) {
+    throw httpError(400, `ไฟล์นี้มี ${String(dataRowCount).replace(/\B(?=(\d{3})+(?!\d))/g, ',')} แถว ซึ่งเกินเพดาน ${MAX_IMPORT_ROWS} คนต่อครั้ง — กรุณาแบ่งไฟล์ (ถ้าเกินมากอาจเป็นไฟล์ผิด เช่นไฟล์รายชื่อนักเรียน)`);
+  }
 
   const items = [];
   for (let i = headerIdx + 1; i < rows.length; i++) {
@@ -110,6 +137,23 @@ export function planUserImport(rows, { departments, roles, existingCodes }) {
 
     if (!employeeCode || !firstName || !lastName) {
       items.push({ ...item, status: 'error', reason: 'ต้องมีรหัสประจำตัว ชื่อ และนามสกุล ครบทั้งสามช่อง' });
+      continue;
+    }
+    const tooLong = Object.keys(MAX_FIELD).find((k) => String(item[k] || '').length > MAX_FIELD[k]);
+    if (tooLong) {
+      items.push({ ...item, status: 'error', reason: `ช่อง "${FIELD_LABEL[tooLong]}" ยาวเกิน ${MAX_FIELD[tooLong]} ตัวอักษร — ตรวจว่าข้อมูลอยู่ผิดคอลัมน์หรือไม่` });
+      continue;
+    }
+    if (item.email && !EMAIL_RE.test(item.email)) {
+      items.push({ ...item, status: 'error', reason: `"${item.email}" ไม่ใช่รูปแบบอีเมลที่ถูกต้อง` });
+      continue;
+    }
+    if (item.email && takenEmails.has(norm(item.email))) {
+      items.push({ ...item, status: 'error', reason: `อีเมล "${item.email}" มีผู้ใช้ในระบบใช้อยู่แล้ว` });
+      continue;
+    }
+    if (item.email && seenEmails.has(norm(item.email))) {
+      items.push({ ...item, status: 'error', reason: `อีเมล "${item.email}" ซ้ำกับแถวก่อนหน้าในไฟล์เดียวกัน` });
       continue;
     }
     if (taken.has(norm(employeeCode))) {
@@ -136,6 +180,7 @@ export function planUserImport(rows, { departments, roles, existingCodes }) {
     }
 
     seen.add(norm(employeeCode));
+    if (item.email) seenEmails.add(norm(item.email));
     items.push({ ...item, status: 'ok', departmentId: dept?.id || null, roleId: role.id, roleLabel: role.name_th });
   }
 

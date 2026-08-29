@@ -29,6 +29,8 @@ const {
   canApproveLeave, leaveStatsForFiscalYear, fiscalYearRange,
 } = await import('../src/services/leave.js');
 const { SCHOOL_POSITIONS } = await import('../src/services/positions.js');
+const { planUserImport, MAX_IMPORT_ROWS } = await import('../src/services/userImport.js');
+const { truncateFilename, MAX_HEADER_FILENAME_CHARS } = await import('../src/router.js');
 const { buildDocumentQuery, describeFilters, listRegisterYears } = await import('../src/services/documentQuery.js');
 const { createDelegation } = await import('../src/services/delegation.js');
 const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, planBackupCleanup, thaiDateParts } = await import('../src/services/dbBackup.js');
@@ -1022,6 +1024,27 @@ describe('ดาวน์โหลดไฟล์: ชื่อไฟล์ภ�
     assert.match(contentDispositionHeader('ประกาศ2569.pdf', 'announcement.pdf'), /filename="announcement\.pdf"/);
   });
 
+  // อักษรไทยหนึ่งตัวกลายเป็น 9 ไบต์เมื่อ percent-encode ชื่อไฟล์ไทย 3,000 ตัวจึงได้หัว HTTP 27KB
+  // ซึ่งเกินเพดาน 16KB ของ Node — วัดจริงแล้วการดาวน์โหลดล้มที่ระดับโปรโตคอล (UND_ERR_HEADERS_OVERFLOW)
+  // ไม่ใช่ขึ้นข้อความบอกผู้ใช้ แปลว่าไฟล์แนบฉบับนั้นเปิดไม่ได้อีกเลยและไม่มีอะไรบอกว่าทำไม
+  test('ชื่อไฟล์ยาวต้องไม่ทำให้หัว HTTP ล้นจนดาวน์โหลดไม่ได้', async () => {
+    const http = await import('node:http');
+    const header = contentDispositionHeader('ก'.repeat(3000) + '.pdf');
+    assert.ok(Buffer.byteLength(header) < http.default.maxHeaderSize / 4,
+      `หัวยาว ${Buffer.byteLength(header)} ไบต์ เทียบกับเพดาน ${http.default.maxHeaderSize}`);
+    assert.match(header, /\.pdf"/, 'ต้องยังเหลือนามสกุลไฟล์ไว้');
+  });
+
+  test('ตัดชื่อไฟล์แล้วต้องยังเหลือนามสกุลเดิม', () => {
+    assert.equal(truncateFilename('สั้น.pdf'), 'สั้น.pdf', 'ชื่อปกติต้องไม่ถูกแตะ');
+    const cut = truncateFilename('ก'.repeat(500) + '.xlsx');
+    assert.equal(cut.length, MAX_HEADER_FILENAME_CHARS);
+    assert.ok(cut.endsWith('.xlsx'), `ต้องเก็บนามสกุลไว้ ได้: ${cut.slice(-10)}`);
+    // ชื่อที่ไม่มีนามสกุล และชื่อที่จุดอยู่ไกลจนไม่ใช่นามสกุล ต้องไม่พัง
+    assert.equal(truncateFilename('ก'.repeat(500)).length, MAX_HEADER_FILENAME_CHARS);
+    assert.equal(truncateFilename('ก'.repeat(300) + '.' + 'ข'.repeat(300)).length, MAX_HEADER_FILENAME_CHARS);
+  });
+
   test('Node ยอมรับหัวนี้จริง ไม่ใช่แค่ผ่าน regex', async () => {
     const http = await import('node:http');
     const header = contentDispositionHeader('ประกาศรับสมัครครู.pdf');
@@ -1283,6 +1306,63 @@ describe('นำเข้ารายชื่อบุคลากรจาก 
     // ตัดอักขระที่อ่านสับสน (0/O/1/l/I) ออก เพราะแอดมินต้องพิมพ์แจกครูด้วยมือ
     assert.ok([...pws].every((p) => !/[0O1lI]/.test(p)), 'รหัสผ่านต้องไม่มีอักขระที่อ่านสับสน');
   });
+
+  // users.email เป็น UNIQUE ในฐานข้อมูล แต่ผู้วางแผนนำเข้าไม่เคยตรวจช่องนี้เลย ผลคือหน้าตรวจไฟล์
+  // บอกว่า "นำเข้าได้ 40 คน" แล้วพอกดยืนยันจริงได้ error 500 "UNIQUE constraint failed: users.email"
+  // ภาษาอังกฤษดิบๆ โดยไม่บอกว่าแถวไหนผิด (ยืนยันกับระบบที่รันอยู่แล้ว)
+  describe('อีเมลซ้ำต้องถูกจับตั้งแต่ตอนตรวจไฟล์ ไม่ใช่ไประเบิดตอนบันทึกจริง', () => {
+    const header = ['รหัสประจำตัว', 'ชื่อ', 'นามสกุล', 'อีเมล'];
+    const plan = (rows, opts = {}) => planUserImport([header, ...rows],
+      { departments, roles, existingCodes: [], existingEmails: [], ...opts });
+
+    test('อีเมลซ้ำกันเองในไฟล์เดียวกัน', () => {
+      const p = plan([['a1', 'ก', 'ข', 'same@s.ac.th'], ['a2', 'ค', 'ง', 'same@s.ac.th']]);
+      assert.equal(p.summary.ok, 1, 'แถวแรกยังนำเข้าได้');
+      assert.equal(p.summary.error, 1);
+      assert.match(p.items[1].reason, /ซ้ำกับแถวก่อนหน้า/);
+    });
+
+    test('อีเมลที่มีผู้ใช้ในระบบใช้อยู่แล้ว', () => {
+      const p = plan([['b1', 'ก', 'ข', 'taken@s.ac.th']], { existingEmails: ['TAKEN@s.ac.th'] });
+      assert.equal(p.summary.ok, 0);
+      assert.match(p.items[0].reason, /มีผู้ใช้ในระบบใช้อยู่แล้ว/, 'ต้องเทียบแบบไม่สนตัวพิมพ์เล็ก-ใหญ่');
+    });
+
+    test('อีเมลผิดรูปแบบ', () => {
+      const p = plan([['c1', 'ก', 'ข', 'ไม่ใช่อีเมล'], ['c2', 'ค', 'ง', 'ok@s.ac.th']]);
+      assert.equal(p.summary.error, 1);
+      assert.match(p.items[0].reason, /ไม่ใช่รูปแบบอีเมล/);
+      assert.equal(p.items[1].status, 'ok');
+    });
+
+    test('ช่องอีเมลว่างยังนำเข้าได้ตามปกติ และหลายแถวว่างพร้อมกันไม่ถือว่าซ้ำ', () => {
+      const p = plan([['d1', 'ก', 'ข', ''], ['d2', 'ค', 'ง', '']]);
+      assert.equal(p.summary.ok, 2, 'อีเมลไม่ใช่ช่องบังคับ — ว่างได้ และ NULL ไม่ชนกันเองใน SQLite');
+    });
+  });
+
+  test('ช่องที่ยาวผิดปกติต้องถูกปฏิเสธพร้อมบอกว่าช่องไหน', () => {
+    const rows = [['รหัสประจำตัว', 'ชื่อ', 'นามสกุล', 'ตำแหน่ง'],
+      ['e1', 'ก'.repeat(5000), 'ข', 'ครู'],
+      ['e2', 'ก', 'ข', 'ค'.repeat(5000)],
+      ['e3', 'ก', 'ข', 'ครู']];
+    const p = planUserImport(rows, { departments, roles, existingCodes: [] });
+    assert.equal(p.summary.error, 2);
+    assert.match(p.items[0].reason, /"ชื่อ" ยาวเกิน/);
+    assert.match(p.items[1].reason, /"ตำแหน่ง" ยาวเกิน/);
+    assert.equal(p.items[2].status, 'ok', 'แถวปกติต้องไม่โดนลูกหลง');
+  });
+
+  // ไฟล์เป็นพันแถวแปลว่าหยิบไฟล์ผิด (เช่นไฟล์รายชื่อนักเรียน) การสร้างบัญชีพันบัญชีแล้วไล่ลบทีหลัง
+  // เจ็บปวดกว่าการให้แบ่งไฟล์มาก และหน้าที่แสดงรหัสผ่านครั้งเดียวจะยาวจนพิมพ์แจกไม่ไหว
+  test('จำนวนแถวเกินเพดานต้องถูกปฏิเสธทั้งไฟล์', () => {
+    const many = Array.from({ length: MAX_IMPORT_ROWS + 1 }, (_, i) => [`f${i}`, 'ก', `ข${i}`]);
+    assert.throws(() => planUserImport([['รหัสประจำตัว', 'ชื่อ', 'นามสกุล'], ...many],
+      { departments, roles, existingCodes: [] }), /เกินเพดาน/);
+    const justFits = Array.from({ length: MAX_IMPORT_ROWS }, (_, i) => [`g${i}`, 'ก', `ข${i}`]);
+    assert.equal(planUserImport([['รหัสประจำตัว', 'ชื่อ', 'นามสกุล'], ...justFits],
+      { departments, roles, existingCodes: [] }).summary.ok, MAX_IMPORT_ROWS, 'พอดีเพดานต้องยังผ่าน');
+  });
 });
 
 // ค่าที่หน้าเว็บส่งมาเป็น <select>/<input type=date> ก็จริง แต่ต้องตรวจฝั่งเซิร์ฟเวอร์เสมอ —
@@ -1407,6 +1487,40 @@ describe('หลักฐานการลงนาม: ต้องตรึ�
 // รายฉบับยังใช้ canUserSeeDocument เหมือนเดิม — สองตัวนี้ต้องให้ผลตรงกันเป๊ะเสมอ ถ้าเงื่อนไข SQL หลวมกว่า
 // คือเปิดเผยหนังสือลับให้คนที่ไม่มีสิทธิ์เห็น ถ้าแคบกว่าคือซ่อนหนังสือที่ควรเห็นจนหาไม่เจอ ทั้งสองแบบ
 // ไม่มีอะไรฟ้องเลยจนกว่าจะมีคนมาบ่น เทสต์นี้จึงเทียบผลของทั้งสองกับหนังสือทุกฉบับ x ผู้ใช้ทุกบทบาท
+// คำเตือน "ไฟล์นี้ซ้ำกับเอกสาร 0042/2569" เดิมค้นทั้งฐานข้อมูล ครูที่บังเอิญอัปโหลดไฟล์เดียวกับที่แนบอยู่
+// กับหนังสือ "ลับมาก" จึงได้เลขที่หนังสือฉบับนั้นมาฟรีๆ ทั้งที่เปิดอ่านไม่ได้
+describe('คำเตือนไฟล์ซ้ำต้องไม่บอกเลขหนังสือที่ผู้อัปโหลดไม่มีสิทธิ์เห็น', () => {
+  // แต่ละเทสต์ต้องใช้เนื้อหาไฟล์ของตัวเอง ไม่งั้นการค้นด้วย hash จะไปเจอไฟล์ของเทสต์ก่อนหน้าแทน
+  const pdfWith = (tag) => Buffer.from(`%PDF-1.4\n% ${tag}\ntrailer<</Root 1 0 R>>\n%%EOF\n`).toString('base64');
+  const upload = (user, title, pdf, over = {}) => dispatchPost(user, '/documents', {
+    title, departmentId: deptId, correspondentName: 'ทดสอบ',
+    fileName: 'a.pdf', fileType: 'application/pdf', fileDataBase64: pdf, ...over,
+  });
+  const warnOf = (res) => decodeURIComponent(/warn=([^&]*)/.exec(res.body || '')?.[1] || '');
+
+  test('ครูที่เห็นหนังสือลับไม่ได้ ต้องไม่ได้เลขที่หนังสือนั้นมาจากคำเตือน', async () => {
+    const pdf = pdfWith('เนื้อหาของหนังสือลับ');
+    const secret = await upload(registrarUser, 'รายงานสอบสวนลับมาก', pdf, { secretLevel: 'top_secret' });
+    const secretId = /\/documents\/([0-9a-f-]{36})/.exec(secret.body)?.[1];
+    const secretNumber = db.prepare('SELECT doc_number_display d FROM documents WHERE id = ?').get(secretId).d;
+    assert.equal(canUserSeeDocument(loadUserForTest(seed.userIds.teacher001), getDocRow(secretId)), false);
+
+    const byTeacher = await upload(loadUserForTest(seed.userIds.teacher001), 'ครูอัปโหลดไฟล์เดียวกัน', pdf);
+    assert.ok(!warnOf(byTeacher).includes(secretNumber),
+      `คำเตือนบอกเลขหนังสือลับให้ครูรู้: "${warnOf(byTeacher)}"`);
+  });
+
+  test('คนที่มีสิทธิ์เห็นยังได้คำเตือนไฟล์ซ้ำตามเดิม', async () => {
+    const pdf = pdfWith('เนื้อหาของหนังสือทั่วไป');
+    const first = await upload(registrarUser, 'หนังสือทั่วไปฉบับแรก', pdf);
+    const firstId = /\/documents\/([0-9a-f-]{36})/.exec(first.body)?.[1];
+    const number = db.prepare('SELECT doc_number_display d FROM documents WHERE id = ?').get(firstId).d;
+    const second = await upload(registrarUser, 'หนังสือทั่วไปฉบับที่สอง', pdf);
+    assert.ok(warnOf(second).includes(number),
+      `ควรเตือนว่าซ้ำกับ ${number} แต่ได้: "${warnOf(second)}"`);
+  });
+});
+
 describe('สิทธิ์เห็นหนังสือ: เงื่อนไขใน SQL ต้องตรงกับการตรวจรายฉบับเสมอ', () => {
   test('ทุกฉบับ x ทุกบทบาท ให้ผลเหมือนกันทั้งสองทาง', async () => {
     const { canUserSeeDocument, visibleDocumentsSqlFilter } = await import('../src/services/workflow.js');

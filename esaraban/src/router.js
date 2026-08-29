@@ -56,8 +56,27 @@ export function json(ctx, status, obj) {
 // disposition: 'inline' ให้เบราว์เซอร์เปิดดูในแท็บ (ไฟล์แนบหนังสือ/หลักฐาน) — 'attachment' บังคับดาวน์โหลด
 // ใช้กับไฟล์ที่ผู้ใช้ต้องเอาไปเปิดในโปรแกรมอื่น เช่น ไฟล์ตัวอย่างสำหรับกรอกใน Excel ซึ่งถ้าเปิดในเบราว์เซอร์
 // จะกลายเป็นข้อความดิบบนหน้าจอ แล้วผู้ใช้จะไม่รู้ว่าต้องทำอะไรต่อ
+// เพดานความยาวชื่อไฟล์ที่ใส่ลงหัว HTTP ได้
+//
+// อักษรไทยหนึ่งตัวกลายเป็น 9 ไบต์เมื่อเข้ารหัสแบบ percent-encoding (%E0%B8%81) ชื่อไฟล์ไทย 3,000 ตัว
+// จึงกลายเป็นหัว Content-Disposition ขนาด 27KB ซึ่งเกินเพดาน 16KB ของ Node — วัดจริงแล้วผลคือ
+// การดาวน์โหลดไฟล์นั้น "ล้มที่ระดับโปรโตคอล" (UND_ERR_HEADERS_OVERFLOW) ไม่ใช่ขึ้นข้อความบอกผู้ใช้
+// แปลว่าไฟล์แนบฉบับนั้นเปิดไม่ได้อีกเลยตลอดไป และไม่มีอะไรบอกว่าทำไม
+//
+// ตัดที่ตัวช่วยกลางนี้ด้วย (ไม่ใช่แค่ตอนอัปโหลด) เพราะแถวที่บันทึกไว้ก่อนหน้านี้ยังมีชื่อยาวค้างอยู่
+export const MAX_HEADER_FILENAME_CHARS = 120;
+
+export function truncateFilename(name, max = MAX_HEADER_FILENAME_CHARS) {
+  const s = String(name || '');
+  if (s.length <= max) return s;
+  const dot = s.lastIndexOf('.');
+  // เก็บนามสกุลไว้เสมอ ไม่งั้นเครื่องผู้ใช้จะเปิดไฟล์ไม่ถูกโปรแกรม (นามสกุลยาวผิดปกติถือว่าไม่ใช่นามสกุล)
+  const ext = dot > 0 && s.length - dot <= 10 ? s.slice(dot) : '';
+  return s.slice(0, Math.max(1, max - ext.length)) + ext;
+}
+
 export function contentDispositionHeader(filename, fallback = 'document.pdf', disposition = 'inline') {
-  const name = String(filename || fallback);
+  const name = truncateFilename(String(filename || fallback));
   const stripped = name.replace(/[^\x20-\x7E]/g, '').replace(/"/g, '').trim();
   // ชื่อไทยล้วนอย่าง "ประกาศรับสมัครครู.pdf" พอตัดอักขระที่ไม่ใช่ ASCII ออกจะเหลือแค่ ".pdf" ซึ่งบนเครื่อง
   // ผู้ใช้กลายเป็นไฟล์ซ่อนที่ไม่มีชื่อ — ต้องดูเฉพาะ "ส่วนชื่อ" ไม่รวมนามสกุล เพราะนามสกุลเป็น ASCII อยู่แล้ว

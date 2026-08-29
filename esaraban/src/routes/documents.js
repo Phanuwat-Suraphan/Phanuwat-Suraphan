@@ -1,4 +1,4 @@
-import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
+import { router, html, json, redirect, contentDispositionHeader, truncateFilename } from '../router.js';
 import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, stampDateThai, stampTimeThai, priorityBadge, secretBadge, statusBadge, emptyState, fmtCount, LABELS, SCHOOL_NAME } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, nowIso, audit, todayInBangkok, RETENTION_LABEL } from '../db.js';
@@ -427,15 +427,25 @@ router.get('/documents/new', requirePage((ctx) => {
   html(ctx, 200, layout({ user: ctx.user, title: 'สร้างเอกสารใหม่', path: '/documents/new', content }));
 }));
 
-async function saveAttachment({ documentId, fileName, fileType, fileDataBase64, uploadedBy }) {
+async function saveAttachment({ documentId, fileName, fileType, fileDataBase64, uploader }) {
   if (!fileDataBase64) return null;
+  // ตัดชื่อไฟล์ตั้งแต่ตอนบันทึก ไม่ใช่ตอนส่งออกอย่างเดียว — ผู้ใช้จะได้เห็นชื่อเดียวกันทั้งในหน้าเว็บและ
+  // ตอนดาวน์โหลด (ชื่อยาวเกินทำให้หัว HTTP ล้นจนดาวน์โหลดไม่ได้เลย ดู truncateFilename ใน router.js)
+  fileName = truncateFilename(fileName);
   if (!ALLOWED_MIME.has(fileType)) throw httpError(400, 'อนุญาตเฉพาะไฟล์ PDF เท่านั้น');
   const buf = Buffer.from(fileDataBase64, 'base64');
   if (buf.length > MAX_FILE_BYTES) throw httpError(413, 'ไฟล์มีขนาดใหญ่เกิน 10MB');
   // magic-number check (file signature), not just declared MIME type
   if (buf.subarray(0, 5).toString('latin1') !== '%PDF-') throw httpError(400, 'ไฟล์ไม่ใช่ PDF ที่ถูกต้อง (ตรวจสอบ file signature ไม่ผ่าน)');
   const hash = createHash('sha256').update(buf).digest('hex');
-  const dup = db.prepare('SELECT a.*, d.doc_number_display FROM attachments a JOIN documents d ON d.id = a.document_id WHERE a.hash_sha256 = ?').get(hash);
+  // คำเตือน "ไฟล์นี้ซ้ำกับเอกสาร 0042/2569" ต้องบอกได้เฉพาะเลขของหนังสือที่ผู้อัปโหลดมีสิทธิ์เห็น —
+  // เดิมค้นทั้งฐานข้อมูล ครูที่บังเอิญอัปโหลดไฟล์เดียวกับที่แนบอยู่กับหนังสือ "ลับมาก" จึงได้เลขที่หนังสือ
+  // ฉบับนั้นมาฟรีๆ ทั้งที่เปิดอ่านไม่ได้ (ยืนยันแล้วว่าเกิดขึ้นจริง)
+  const dupVisible = visibleDocumentsSqlFilter(uploader);
+  const dup = db.prepare(`
+    SELECT a.*, d.doc_number_display FROM attachments a JOIN documents d ON d.id = a.document_id
+    WHERE a.hash_sha256 = :hash AND d.deleted_at IS NULL AND ${dupVisible.sql}
+  `).get({ ...dupVisible.params, hash });
   const id = uuid();
   const safeName = `${id}.pdf`;
 
@@ -458,8 +468,8 @@ async function saveAttachment({ documentId, fileName, fileType, fileDataBase64, 
   db.prepare(`
     INSERT INTO attachments (id, document_id, filename, storage_provider, filepath, drive_file_id, filesize, mime_type, hash_sha256, uploaded_by, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, documentId, fileName || 'document.pdf', storageProvider, filepath, driveFileId, buf.length, fileType, hash, uploadedBy, nowIso());
-  audit({ userId: uploadedBy, action: 'attachment_uploaded', tableName: 'attachments', recordId: id, detail: { documentId, hash, storageProvider, duplicateOf: dup ? dup.doc_number_display : null } });
+  `).run(id, documentId, fileName || 'document.pdf', storageProvider, filepath, driveFileId, buf.length, fileType, hash, uploader.id, nowIso());
+  audit({ userId: uploader.id, action: 'attachment_uploaded', tableName: 'attachments', recordId: id, detail: { documentId, hash, storageProvider, duplicateOf: dup ? dup.doc_number_display : null } });
   return { id, duplicateWarning: dup ? `พบไฟล์นี้ซ้ำกับเอกสาร ${dup.doc_number_display} (Hash ตรงกัน)` : null };
 }
 
@@ -479,7 +489,7 @@ router.post('/documents', requireApi(async (ctx) => {
   const warnParts = [];
   if (doc.duplicateDocNumberWarning) warnParts.push(doc.duplicateDocNumberWarning);
   if (b.fileDataBase64) {
-    const att = await saveAttachment({ documentId: doc.id, fileName: b.fileName, fileType: b.fileType, fileDataBase64: b.fileDataBase64, uploadedBy: ctx.user.id });
+    const att = await saveAttachment({ documentId: doc.id, fileName: b.fileName, fileType: b.fileType, fileDataBase64: b.fileDataBase64, uploader: ctx.user });
     if (att?.duplicateWarning) warnParts.push(att.duplicateWarning);
   }
   const warn = warnParts.length ? `&warn=${encodeURIComponent(warnParts.join(' / '))}` : '';
@@ -939,7 +949,7 @@ router.get('/documents/register', requirePage((ctx) => {
 router.post('/documents/:id/attachments', requireApi(async (ctx) => {
   const doc = getDocument(ctx.params.id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
-  const att = await saveAttachment({ documentId: doc.id, fileName: ctx.body.fileName, fileType: ctx.body.fileType, fileDataBase64: ctx.body.fileDataBase64, uploadedBy: ctx.user.id });
+  const att = await saveAttachment({ documentId: doc.id, fileName: ctx.body.fileName, fileType: ctx.body.fileType, fileDataBase64: ctx.body.fileDataBase64, uploader: ctx.user });
   json(ctx, 200, { redirect: `/documents/${doc.id}${att?.duplicateWarning ? '?warn=' + encodeURIComponent(att.duplicateWarning) : ''}` });
 }));
 

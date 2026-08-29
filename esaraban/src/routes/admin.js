@@ -726,5 +726,7 @@ function buildPlan(body) {
     departments: db.prepare('SELECT id, name FROM departments').all(),
     roles: db.prepare('SELECT id, name, name_th FROM roles').all(),
     existingCodes: db.prepare('SELECT employee_code FROM users WHERE deleted_at IS NULL').all().map((u) => u.employee_code),
+    // รวมบัญชีที่ถูกลบ (soft delete) ด้วย — แถวยังอยู่ในตาราง ข้อจำกัด UNIQUE ของอีเมลจึงยังบังคับใช้อยู่
+    existingEmails: db.prepare('SELECT email FROM users WHERE email IS NOT NULL').all().map((u) => u.email),
   });
 }
