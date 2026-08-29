@@ -5,6 +5,7 @@ import { layout, esc, fmtThaiDateLong, illustratedEmptyState } from '../render.j
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, nowIso, audit, todayInBangkok } from '../db.js';
 import { httpError } from '../services/workflow.js';
+import { requireDate } from '../services/validate.js';
 import { parseUploadedWorkbook, COLUMNS, MAX_ITEM_ROWS } from '../services/dailySummaryParse.js';
 
 const MAX_XLSX_BYTES = 5 * 1024 * 1024;
@@ -52,6 +53,11 @@ router.get('/daily-summary', requirePage((ctx) => {
     FROM daily_summaries s JOIN users u ON u.id = s.uploaded_by
     ORDER BY s.summary_date DESC, s.created_at DESC
   `).all();
+
+  // อัปโหลดวันเดียวกันซ้ำได้โดยตั้งใจ (บางโรงเรียนแยกรอบเช้า/บ่าย) แต่ส่วนใหญ่ที่เกิดคือกดอัปโหลดซ้ำ
+  // เพราะคิดว่าครั้งแรกไม่ผ่าน แล้วได้สรุปสองชุดของวันเดียวกันโดยไม่มีอะไรบอก — ติดป้ายเตือนไว้ให้เห็น
+  const dayCounts = new Map();
+  for (const d of days) dayCounts.set(d.summary_date, (dayCounts.get(d.summary_date) || 0) + 1);
 
   const content = `
     <div class="card-header">
@@ -105,7 +111,8 @@ router.get('/daily-summary', requirePage((ctx) => {
       ${days.length ? `<div class="table-wrap"><table>
         <thead><tr><th>วันที่</th><th>จำนวนงาน</th><th>ทำแล้ว</th><th>ไฟล์ต้นฉบับ</th><th>ผู้อัปโหลด</th><th></th></tr></thead>
         <tbody>${days.map((d) => `<tr onclick="location.href='/daily-summary/${d.id}'" style="cursor:pointer">
-          <td><strong>${esc(fmtThaiDateLong(d.summary_date))}</strong></td>
+          <td><strong>${esc(fmtThaiDateLong(d.summary_date))}</strong>${dayCounts.get(d.summary_date) > 1
+            ? ` <span class="badge badge-warning" title="วันนี้มีสรุปงานมากกว่าหนึ่งชุด — ตรวจว่าอัปโหลดซ้ำหรือตั้งใจแยกเป็นรอบเช้า/บ่าย">⚠️ ${dayCounts.get(d.summary_date)} ชุด</span>` : ''}</td>
           <td>${d.item_count} รายการ</td>
           <td>${d.done_count}/${d.item_count}</td>
           <td class="text-muted" style="font-size:.8rem">${esc(d.source_filename || '-')}</td>
@@ -144,7 +151,11 @@ router.get('/daily-summary', requirePage((ctx) => {
 
 router.post('/daily-summary/upload', requireApi((ctx) => {
   const { summaryDate, fileName, fileDataBase64 } = ctx.body;
-  if (!summaryDate || !/^\d{4}-\d{2}-\d{2}$/.test(summaryDate)) throw httpError(400, 'กรุณาระบุวันที่ให้ถูกต้อง');
+  // ใช้ตัวตรวจวันที่ตัวเดียวกับฝั่งหนังสือ/ใบลา — เดิมตรวจแค่ "รูปทรง" ด้วย regex ค่าอย่าง 9999-99-99,
+  // 2026-13-45, 2026-02-30 และปี พ.ศ. (2569-10-01) จึงผ่านเข้ามาได้ทั้งหมด และเพราะหน้ารายการเรียงตาม
+  // summary_date แบบข้อความ วันที่พังเหล่านั้นจะไปค้างอยู่บนสุดของรายการถาวร บังสรุปงานของวันนี้จริงๆ
+  // (ยืนยันแล้วในฐานข้อมูลทดสอบ: 9999-99-99 กับ 2569-10-01 ลอยอยู่เหนือวันนี้)
+  const summaryDateOk = requireDate(summaryDate, 'วันที่ของสรุปงาน');
   if (!fileDataBase64) throw httpError(400, 'ไม่พบไฟล์');
   const buf = Buffer.from(fileDataBase64, 'base64');
   if (buf.length > MAX_XLSX_BYTES) throw httpError(413, 'ไฟล์ใหญ่เกิน 5MB');
@@ -152,8 +163,8 @@ router.post('/daily-summary/upload', requireApi((ctx) => {
   if (buf.subarray(0, 2).toString('latin1') !== 'PK') throw httpError(400, 'ไฟล์นี้ไม่ใช่ .xlsx (ถ้าเป็น .xls รุ่นเก่า ให้บันทึกเป็น .xlsx ก่อน)');
 
   const { items, sources } = parseUploadedWorkbook(buf);
-  const id = saveSummary({ summaryDate, filename: fileName, items, sources, userId: ctx.user.id });
-  audit({ userId: ctx.user.id, action: 'daily_summary_uploaded', tableName: 'daily_summaries', recordId: id, detail: { summaryDate, items: items.length } });
+  const id = saveSummary({ summaryDate: summaryDateOk, filename: fileName, items, sources, userId: ctx.user.id });
+  audit({ userId: ctx.user.id, action: 'daily_summary_uploaded', tableName: 'daily_summaries', recordId: id, detail: { summaryDate: summaryDateOk, items: items.length } });
   json(ctx, 201, { redirect: `/daily-summary/${id}?created=1` });
 }));
 

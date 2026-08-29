@@ -549,6 +549,67 @@ describe('สรุปงานรายวัน: แตกไฟล์เป�
     assert.equal(looksLikeHeader(HEADER_ROW), true);
     assert.equal(looksLikeHeader(['ด่วน', 'แจ้งกำหนดการประชุม', '', '', '', '']), false);
   });
+
+  // หน้ารายการเรียงตาม summary_date แบบข้อความ วันที่ที่เป็นไปไม่ได้จึงลอยค้างอยู่บนสุดถาวร
+  // บังสรุปงานของวันนี้จริงๆ (ยืนยันแล้ว: 9999-99-99 กับ 2569-10-01 ลอยอยู่เหนือวันนี้)
+  describe('วันที่ของสรุปงานต้องเป็นวันที่จริง', () => {
+    const upload = (summaryDate) => dispatchPost(registrarUser, '/daily-summary/upload', {
+      summaryDate, fileName: 's.xlsx',
+      fileDataBase64: makeXlsx([HEADER_ROW, ['ปกติ', 'งานทดสอบ', '', '', '', '']]).toString('base64'),
+    });
+
+    test('วันที่ที่เป็นไปไม่ได้และปี พ.ศ. ต้องถูกปฏิเสธ', async () => {
+      for (const bad of ['9999-99-99', '2026-13-45', '2026-02-30', '2569-10-01', '1800-01-01', 'ไม่ใช่วันที่', '']) {
+        const res = await upload(bad);
+        assert.ok(res.status >= 400, `วันที่ "${bad}" ควรถูกปฏิเสธ แต่ได้ HTTP ${res.status}`);
+      }
+    });
+
+    test('วันที่ปกติยังอัปโหลดได้ตามเดิม', async () => {
+      const res = await upload(todayInBangkok());
+      assert.equal(res.status, 201, res.body);
+    });
+
+    test('สรุปงานเก่าที่วันที่พังต้องถูกแก้เป็นวันที่อัปโหลดตอนอัปเกรดฐานข้อมูล', () => {
+      const id = uuid();
+      db.prepare(`INSERT INTO daily_summaries (id, summary_date, uploaded_by, created_at, updated_at)
+        VALUES (?, '9999-99-99', ?, '2026-03-04T01:00:00.000Z', ?)`).run(id, registrarUser.id, nowIso());
+      const other = uuid();
+      db.prepare(`INSERT INTO daily_summaries (id, summary_date, uploaded_by, created_at, updated_at)
+        VALUES (?, '2569-10-01', ?, '2026-05-06T01:00:00.000Z', ?)`).run(other, registrarUser.id, nowIso());
+      const good = uuid();
+      db.prepare(`INSERT INTO daily_summaries (id, summary_date, uploaded_by, created_at, updated_at)
+        VALUES (?, '2026-07-08', ?, '2026-07-08T01:00:00.000Z', ?)`).run(good, registrarUser.id, nowIso());
+
+      migrate();
+
+      const dateOf = (x) => db.prepare('SELECT summary_date d FROM daily_summaries WHERE id = ?').get(x).d;
+      assert.equal(dateOf(id), '2026-03-04', 'ต้องใช้วันที่อัปโหลดแทน ไม่ใช่ลบทิ้ง (รายการงานข้างในเป็นงานจริง)');
+      assert.equal(dateOf(other), '2026-05-06', 'ปี พ.ศ. ที่หลุดมาก็ต้องถูกแก้ด้วย');
+      assert.equal(dateOf(good), '2026-07-08', 'วันที่ปกติต้องไม่โดนลูกหลง');
+    });
+  });
+
+  // อัปโหลดวันเดียวกันซ้ำได้โดยตั้งใจ (บางโรงเรียนแยกรอบเช้า/บ่าย) แต่ส่วนใหญ่ที่เกิดคือกดซ้ำเพราะ
+  // คิดว่าครั้งแรกไม่ผ่าน แล้วได้สรุปสองชุดของวันเดียวกันโดยไม่มีอะไรบอก
+  test('หน้ารายการต้องติดป้ายเตือนวันที่มีสรุปมากกว่าหนึ่งชุด', async () => {
+    const date = '2026-06-15';
+    for (let i = 0; i < 2; i++) {
+      db.prepare(`INSERT INTO daily_summaries (id, summary_date, uploaded_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)`).run(uuid(), date, registrarUser.id, nowIso(), nowIso());
+    }
+    const res = await dispatchGet(registrarUser, '/daily-summary', {});
+    assert.equal(res.status, 200);
+    assert.match(res.body, /⚠️ 2 ชุด/, 'ต้องบอกว่าวันนั้นมีสรุปกี่ชุด');
+
+    // วันที่มีชุดเดียวต้องไม่ติดป้าย ไม่งั้นป้ายเตือนจะกลายเป็นสิ่งที่ทุกคนมองข้าม
+    const lone = '2026-06-16';
+    db.prepare(`INSERT INTO daily_summaries (id, summary_date, uploaded_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)`).run(uuid(), lone, registrarUser.id, nowIso(), nowIso());
+    const after = await dispatchGet(registrarUser, '/daily-summary', {});
+    const loneRow = after.body.split('<tr').find((r) => r.includes('16 มิถุนายน 2569'));
+    assert.ok(loneRow && !loneRow.includes('ชุด</span>'), 'วันที่มีชุดเดียวต้องไม่ติดป้ายเตือน');
+  });
 });
 
 // หน้าเว็บทั้งหมดพังได้เงียบๆ ถ้าเทมเพลตอ้างตัวแปรผิดชื่อ เพราะ template string จะระเบิดตอน "เรนเดอร์"

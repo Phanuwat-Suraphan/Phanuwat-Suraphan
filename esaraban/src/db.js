@@ -573,6 +573,24 @@ export function migrate() {
     if (cleaned) console.warn(`[data] ล้างค่า ${col} ที่ไม่ใช่วันที่จริงออกจากหนังสือ ${cleaned} ฉบับ`);
   }
 
+  // สรุปงานรายวันที่ "วันที่" เป็นไปไม่ได้ — หน้ารายการเรียงตาม summary_date แบบข้อความ ค่าอย่าง
+  // 9999-99-99 หรือปี พ.ศ. (2569-10-01) จึงลอยอยู่บนสุดของรายการถาวร บังสรุปงานของวันนี้จริงๆ
+  //
+  // ย้ายไปใช้ "วันที่อัปโหลด" แทนการลบทิ้ง — รายการงานข้างในเป็นงานจริงที่ธุรการพิมพ์ไว้ สิ่งที่ผิดคือ
+  // ตัวเลขวันที่เท่านั้น และวันที่อัปโหลดเป็นค่าที่จริงและใกล้เคียงที่สุดที่ระบบรู้
+  if (tableExists('daily_summaries')) {
+    const fixedSummaries = db.prepare(`
+      UPDATE daily_summaries SET summary_date = substr(created_at, 1, 10), updated_at = ?
+      WHERE summary_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+        OR CAST(substr(summary_date, 6, 2) AS INTEGER) NOT BETWEEN 1 AND 12
+        OR CAST(substr(summary_date, 9, 2) AS INTEGER) NOT BETWEEN 1 AND 31
+        OR CAST(substr(summary_date, 1, 4) AS INTEGER) NOT BETWEEN 1900 AND 2400
+    `).run(nowIso()).changes;
+    if (fixedSummaries) {
+      console.warn(`[data] แก้วันที่ของสรุปงานรายวัน ${fixedSummaries} รายการที่เป็นวันที่เป็นไปไม่ได้ ให้ใช้วันที่อัปโหลดแทน`);
+    }
+  }
+
   // ใบลาที่ช่วงวันที่เป็นไปไม่ได้ ค้างอยู่ในสถานะ "รออนุญาต" ตลอดไป — เกิดจากช่วงที่ยังไม่มีการตรวจวันที่
   // (พบของจริง 2 ใบ: ใบหนึ่งกรอกปี พ.ศ. ลงในช่องปี ค.ศ. อีกใบยาว 36,526 วันเพราะพิมพ์ปีผิด)
   // ตอนนี้ต้นทางปฏิเสธค่าแบบนี้แล้ว แต่ถ้าปล่อยแถวเก่าไว้ นอกจากค้างในกล่องรออนุญาตไม่มีวันหมดแล้ว
