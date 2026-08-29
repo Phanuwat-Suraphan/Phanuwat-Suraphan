@@ -2030,6 +2030,94 @@ describe('หน้ารายการต้องไม่โตตามป�
   });
 });
 
+// คำสั่งฐานข้อมูลของหน้าหลักต้องใช้ดัชนี ไม่ใช่สแกนทั้งตารางทุกครั้งที่เปิดหน้า
+//
+// ตรวจด้วย EXPLAIN QUERY PLAN แล้วพบว่าหกหน้ายังสแกนทั้งตารางแล้วเรียงด้วย temp B-tree รวมถึง
+// หน้าทะเบียนหนังสือซึ่งเปิดบ่อยที่สุด ตอนข้อมูลน้อยยังไม่รู้สึก แต่จะช้าลงทุกปีโดยไม่มีอะไรฟ้อง
+describe('คำสั่งฐานข้อมูลของหน้าหลักต้องใช้ดัชนี', () => {
+  // "SCAN t" เปล่าๆ คือไล่อ่านทั้งตาราง — ส่วน "SCAN t USING INDEX" คือไล่ตามลำดับของดัชนี
+  // ซึ่งเมื่อมี LIMIT จะหยุดเร็ว ไม่ใช่ปัญหา และ "LAST TERM OF ORDER BY" คือเรียงภายในกลุ่มที่
+  // ดัชนีจัดให้แล้ว ราคาถูก
+  const planOf = (sql) => db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all().map((r) => r.detail);
+  const problems = (plan) => plan.filter((d) => /^SCAN \w+$/.test(d.trim())
+    || (/TEMP B-TREE/.test(d) && !/LAST TERM/.test(d)));
+
+  const HOT_QUERIES = {
+    'ทะเบียนหนังสือ (หน้าที่เปิดบ่อยที่สุด)': `
+      SELECT d.* FROM documents d JOIN document_types dt ON dt.id = d.doc_type_id
+      JOIN departments dep ON dep.id = d.department_id
+      WHERE d.deleted_at IS NULL AND d.direction = 'incoming'
+      ORDER BY d.created_at DESC LIMIT 20`,
+    'ทะเบียนรายปี พ.ศ.': `
+      SELECT d.* FROM documents d WHERE d.deleted_at IS NULL AND d.direction = 'incoming' AND d.year_be = 2569
+      ORDER BY d.created_at DESC LIMIT 20`,
+    'แดชบอร์ด เอกสารล่าสุด': `
+      SELECT d.* FROM documents d WHERE d.deleted_at IS NULL ORDER BY d.created_at DESC LIMIT 40`,
+    'สรุปงานที่ต้องทำ': `
+      SELECT d.* FROM documents d JOIN departments dep ON dep.id = d.department_id
+      WHERE d.deleted_at IS NULL AND d.due_date IS NOT NULL AND d.due_date != ''
+        AND d.status NOT IN ('completed','archived','voided','destroyed','rejected')
+      ORDER BY d.due_date ASC, CASE d.priority WHEN 'most_urgent' THEN 0 ELSE 3 END ASC LIMIT 301`,
+    'ตัวกรองเลยกำหนด': `
+      SELECT COUNT(*) FROM documents d WHERE d.deleted_at IS NULL AND d.direction = 'incoming'
+        AND d.due_date IS NOT NULL AND d.due_date < '2026-08-29'
+        AND d.status NOT IN ('completed','archived')`,
+    'ประวัติการดำเนินการ': `
+      SELECT a.* FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
+      ORDER BY a.created_at DESC LIMIT 100`,
+    'การแจ้งเตือน': `
+      SELECT * FROM notifications WHERE user_id = 'x' ORDER BY created_at DESC LIMIT 100`,
+    'งานของฉัน': `
+      SELECT ws.* FROM workflow_steps ws WHERE ws.assignee_id = 'x' AND ws.status = 'waiting'`,
+  };
+
+  for (const [label, sql] of Object.entries(HOT_QUERIES)) {
+    test(`${label} — ต้องไม่สแกนทั้งตาราง`, () => {
+      const plan = planOf(sql);
+      assert.deepEqual(problems(plan), [], `${label}\n${plan.join('\n')}`);
+    });
+  }
+});
+
+// วันที่ทุกจุดในระบบผ่าน helper กลางใน render.js — ถ้า helper สร้างตัวจัดรูปแบบใหม่ทุกครั้งที่เรียก
+// หน้าที่เป็นตารางจะช้าโดยไม่มีใครสงสัย เพราะไม่มีอะไรผิดให้เห็น
+//
+// วัดจริง: การเรียก toLocaleDateString ตรงๆ ใช้ 0.111 ms ต่อครั้ง เทียบกับ 0.001 ms เมื่อใช้ตัวเดิมซ้ำ
+// (ช้ากว่า 81 เท่า) หน้า "สรุปงานที่ต้องทำ" 301 แถวเคยใช้ 156 ms ต่อการเปิดหนึ่งครั้ง เหลือ 26 ms
+describe('ตัวจัดรูปแบบวันที่ต้องสร้างครั้งเดียวแล้วใช้ซ้ำ', () => {
+  const srcOf = (name) => fs.readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8');
+
+  test('helper กลางไม่เรียก toLocale* ซ้ำๆ ในตัวฟังก์ชัน', () => {
+    for (const name of ['render.js', 'db.js']) {
+      const offenders = srcOf(name).split('\n')
+        // ข้ามบรรทัดที่เป็นคำอธิบาย ทั้งแบบ // และบรรทัดต่อของบล็อกคอมเมนต์ที่ขึ้นต้นด้วย * หรือ /**
+        .filter((line) => /\.toLocale(String|DateString|TimeString)\(/.test(line)
+          && !/^\s*(\/\/|\*|\/\*)/.test(line));
+      assert.deepEqual(offenders.map((l) => `${name}: ${l.trim().slice(0, 80)}`), [],
+        `${name} ต้องใช้ Intl.DateTimeFormat ที่สร้างไว้แล้ว ไม่ใช่เรียก toLocale* ทุกครั้ง`);
+    }
+  });
+
+  test('เรียกซ้ำต้องได้ตัวเดิม ไม่ใช่สร้างใหม่ทุกครั้ง', () => {
+    // วัดเวลาแทนการนับ object เพราะสิ่งที่สนใจคือ "ราคา" ไม่ใช่รูปแบบการเขียน
+    const N = 2000;
+    const t0 = performance.now();
+    for (let i = 0; i < N; i++) fmtThaiDateShort('2026-08-25');
+    const perCall = (performance.now() - t0) / N;
+    assert.ok(perCall < 0.05, `จัดรูปแบบวันที่ใช้ ${perCall.toFixed(3)} ms ต่อครั้ง — แปลว่ายังสร้างตัวจัดรูปแบบใหม่ทุกครั้ง`);
+  });
+
+  test('ผลลัพธ์ต้องยังถูกต้องเหมือนเดิมหลังใช้ตัวเดิมซ้ำ', () => {
+    // วันที่ล้วนต้องอ่านเป็น UTC (ไม่เลื่อนวัน) ส่วนจุดเวลาเต็มต้องแปลงเป็นเวลาไทย
+    assert.equal(fmtThaiDateShort('2026-08-25'), '25 ส.ค. 2569');
+    assert.equal(fmtThaiDateLong('2026-01-01'), '1 มกราคม 2569');
+    // 2026-08-25T18:00:00Z = 26 ส.ค. 01:00 น. ตามเวลาไทย — ต้องข้ามไปเป็นวันที่ 26
+    assert.equal(fmtThaiDateShort('2026-08-25T18:00:00.000Z'), '26 ส.ค. 2569');
+    assert.equal(todayInBangkok(), new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' }));
+    assert.equal(beYear('2026-01-01T00:00:00.000Z'), 2569);
+  });
+});
+
 // หัวทะเบียนที่พิมพ์ออกมาเป็นเอกสารราชการเก็บเข้าแฟ้ม วันที่บนนั้นต้องเป็น พ.ศ. แบบไทย ไม่ใช่ค่าดิบ
 // จาก <input type="date"> ที่เป็น ค.ศ. (เดิมพิมพ์ว่า "เงื่อนไข: ตั้งแต่ 2026-08-01 · ถึง 2026-08-31")
 describe('หัวทะเบียนที่พิมพ์: วันที่ต้องเป็น พ.ศ.', () => {
