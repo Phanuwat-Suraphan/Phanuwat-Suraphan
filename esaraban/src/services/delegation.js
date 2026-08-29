@@ -57,7 +57,16 @@ export function getActiveDelegateFor(delegatorId, dateStr) {
   `).get(delegatorId, d, d);
 }
 
-export function listMyDelegations(userId) {
+// เพดานรายการที่แสดง — การมอบหมายรักษาการแทนสะสมทุกครั้งที่มีคนลาหรือไปราชการ ปีละหลายสิบครั้ง
+// ต่อคน (วัดจริง: 300 รายการทำให้หน้านี้หนัก 161KB) รายการเก่ายังอยู่ในฐานข้อมูล แค่ไม่ต้องส่งมาทุกครั้ง
+export const DELEGATION_PAGE_SIZE = 50;
+
+export function countMyDelegations(userId) {
+  return db.prepare('SELECT COUNT(*) c FROM user_delegations WHERE delegator_id = ? OR delegate_id = ?')
+    .get(userId, userId).c;
+}
+
+export function listMyDelegations(userId, limit = DELEGATION_PAGE_SIZE) {
   return db.prepare(`
     SELECT ud.*,
       dg.first_name as delegate_first, dg.last_name as delegate_last, dg.prefix as delegate_prefix,
@@ -66,8 +75,8 @@ export function listMyDelegations(userId) {
     JOIN users dg ON dg.id = ud.delegate_id
     JOIN users dr ON dr.id = ud.delegator_id
     WHERE ud.delegator_id = ? OR ud.delegate_id = ?
-    ORDER BY ud.cancelled_at IS NOT NULL, ud.end_date DESC
-  `).all(userId, userId);
+    ORDER BY ud.cancelled_at IS NOT NULL, ud.end_date DESC LIMIT ?
+  `).all(userId, userId, limit);
 }
 
 export function cancelDelegation({ id, actorUser }) {

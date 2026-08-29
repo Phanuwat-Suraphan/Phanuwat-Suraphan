@@ -12,7 +12,38 @@ export function httpError(statusCode, message) {
   return Object.assign(new Error(message), { statusCode });
 }
 
-export function listEligibleForDestruction() {
+// เพดานรายการที่แสดงต่อครั้ง — หลังใช้งานไปสิบปี หนังสือที่ครบอายุเก็บพร้อมกันมีเป็นพันฉบับ
+// (วัดจริง: 1,000 ฉบับทำให้หน้านี้หนัก 428KB ต่อการเปิดหนึ่งครั้ง) และการทำลายทำได้ครั้งละไม่เกิน
+// MAX_BATCH_ITEMS อยู่แล้ว การแสดงทีเดียวทั้งหมดจึงไม่ได้ช่วยให้ทำงานเร็วขึ้น มีแต่ทำให้หน้าเปิดไม่ไหว
+export const ELIGIBLE_PAGE_SIZE = 200;
+
+/** จำนวนหนังสือที่ครบอายุเก็บทั้งหมด — ใช้บอกว่ายังเหลืออีกเท่าไรนอกจากที่แสดงอยู่ */
+export function countEligibleForDestruction() {
+  return db.prepare(`
+    SELECT COUNT(*) c FROM documents d
+    WHERE d.deleted_at IS NULL AND d.status IN ('completed', 'archived', 'voided')
+      AND d.retention_until IS NOT NULL AND d.retention_until <= :today
+      AND NOT EXISTS (
+        SELECT 1 FROM destruction_batch_items bi JOIN destruction_batches b ON b.id = bi.batch_id
+        WHERE bi.document_id = d.id AND b.status = 'pending_approval'
+      )
+  `).get({ today: todayInBangkok() }).c;
+}
+
+/** หนังสือฉบับนี้อยู่ในเงื่อนไขที่ทำลายได้หรือยัง — ใช้ตรวจสิทธิ์รายฉบับตอนตั้งบัญชี */
+export function isEligibleForDestruction(documentId) {
+  return !!db.prepare(`
+    SELECT 1 x FROM documents d
+    WHERE d.id = :id AND d.deleted_at IS NULL AND d.status IN ('completed', 'archived', 'voided')
+      AND d.retention_until IS NOT NULL AND d.retention_until <= :today
+      AND NOT EXISTS (
+        SELECT 1 FROM destruction_batch_items bi JOIN destruction_batches b ON b.id = bi.batch_id
+        WHERE bi.document_id = d.id AND b.status = 'pending_approval'
+      )
+  `).get({ id: documentId, today: todayInBangkok() });
+}
+
+export function listEligibleForDestruction(limit = ELIGIBLE_PAGE_SIZE) {
   return db.prepare(`
     SELECT d.*, dt.name as type_name, dep.name as dept_name FROM documents d
     JOIN document_types dt ON dt.id = d.doc_type_id JOIN departments dep ON dep.id = d.department_id
@@ -22,8 +53,8 @@ export function listEligibleForDestruction() {
         SELECT 1 FROM destruction_batch_items bi JOIN destruction_batches b ON b.id = bi.batch_id
         WHERE bi.document_id = d.id AND b.status = 'pending_approval'
       )
-    ORDER BY d.retention_until ASC
-  `).all({ today: todayInBangkok() });
+    ORDER BY d.retention_until ASC LIMIT :limit
+  `).all({ today: todayInBangkok(), limit });
 }
 
 /**
@@ -102,8 +133,9 @@ export function createDestructionBatch({ documentIds, committeeNames, reason, ac
   assertMaxLength(committeeNames, MAX_COMMITTEE_NAMES, 'รายชื่อคณะกรรมการ');
   assertMaxLength(reason, MAX_BATCH_REASON, 'เหตุผล');
 
-  const eligible = new Set(listEligibleForDestruction().map((d) => d.id));
-  const invalid = documentIds.filter((id) => !eligible.has(id));
+  // ตรวจทีละฉบับ ไม่ใช่เทียบกับ "รายการที่แสดงอยู่" — รายการที่แสดงถูกจำกัดจำนวนเพื่อไม่ให้หน้าเปิดไม่ไหว
+  // ถ้าเอาไปใช้ตรวจสิทธิ์ด้วย หนังสือที่ครบกำหนดจริงแต่อยู่นอกหน้าแรกจะถูกปฏิเสธทั้งที่ทำลายได้
+  const invalid = documentIds.filter((id) => !isEligibleForDestruction(id));
   if (invalid.length) throw httpError(409, 'มีเอกสารบางรายการไม่อยู่ในเงื่อนไขที่ทำลายได้ (ครบกำหนดเก็บแล้ว/ยังไม่ถูกรวมอยู่ในบัญชีอื่น) กรุณารีเฟรชหน้า');
 
   const batchId = uuid();

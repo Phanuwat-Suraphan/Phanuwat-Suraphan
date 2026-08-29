@@ -236,12 +236,20 @@ export function getLeaveRequest(id) {
   `).get(id);
 }
 
-export function listMyLeaveRequests(userId) {
+// เพดานรายการที่แสดง — ครูที่ใช้ระบบมาหลายปีมีใบลาสะสมหลายร้อยใบ (วัดจริง: 600 ใบทำให้หน้านี้
+// หนัก 230KB) ใบเก่ายังอยู่ในฐานข้อมูลครบ แค่ไม่ต้องส่งมาทั้งหมดทุกครั้งที่เปิดหน้า
+export const LEAVE_PAGE_SIZE = 50;
+
+export function countMyLeaveRequests(userId) {
+  return db.prepare('SELECT COUNT(*) c FROM leave_requests WHERE requester_id = ?').get(userId).c;
+}
+
+export function listMyLeaveRequests(userId, limit = LEAVE_PAGE_SIZE) {
   return db.prepare(`
     SELECT l.*, a.first_name as approver_first, a.last_name as approver_last FROM leave_requests l
     JOIN users a ON a.id = l.approver_id
-    WHERE l.requester_id = ? ORDER BY l.created_at DESC
-  `).all(userId);
+    WHERE l.requester_id = ? ORDER BY l.created_at DESC LIMIT ?
+  `).all(userId, limit);
 }
 
 export function listPendingApprovals(approverId) {

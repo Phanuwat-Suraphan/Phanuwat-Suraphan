@@ -2,7 +2,7 @@ import { router, html, json } from '../router.js';
 import { layout, esc, fmtThaiDateShort } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, todayInBangkok } from '../db.js';
-import { createDelegation, listMyDelegations, cancelDelegation } from '../services/delegation.js';
+import { createDelegation, listMyDelegations, countMyDelegations, cancelDelegation } from '../services/delegation.js';
 
 function listUserOptions(excludeId) {
   return db.prepare(`
@@ -24,6 +24,7 @@ function statusOf(d) {
 
 router.get('/delegations', requirePage((ctx) => {
   const rows = listMyDelegations(ctx.user.id);
+  const rowsTotal = countMyDelegations(ctx.user.id);
   const asDelegator = rows.filter((r) => r.delegator_id === ctx.user.id);
   const asDelegate = rows.filter((r) => r.delegate_id === ctx.user.id);
 
@@ -65,6 +66,9 @@ router.get('/delegations', requirePage((ctx) => {
 
     <div class="card">
       <h3 class="mt-0">รายการที่ฉันมอบหมายให้ผู้อื่นรักษาการแทน</h3>
+      ${rowsTotal > rows.length ? `<p class="text-muted" style="font-size:.82rem;margin:-.3rem 0 .6rem">
+        แสดง ${rows.length} รายการล่าสุด จากทั้งหมด ${rowsTotal} รายการ — รายการเก่ากว่านี้ยังอยู่ในระบบครบ
+      </p>` : ''}
       ${asDelegator.length ? `<div class="table-wrap"><table>
         <thead><tr><th>ผู้มอบหมาย</th><th>ผู้รักษาการแทน</th><th>ช่วงเวลา</th><th>หมายเหตุ</th><th>สถานะ</th><th></th></tr></thead>
         <tbody>${asDelegator.map((d) => rowHtml(d, true)).join('')}</tbody>

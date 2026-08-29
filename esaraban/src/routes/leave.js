@@ -12,7 +12,7 @@ import {
   approveLeaveRequest, rejectLeaveRequest, cancelLeaveRequest, canSeeLeaveRequest,
   listLeaveSignatures, listLeaveAttachments, getLeaveAttachment, insertLeaveAttachment,
   assertAllowedLeaveFile, MAX_LEAVE_FILE_BYTES, httpError,
-  listLeaveApprovers, leaveStatsForFiscalYear,
+  listLeaveApprovers, leaveStatsForFiscalYear, countMyLeaveRequests,
 } from '../services/leave.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream } from '../services/googleDrive.js';
 
@@ -46,6 +46,7 @@ function listApproverOptions(excludeId) {
 
 router.get('/leave', requirePage((ctx) => {
   const mine = listMyLeaveRequests(ctx.user.id);
+  const mineTotal = countMyLeaveRequests(ctx.user.id);
   const pending = listPendingApprovals(ctx.user.id);
 
   const rowHtml = (r, showRequester) => `
@@ -74,7 +75,10 @@ router.get('/leave', requirePage((ctx) => {
     </div>` : ''}
 
     <div class="card">
-      <h3 class="mt-0">คำขอของฉัน (${mine.length})</h3>
+      <h3 class="mt-0">คำขอของฉัน (${mineTotal})</h3>
+      ${mineTotal > mine.length ? `<p class="text-muted" style="font-size:.82rem;margin:-.3rem 0 .6rem">
+        แสดง ${mine.length} รายการล่าสุด จากทั้งหมด ${mineTotal} รายการ — คำขอเก่ากว่านี้ยังอยู่ในระบบครบ
+      </p>` : ''}
       ${mine.length ? `<div class="table-wrap"><table>
         <thead><tr><th>ประเภท</th><th>ช่วงวันที่</th><th>จำนวนวัน</th><th>สถานะ</th><th>ยื่นเมื่อ</th></tr></thead>
         <tbody>${mine.map((r) => rowHtml(r, false)).join('')}</tbody>

@@ -5,6 +5,15 @@ import { db } from '../db.js';
 
 const PRIORITY_ICON = { info: 'ℹ️', success: '✅', warning: '⚠️', urgent: '🔴', critical: '🚨' };
 
+// ข้อความแจ้งเตือนบางรายการยาวมาก (เช่น เหตุผลที่ไม่อนุมัติซึ่งผู้ใช้พิมพ์เอง) หน้านี้แสดง 100 รายการ
+// ต่อครั้ง ถ้าไม่ตัดจะหนักได้ถึงหลักแสนไบต์ทั้งที่จำนวนรายการมีเพดานอยู่แล้ว — รายละเอียดเต็มอ่านได้ที่
+// หน้าของเรื่องนั้นซึ่งลิงก์ไปอยู่แล้ว
+const MESSAGE_PREVIEW_CHARS = 200;
+const preview = (msg) => {
+  const s = String(msg || '');
+  return s.length > MESSAGE_PREVIEW_CHARS ? `${s.slice(0, MESSAGE_PREVIEW_CHARS)}…` : s;
+};
+
 router.get('/notifications', requirePage((ctx) => {
   const rows = db.prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 100').all(ctx.user.id);
   const content = `
@@ -17,7 +26,7 @@ router.get('/notifications', requirePage((ctx) => {
         <div class="flex items-center justify-between" style="padding:.7rem 0;border-bottom:1px solid var(--border);${n.is_read ? 'opacity:.6' : ''}">
           <div>
             <div style="font-weight:700">${PRIORITY_ICON[n.priority] || 'ℹ️'} ${esc(n.title)}</div>
-            <div class="text-muted" style="font-size:.85rem">${esc(n.message)}</div>
+            <div class="text-muted" style="font-size:.85rem">${esc(preview(n.message))}</div>
             <div class="text-muted" style="font-size:.75rem">${fmtDate(n.created_at)}</div>
           </div>
           <div class="chip-row">

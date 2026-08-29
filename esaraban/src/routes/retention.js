@@ -3,7 +3,7 @@ import { layout, esc, fmtDate, fmtThaiDateShort, statusBadge } from '../render.j
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { RETENTION_LABEL } from '../db.js';
 import {
-  listEligibleForDestruction, listBatches, getBatch,
+  listEligibleForDestruction, countEligibleForDestruction, listBatches, getBatch,
   createDestructionBatch, approveDestructionBatch, rejectDestructionBatch,
 } from '../services/retention.js';
 
@@ -12,6 +12,7 @@ const CAN_APPROVE = ['admin', 'director', 'vice_director']; // อนุมั�
 
 router.get('/retention', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage((ctx) => {
   const eligible = listEligibleForDestruction();
+  const eligibleTotal = countEligibleForDestruction();
   const batches = listBatches();
   const canManage = ctx.user.roleCodes.some((r) => CAN_MANAGE.includes(r));
   const canApprove = ctx.user.roleCodes.some((r) => CAN_APPROVE.includes(r));
@@ -42,7 +43,11 @@ router.get('/retention', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage(
     <p class="text-muted" style="font-size:.85rem">ตามระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ หมวด 3 — หนังสือที่ครบกำหนดอายุการเก็บต้องผ่านการพิจารณาของคณะกรรมการทำลายหนังสือก่อนจึงจะทำลายได้ ไม่สามารถลบทิ้งได้โดยตรง</p>
 
     <div class="card">
-      <div class="card-header"><h3 class="mt-0">เอกสารที่ครบกำหนดอายุการเก็บ (${eligible.length})</h3></div>
+      <div class="card-header"><h3 class="mt-0">เอกสารที่ครบกำหนดอายุการเก็บ (${eligibleTotal})</h3></div>
+      ${eligibleTotal > eligible.length ? `<div class="alert alert-info" style="margin-bottom:.8rem">
+        แสดง ${eligible.length} ฉบับแรก (เรียงตามวันครบกำหนดเก่าสุดก่อน) จากทั้งหมด ${eligibleTotal} ฉบับ —
+        ทำลายได้ครั้งละไม่เกิน 500 ฉบับอยู่แล้ว เมื่อจัดการชุดนี้เสร็จ ฉบับที่เหลือจะขึ้นมาแทน
+      </div>` : ''}
       ${eligible.length ? `
         <form id="batchForm">
           <div class="table-wrap"><table>

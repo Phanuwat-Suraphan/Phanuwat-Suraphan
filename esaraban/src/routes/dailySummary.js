@@ -10,6 +10,11 @@ import { parseUploadedWorkbook, COLUMNS, MAX_ITEM_ROWS } from '../services/daily
 
 const MAX_XLSX_BYTES = 5 * 1024 * 1024;
 
+// จำนวนวันที่แสดงในหน้ารายการ — หนึ่งภาคเรียนกว่าๆ ซึ่งครอบคลุมสิ่งที่ธุรการต้องย้อนดูจริง
+// (วัดจริง: 600 วันทำให้หน้านี้หนัก 313KB ต่อการเปิดหนึ่งครั้ง และโตขึ้นทุกวันไม่มีเพดาน)
+// สรุปงานเก่ากว่านี้ยังอยู่ในระบบครบ เปิดได้จากหน้า "ดูรวมทุกวัน"
+const DAY_LIST_LIMIT = 120;
+
 function saveSummary({ summaryDate, filename, items, sources, userId }) {
   const id = uuid();
   const now = nowIso();
@@ -51,8 +56,9 @@ router.get('/daily-summary', requirePage((ctx) => {
       (SELECT COUNT(*) FROM daily_summary_items i WHERE i.summary_id = s.id) as item_count,
       (SELECT COUNT(*) FROM daily_summary_items i WHERE i.summary_id = s.id AND i.is_done = 1) as done_count
     FROM daily_summaries s JOIN users u ON u.id = s.uploaded_by
-    ORDER BY s.summary_date DESC, s.created_at DESC
-  `).all();
+    ORDER BY s.summary_date DESC, s.created_at DESC LIMIT ?
+  `).all(DAY_LIST_LIMIT);
+  const daysTotal = db.prepare('SELECT COUNT(*) c FROM daily_summaries').get().c;
 
   // อัปโหลดวันเดียวกันซ้ำได้โดยตั้งใจ (บางโรงเรียนแยกรอบเช้า/บ่าย) แต่ส่วนใหญ่ที่เกิดคือกดอัปโหลดซ้ำ
   // เพราะคิดว่าครั้งแรกไม่ผ่าน แล้วได้สรุปสองชุดของวันเดียวกันโดยไม่มีอะไรบอก — ติดป้ายเตือนไว้ให้เห็น
@@ -68,6 +74,9 @@ router.get('/daily-summary', requirePage((ctx) => {
         </p>
       </div>
       ${days.length ? '<div class="chip-row"><a class="btn btn-outline btn-sm" href="/daily-summary/combined">🧾 ดูรวมทุกวัน</a></div>' : ''}
+      ${daysTotal > days.length ? `<p class="text-muted" style="font-size:.82rem;margin:.4rem 0 0">
+        แสดง ${days.length} วันล่าสุด จากทั้งหมด ${daysTotal} วัน — สรุปงานเก่ากว่านี้ยังอยู่ในระบบครบ
+      </p>` : ''}
     </div>
 
     <div class="card">

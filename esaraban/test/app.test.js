@@ -35,7 +35,7 @@ const { buildDocumentQuery, describeFilters, listRegisterYears } = await import(
 const { createDelegation } = await import('../src/services/delegation.js');
 const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, planBackupCleanup, thaiDateParts } = await import('../src/services/dbBackup.js');
 const sqliteModule = await import('node:sqlite');
-const { createDestructionBatch, approveDestructionBatch } = await import('../src/services/retention.js');
+const { createDestructionBatch, approveDestructionBatch, ELIGIBLE_PAGE_SIZE } = await import('../src/services/retention.js');
 const { MAX_STAMP_TEXT } = await import('../src/services/pdfStamp.js');
 const zlib = await import('node:zlib');
 
@@ -1895,6 +1895,138 @@ describe('ล้างวันที่ของหนังสือที่�
     // 2026 ไม่ใช่ปีอธิกสุรทิน แต่ 29 ก.พ. ยังอยู่ในช่วง 1–31 จึงไม่ถูกล้าง — ตัวตรวจตอนกรอกจับกรณีนี้อยู่แล้ว
     assert.equal(row.external_doc_date, '2026-02-29');
     assert.equal(row.due_date, '2026-12-31');
+  });
+});
+
+// หน้าที่แสดง "รายการ" ต้องไม่โตตามข้อมูลที่สะสมไปเรื่อยๆ
+//
+// วัดทุกหน้าพร้อมกันด้วยข้อมูลจำลองสามปี (หนังสือ 3,000 ฉบับ แจ้งเตือน 3,000 ใบลา 600 สรุปงาน 600 วัน
+// มอบหมายรักษาการแทน 300) แล้วพบว่าห้าหน้าโตแบบไม่มีเพดาน — /retention 428KB, /daily-summary 313KB,
+// /leave 230KB, /delegations 161KB และ /notifications ที่ข้อความยาวทำให้หนัก 173KB ตั้งแต่วันนี้
+//
+// เทสต์นี้คุมไว้ทั้งชุด ไม่ใช่ทีละหน้า เพราะปัญหานี้เกิดซ้ำได้ทุกครั้งที่มีคนเพิ่มหน้ารายการใหม่
+describe('หน้ารายการต้องไม่โตตามปริมาณข้อมูลที่สะสม', () => {
+  const PAGE_BUDGET_KB = 200;
+  const admin = () => loadUserForTest(seed.userIds.admin);
+
+  // หน้าที่แสดงรายการและมีสิทธิ์เปิดได้ด้วยบัญชีผู้ดูแลระบบ
+  const LIST_PAGES = ['/', '/documents', '/tasks', '/notifications', '/leave', '/delegations',
+    '/announcements', '/daily-summary', '/daily-summary/combined', '/summary', '/reports',
+    '/retention', '/admin/users', '/admin/audit'];
+
+  const sizesOf = async () => {
+    const out = new Map();
+    for (const path of LIST_PAGES) {
+      const res = await dispatchGet(admin(), path, {});
+      assert.equal(res.status, 200, `${path} ต้องเปิดได้ (ได้ HTTP ${res.status})`);
+      out.set(path, Buffer.byteLength(res.body) / 1024);
+    }
+    return out;
+  };
+
+  function seedThreeYears() {
+    const made = { docs: [], notifs: [], leaves: [], days: [], delegs: [] };
+    const insDoc = db.prepare(`INSERT INTO documents (id,direction,running_number,year_be,doc_number_display,title,subject,
+      correspondent_name,doc_type_id,department_id,status,retention_class,retention_until,created_by,created_at,updated_at)
+      VALUES (?,'incoming',?,?,?,?,?,?,?,?,?,'normal_10y',?,?,?,?)`);
+    for (let i = 0; i < 1500; i++) {
+      const id = uuid();
+      made.docs.push(id);
+      const done = i % 3 === 0;
+      insDoc.run(id, 900000 + i, 2569, `Z${String(i).padStart(5, '0')}/2569`,
+        `หนังสือสะสมทดสอบเรื่องที่ ${i} ขอความอนุเคราะห์วิทยากร`, 'สาระสำคัญของหนังสือฉบับนี้',
+        'สพป.เชียงใหม่ เขต ๖', typeId, deptId, done ? 'archived' : 'registered',
+        done ? '2020-12-31' : '2039-12-31', seed.userIds.reg001,
+        new Date(Date.now() - i * 3600000).toISOString(), nowIso());
+    }
+    const insN = db.prepare(`INSERT INTO notifications (id,user_id,document_id,link_url,title,message,priority,is_read,created_at)
+      VALUES (?,?,NULL,'/documents',?,?,'info',0,?)`);
+    for (let i = 0; i < 1500; i++) {
+      const id = uuid();
+      made.notifs.push(id);
+      insN.run(id, seed.userIds.admin, `แจ้งเตือนสะสม ${i}`, 'ข้อความแจ้งเตือน'.repeat(60),
+        new Date(Date.now() - i * 3600000).toISOString());
+    }
+    const insL = db.prepare(`INSERT INTO leave_requests (id,requester_id,leave_type,start_date,end_date,days_count,reason,status,approver_id,created_at,updated_at)
+      VALUES (?,?,'sick',?,?,1,'ทดสอบปริมาณ','approved',?,?,?)`);
+    for (let i = 0; i < 400; i++) {
+      const id = uuid();
+      made.leaves.push(id);
+      const d = new Date(Date.now() - (2000 + i) * 86400000).toISOString().slice(0, 10);
+      insL.run(id, seed.userIds.admin, d, d, seed.userIds.director01, nowIso(), nowIso());
+    }
+    const insS = db.prepare('INSERT INTO daily_summaries (id,summary_date,uploaded_by,created_at,updated_at) VALUES (?,?,?,?,?)');
+    for (let i = 0; i < 400; i++) {
+      const id = uuid();
+      made.days.push(id);
+      insS.run(id, new Date(Date.now() - (1000 + i) * 86400000).toISOString().slice(0, 10),
+        seed.userIds.reg001, nowIso(), nowIso());
+    }
+    const insD = db.prepare(`INSERT INTO user_delegations (id,delegator_id,delegate_id,reason,start_date,end_date,created_by,created_at)
+      VALUES (?,?,?,'ทดสอบปริมาณ',?,?,?,?)`);
+    for (let i = 0; i < 300; i++) {
+      const id = uuid();
+      made.delegs.push(id);
+      const d = new Date(Date.now() - (500 + i) * 86400000).toISOString().slice(0, 10);
+      insD.run(id, seed.userIds.admin, seed.userIds.director01, d, d, seed.userIds.admin, nowIso());
+    }
+    return made;
+  }
+
+  const cleanup = (made) => {
+    for (const id of made.notifs) db.prepare('DELETE FROM notifications WHERE id = ?').run(id);
+    for (const id of made.leaves) db.prepare('DELETE FROM leave_requests WHERE id = ?').run(id);
+    for (const id of made.days) db.prepare('DELETE FROM daily_summaries WHERE id = ?').run(id);
+    for (const id of made.delegs) db.prepare('DELETE FROM user_delegations WHERE id = ?').run(id);
+    for (const id of made.docs) db.prepare('DELETE FROM documents WHERE id = ?').run(id);
+  };
+
+  test('ทุกหน้ารายการต้องอยู่ในงบขนาดหน้า แม้ข้อมูลสะสมไปหลายปี', async () => {
+    const made = seedThreeYears();
+    try {
+      const sizes = await sizesOf();
+      const over = [...sizes].filter(([, kb]) => kb > PAGE_BUDGET_KB);
+      assert.deepEqual(over.map(([p2, kb]) => `${p2} (${kb.toFixed(0)} KB)`), [],
+        `หน้าที่หนักเกิน ${PAGE_BUDGET_KB} KB หลังข้อมูลสะสม`);
+    } finally {
+      cleanup(made);
+    }
+  });
+
+  test('หน้าที่จำกัดจำนวนต้องบอกด้วยว่ายังมีของเก่าอยู่ ไม่ใช่ตัดทิ้งเงียบๆ', async () => {
+    const made = seedThreeYears();
+    try {
+      for (const [path, mustSay] of [['/leave', /จากทั้งหมด/], ['/delegations', /จากทั้งหมด/],
+        ['/daily-summary', /จากทั้งหมด/], ['/retention', /จากทั้งหมด/]]) {
+        const res = await dispatchGet(admin(), path, {});
+        assert.match(res.body, mustSay, `${path} ต้องบอกว่ายังมีรายการเก่ากว่านี้อยู่ในระบบ`);
+      }
+    } finally {
+      cleanup(made);
+    }
+  });
+
+  // รายการที่แสดงถูกจำกัดจำนวนเพื่อไม่ให้หน้าเปิดไม่ไหว ถ้าเอาไปใช้ตรวจสิทธิ์ด้วย หนังสือที่ครบกำหนดจริง
+  // แต่อยู่นอกหน้าแรกจะถูกปฏิเสธตอนตั้งบัญชีทำลาย ทั้งที่ทำลายได้
+  test('ตั้งบัญชีทำลายหนังสือที่อยู่นอกหน้าแรกได้', async () => {
+    const made = seedThreeYears();
+    try {
+      const eligible = db.prepare(`
+        SELECT id FROM documents WHERE deleted_at IS NULL AND status = 'archived'
+          AND retention_until <= ? ORDER BY retention_until ASC`).all(todayInBangkok());
+      assert.ok(eligible.length > ELIGIBLE_PAGE_SIZE,
+        `ต้องมีหนังสือครบกำหนดมากกว่า ${ELIGIBLE_PAGE_SIZE} ฉบับเพื่อทดสอบ (มี ${eligible.length})`);
+      const beyondFirstPage = eligible[eligible.length - 1].id;
+      const batchId = createDestructionBatch({
+        documentIds: [beyondFirstPage], committeeNames: 'กรรมการ ก\nกรรมการ ข\nกรรมการ ค',
+        reason: 'ครบอายุการเก็บ', actorUser: registrarUser,
+      });
+      assert.ok(batchId, 'ต้องตั้งบัญชีได้แม้หนังสือฉบับนั้นไม่ได้อยู่ในหน้าแรกของรายการ');
+      db.prepare('DELETE FROM destruction_batch_items WHERE batch_id = ?').run(batchId);
+      db.prepare('DELETE FROM destruction_batches WHERE id = ?').run(batchId);
+    } finally {
+      cleanup(made);
+    }
   });
 });
 
