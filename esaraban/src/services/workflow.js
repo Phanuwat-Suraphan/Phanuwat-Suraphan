@@ -3,7 +3,7 @@ import { nextRunningNumber } from '../numbering.js';
 import { notifyUser } from './notify.js';
 import { deleteFile as deleteDriveFile, isGoogleDriveEnabled } from './googleDrive.js';
 import { getActiveDelegateFor } from './delegation.js';
-import { httpError, normalizeDate, assertMaxLength } from './validate.js';
+import { httpError, normalizeDate, assertMaxLength, asTextOrNull } from './validate.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -467,6 +467,10 @@ function assertCanManageDocument(doc, actorUser, what) {
 }
 
 export function voidDocument({ documentId, reason, actorUser }) {
+  // ค่าที่ไม่ใช่ข้อความ (undefined เมื่อไม่ได้ส่งช่องนี้มา หรือชนิดอื่นจาก client ที่ยิงเอง) ทำให้
+  // SQLite ผูกค่าไม่ได้แล้วตอบ 500 พร้อมข้อความ "Provided value cannot be bound to SQLite
+  // parameter 1" ภาษาอังกฤษดิบๆ ใส่หน้าผู้ใช้ (ยิงทดสอบแล้วเกิดขึ้นจริง)
+  reason = asTextOrNull(reason);
   assertMaxLength(reason, MAX_STEP_TEXT, 'เหตุผลการยกเลิก');
   const doc = getDocument(documentId);
   if (!doc) throw httpError(404, 'ไม่พบเอกสาร');

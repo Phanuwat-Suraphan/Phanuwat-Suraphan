@@ -32,6 +32,7 @@ const { SCHOOL_POSITIONS } = await import('../src/services/positions.js');
 const { planUserImport, MAX_IMPORT_ROWS } = await import('../src/services/userImport.js');
 const { truncateFilename, MAX_HEADER_FILENAME_CHARS } = await import('../src/router.js');
 const { buildDocumentQuery, describeFilters, listRegisterYears } = await import('../src/services/documentQuery.js');
+const { asText, asTextOrNull } = await import('../src/services/validate.js');
 const { createDelegation } = await import('../src/services/delegation.js');
 const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, planBackupCleanup, thaiDateParts } = await import('../src/services/dbBackup.js');
 const sqliteModule = await import('node:sqlite');
@@ -2115,6 +2116,94 @@ describe('ตัวจัดรูปแบบวันที่ต้องส�
     assert.equal(fmtThaiDateShort('2026-08-25T18:00:00.000Z'), '26 ส.ค. 2569');
     assert.equal(todayInBangkok(), new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' }));
     assert.equal(beYear('2026-01-01T00:00:00.000Z'), 2569);
+  });
+});
+
+// ทุกปุ่มที่บันทึกข้อมูลต้องตอบเป็นภาษาไทยเสมอ ไม่ใช่ error ดิบของโปรแกรม
+//
+// ค่าที่ส่งมาเป็น JSON เป็นชนิดอะไรก็ได้ ไม่ใช่ข้อความเสมอไป โค้ดที่เขียนว่า (b.x || '').trim() หรือ
+// b.x?.trim() จึงระเบิดเป็น error 500 พร้อมข้อความ JavaScript/SQLite ดิบใส่หน้าผู้ใช้ทันทีที่ได้ชนิดอื่น
+// ยิงทดสอบ 148 ครั้งแล้วพบสี่จุดที่เป็นแบบนี้จริง — คุมทั้งชุดเพราะเป็นความผิดพลาดที่เกิดซ้ำได้ทุกที่
+describe('ทุกปุ่มที่บันทึกข้อมูลต้องตอบเป็นภาษาไทย ไม่ใช่ error ดิบ', () => {
+  const RAW_PATTERNS = [
+    [/UNIQUE constraint|FOREIGN KEY constraint|NOT NULL constraint|SQLITE_|no such (column|table)|cannot be bound/i, 'ข้อความของ SQLite'],
+    [/is not a function|Cannot read propert|undefined is not|of undefined|of null|ReferenceError|TypeError/i, 'ข้อความของ JavaScript'],
+    [/ENOENT|EACCES|ERR_[A-Z_]+|must be of type/i, 'ข้อความของ Node'],
+  ];
+  const rawKind = (text) => RAW_PATTERNS.find(([re]) => re.test(text))?.[1];
+
+  // ชุดค่าที่ผิดรูปแบบซึ่ง client อาจส่งมาได้จริง (ฟิลด์หาย ชนิดผิด ค่ายาวเกิน null)
+  const TEXT_FIELDS = ['title', 'body', 'reason', 'firstName', 'lastName', 'email', 'position',
+    'committeeNames', 'comment', 'instruction', 'note', 'destination', 'contactInfo', 'category', 'employeeCode'];
+  const BAD_BODIES = () => [
+    ['ว่างเปล่า', {}],
+    ['ชนิดผิดทั้งหมด', {
+      title: 123, items: 'ไม่ใช่อาเรย์', documentIds: 'x', pin: 9999, assigneeId: [], departmentId: {},
+      startDate: true, endDate: 0, email: [], dataUrl: 5, summaryDate: [], fileDataBase64: {}, reason: null,
+      employeeCode: [], firstName: {}, lastName: 0, newPin: [], currentPassword: {}, newPassword: [], emoji: 7,
+      category: 1, body: [], committeeNames: 9, nextAssigneeId: {}, approverId: [], delegateId: 0,
+      leaveType: 5, x: 'ก', y: 'ข',
+    }],
+    ['ค่ายาวสุดขีด', Object.fromEntries(TEXT_FIELDS.map((k) => [k, 'ก'.repeat(60000)]))],
+    ['null ทุกช่อง', Object.fromEntries(['title', 'items', 'documentIds', 'pin', 'assigneeId',
+      'departmentId', 'startDate', 'endDate', 'email', 'dataUrl', 'summaryDate', 'reason', 'category', 'body']
+      .map((k) => [k, null]))],
+  ];
+
+  test('ยิงค่าผิดรูปแบบใส่ทุกเส้นทางที่บันทึกข้อมูล แล้วต้องไม่มี error ดิบหลุดออกมา', async () => {
+    const admin = loadUserForTest(seed.userIds.admin);
+    const pick = (sql) => db.prepare(sql).get()?.id || 'ไม่มีอยู่จริง';
+    const docId = pick('SELECT id FROM documents WHERE deleted_at IS NULL ORDER BY rowid DESC LIMIT 1');
+    const stepId = pick('SELECT id FROM workflow_steps ORDER BY rowid DESC LIMIT 1');
+    const endpoints = [
+      '/admin/users', '/admin/users/import/preview', '/admin/users/import',
+      '/announcements', `/announcements/${pick('SELECT id FROM announcements WHERE deleted_at IS NULL LIMIT 1')}/delete`,
+      `/daily-summary/${pick('SELECT id FROM daily_summaries LIMIT 1')}/items`, '/daily-summary/upload',
+      '/delegations', `/delegations/${pick('SELECT id FROM user_delegations LIMIT 1')}/cancel`,
+      '/documents', `/documents/${docId}/archive`, `/documents/${docId}/assign`,
+      `/documents/${docId}/comment`, `/documents/${docId}/stamp-position`, `/documents/${docId}/void`,
+      `/documents/${docId}/workflow/${stepId}/acknowledge`, `/documents/${docId}/workflow/${stepId}/approve`,
+      `/documents/${docId}/workflow/${stepId}/reject`, `/documents/${docId}/workflow/${stepId}/return`,
+      '/documents/bulk',
+      '/leave', `/leave/${pick('SELECT id FROM leave_requests LIMIT 1')}/approve`,
+      `/leave/${pick('SELECT id FROM leave_requests LIMIT 1')}/reject`,
+      '/notifications/read-all',
+      '/profile/avatar', '/profile/info', '/profile/password', '/profile/pin', '/profile/signature',
+      '/retention/batches',
+    ];
+
+    const offenders = [];
+    for (const path2 of endpoints) {
+      for (const [label, body] of BAD_BODIES()) {
+        const res = await dispatchPost(admin, path2, body);
+        const text = String(res.body || '');
+        let message = text;
+        try { message = JSON.parse(text).error ?? text; } catch { /* ไม่ใช่ JSON ก็ตรวจทั้งก้อน */ }
+        const kind = rawKind(String(message));
+        if (kind) offenders.push(`${path2} [${label}] → ${kind}: ${String(message).slice(0, 80)}`);
+        else if (res.status >= 500) offenders.push(`${path2} [${label}] → HTTP ${res.status}`);
+      }
+    }
+    assert.deepEqual(offenders, [], `พบ error ดิบหลุดออกไปถึงผู้ใช้:\n  ${offenders.join('\n  ')}`);
+  });
+
+  test('asText คืนค่าว่างสำหรับทุกชนิดที่ไม่ใช่ข้อความ ไม่ใช่แปลงเป็นข้อความมั่วๆ', () => {
+    assert.equal(asText('  ก ข  '), 'ก ข');
+    // ค่าที่ชนิดผิดคือค่าที่ผู้ใช้ไม่ได้ตั้งใจกรอก — เก็บ "123"/"[object Object]" ลงฐานข้อมูลแย่กว่าเว้นว่าง
+    for (const bad of [123, 0, true, false, null, undefined, [], {}, ['ก'], { a: 1 }]) {
+      assert.equal(asText(bad), '', `asText(${JSON.stringify(bad)}) ต้องเป็นค่าว่าง`);
+      assert.equal(asTextOrNull(bad), null);
+    }
+    assert.equal(asTextOrNull('   '), null, 'ข้อความที่มีแต่ช่องว่างถือว่าไม่ได้กรอก');
+  });
+
+  // ยกเลิกหนังสือโดยไม่ส่งเหตุผลมา เคยตอบ 500 "Provided value cannot be bound to SQLite parameter 1"
+  test('ยกเลิกหนังสือโดยไม่ระบุเหตุผล ต้องไม่พัง', () => {
+    const doc = makeDoc({ title: 'ยกเลิกโดยไม่ระบุเหตุผล' });
+    voidDocument({ documentId: doc.id, actorUser: registrarUser });
+    const row = getDocRow(doc.id);
+    assert.equal(row.status, 'voided');
+    assert.equal(row.void_reason, null, 'ไม่ได้ระบุเหตุผล ต้องเก็บเป็นค่าว่าง ไม่ใช่ข้อความมั่ว');
   });
 });
 

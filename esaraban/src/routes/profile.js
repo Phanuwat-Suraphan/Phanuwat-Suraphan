@@ -4,6 +4,7 @@ import { requirePage, requireApi } from '../middleware.js';
 import { db, nowIso, hashSecret, verifySecret, audit, isWeakPin } from '../db.js';
 import { revokeOtherSessions } from '../auth.js';
 import { positionInput } from '../services/positions.js';
+import { asText } from '../services/validate.js';
 
 // อวตารอิโมจิให้เลือก (UX Bible Part 21 §8) — คัดเฉพาะที่เหมาะกับบุคลากรโรงเรียน
 const AVATAR_EMOJIS = ['👩‍🏫', '👨‍🏫', '🧑‍🏫', '👩‍💼', '👨‍💼', '🧑‍💼', '🎓', '📚', '🦉', '🐱', '🐶', '🦊', '🐰', '🐢', '🐼', '🌿', '⭐', '😊'];
@@ -234,8 +235,14 @@ router.get('/profile', requirePage((ctx) => {
 }));
 
 router.post('/profile/info', requireApi(async (ctx) => {
-  const { prefix, firstName, lastName, email, position } = ctx.body;
-  if (!firstName?.trim() || !lastName?.trim()) return json(ctx, 400, { error: 'กรุณากรอกชื่อและนามสกุล' });
+  // อ่านทุกช่องผ่าน asText — ค่าที่ส่งมาเป็น JSON เป็นชนิดอะไรก็ได้ ถ้าเรียก .trim() ตรงๆ จะระเบิดเป็น
+  // error 500 พร้อมข้อความ JavaScript ดิบใส่หน้าผู้ใช้ทันทีที่ได้ตัวเลข/อาเรย์ (ยิงทดสอบแล้วเกิดจริง)
+  const prefix = asText(ctx.body.prefix);
+  const firstName = asText(ctx.body.firstName);
+  const lastName = asText(ctx.body.lastName);
+  const email = asText(ctx.body.email);
+  const position = asText(ctx.body.position);
+  if (!firstName || !lastName) return json(ctx, 400, { error: 'กรุณากรอกชื่อและนามสกุล' });
   // เพดานความยาวเหมือนหน้าจัดการผู้ใช้ของแอดมิน — ชื่อคนไม่มีทางยาวถึงหลักหมื่นตัวอักษร และชื่อยาวๆ
   // จะไปทำให้ไทม์ไลน์เอกสาร ตราประทับ และไฟล์ Excel ที่ส่งออกเสียรูปทั้งหมด
   for (const [value, max, label] of [[prefix, 50, 'คำนำหน้า'], [firstName, 100, 'ชื่อ'],
@@ -245,13 +252,13 @@ router.post('/profile/info', requireApi(async (ctx) => {
     }
   }
   // อีเมลใช้ติดต่อกลับจริง ถ้าเก็บค่าที่ไม่ใช่อีเมลไว้จะไม่มีใครรู้จนถึงวันที่ต้องส่งอะไรไปหา
-  if (email?.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return json(ctx, 400, { error: 'รูปแบบอีเมลไม่ถูกต้อง' });
   }
   try {
     db.prepare(`
       UPDATE users SET prefix = ?, first_name = ?, last_name = ?, email = ?, position = ?, updated_at = ? WHERE id = ?
-    `).run(prefix?.trim() || null, firstName.trim(), lastName.trim(), email?.trim() || null, position?.trim() || null, nowIso(), ctx.user.id);
+    `).run(prefix || null, firstName, lastName, email || null, position || null, nowIso(), ctx.user.id);
   } catch (e) {
     return json(ctx, 409, { error: 'อีเมลนี้ถูกใช้งานโดยผู้ใช้อื่นแล้ว' });
   }

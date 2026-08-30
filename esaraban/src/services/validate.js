@@ -45,6 +45,25 @@ export function requireDate(value, label) {
   return d;
 }
 
+/**
+ * อ่านค่าจาก body ของคำขอให้เป็นข้อความเสมอ
+ *
+ * ค่าที่ส่งมาเป็น JSON จะเป็นชนิดอะไรก็ได้ — ตัวเลข อาเรย์ อ็อบเจกต์ null — ไม่ใช่ข้อความเสมอไป
+ * โค้ดที่เขียนว่า (b.firstName || '').trim() หรือ b.firstName?.trim() จึงระเบิดเป็น error 500 พร้อม
+ * ข้อความ JavaScript ดิบๆ ใส่หน้าผู้ใช้ทันทีที่ได้ค่าชนิดอื่น (ยิงทดสอบแล้วเกิดขึ้นจริงหลายจุด)
+ *
+ * คืนค่าว่างสำหรับทุกอย่างที่ไม่ใช่ข้อความ แทนการแปลงเป็น "123" หรือ "[object Object]" — เพราะค่าที่
+ * ชนิดผิดคือค่าที่ผู้ใช้ไม่ได้ตั้งใจกรอก การเก็บร่องรอยของมันลงฐานข้อมูลแย่กว่าถือว่าไม่ได้กรอก
+ */
+export function asText(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/** เหมือน asText แต่คืน null เมื่อว่าง — ใช้กับคอลัมน์ที่ยอมให้เป็น NULL ได้ */
+export function asTextOrNull(value) {
+  return asText(value) || null;
+}
+
 export function assertMaxLength(value, max, label) {
   if (typeof value === 'string' && value.length > max) {
     throw httpError(400, `${label}ยาวเกินไป (${value.length} ตัวอักษร) — จำกัดไม่เกิน ${max} ตัวอักษร`);

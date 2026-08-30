@@ -5,6 +5,7 @@ import { db, uuid, nowIso, hashSecret, audit } from '../db.js';
 import { readTable, planUserImport, applyUserImport, templateCsv, generatePassword, generatePin } from '../services/userImport.js';
 import { httpError } from '../services/workflow.js';
 import { positionInput } from '../services/positions.js';
+import { asText, asTextOrNull } from '../services/validate.js';
 import {
   isGoogleDriveEnabled, isGoogleDriveConnected, getOAuthClientConfig, exchangeCodeForTokens, DRIVE_SCOPE, AUTH_URL,
   listAllAttachmentFiles, deleteFile,
@@ -350,14 +351,16 @@ router.post('/admin/users/:id/edit', requireRole('admin')(requirePage((ctx) => {
     content: userEditPage(ctx, { ...target, ...pendingEdit(b, target) }, { ...loaded, error, currentRoleId: b.roleId || loaded.currentRoleId }),
   }));
 
-  const firstName = (b.firstName || '').trim();
-  const lastName = (b.lastName || '').trim();
+  // ค่าที่ส่งมาเป็นชนิดอื่นที่ไม่ใช่ข้อความทำให้ .trim() ระเบิดเป็น error 500 พร้อมข้อความ JavaScript
+  // ดิบใส่หน้าผู้ดูแลระบบ — อ่านผ่าน asText ซึ่งคืนค่าว่างสำหรับทุกชนิดที่ไม่ใช่ข้อความ
+  const firstName = asText(b.firstName);
+  const lastName = asText(b.lastName);
   if (!firstName || !lastName) return fail('กรุณากรอกชื่อและนามสกุล');
   for (const [value, max, label] of [[b.prefix, 50, 'คำนำหน้า'], [firstName, 100, 'ชื่อ'], [lastName, 100, 'นามสกุล'],
     [b.email, 200, 'อีเมล'], [b.position, 200, 'ตำแหน่ง']]) {
     if (typeof value === 'string' && value.length > max) return fail(`${label}ยาวเกินไป (จำกัดไม่เกิน ${max} ตัวอักษร)`);
   }
-  const departmentId = (b.departmentId || '').trim() || null;
+  const departmentId = asTextOrNull(b.departmentId);
   if (departmentId && !db.prepare('SELECT 1 x FROM departments WHERE id = ?').get(departmentId)) return fail('ไม่พบฝ่ายที่เลือก');
   const role = db.prepare('SELECT * FROM roles WHERE id = ?').get(b.roleId);
   if (!role) return fail('กรุณาเลือกบทบาท');
@@ -718,7 +721,9 @@ router.post('/admin/users/import', requireRole('admin')(requireApi(async (ctx) =
 // อ่านไฟล์แล้ววางแผนใหม่ทุกครั้ง ไม่รับรายการที่ฝั่งเว็บส่งกลับมา — ระหว่างที่แอดมินอ่านผลตรวจแล้วกดยืนยัน
 // อาจมีคนเพิ่มผู้ใช้รหัสเดียวกันไปแล้ว และเพื่อไม่ให้คำขอที่ยิงเองสร้างบัญชีอะไรก็ได้ตามใจ
 function buildPlan(body) {
-  if (!body.fileDataBase64) throw httpError(400, 'ไม่พบไฟล์');
+  // Buffer.from ปฏิเสธค่าที่ไม่ใช่ข้อความด้วย error ภาษาอังกฤษยาวเหยียดของ Node ("The first argument
+  // must be of type string or an instance of Buffer...") ซึ่งผู้ใช้อ่านไม่รู้เรื่อง — ดักเองก่อน
+  if (typeof body.fileDataBase64 !== 'string' || !body.fileDataBase64) throw httpError(400, 'ไม่พบไฟล์ หรือไฟล์ที่ส่งมาไม่ถูกต้อง');
   const buffer = Buffer.from(body.fileDataBase64, 'base64');
   if (buffer.length > 5 * 1024 * 1024) throw httpError(413, 'ไฟล์ใหญ่เกิน 5MB');
   const rows = readTable(buffer, body.fileName || '');
