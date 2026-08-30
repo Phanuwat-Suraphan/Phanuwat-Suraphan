@@ -18,7 +18,7 @@ const { daysUntil, fmtDate, fmtThaiDateShort, fmtThaiDateLong, stampDateThai, st
 const {
   createDocument, createDocumentsBulk, MAX_BULK_DOCUMENTS, getDocument, canUserSeeDocument, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep, voidDocument, archiveDocument,
-  assertStepBelongsToDocument, forceDeleteDocument,
+  assertStepBelongsToDocument, forceDeleteDocument, inactiveStepHolder, reassignStuckStep,
 } = await import('../src/services/workflow.js');
 const { nextRunningNumber } = await import('../src/numbering.js');
 const { readWorkbook } = await import('../src/services/xlsx.js');
@@ -3416,6 +3416,100 @@ describe('วันที่ของใบลาและการมอบห�
 //
 // เดิมหน้าเข้าสู่ระบบพิมพ์รหัสผ่านของทุกบัญชีไว้ให้เห็น (admin / Admin@2569 ...) ใครเปิดเว็บเจอก็
 // ล็อกอินเป็นผู้อำนวยการแล้วลงนาม "ทราบ" แทนได้ทันที ตอนนี้รหัสตั้งต้นถูกสุ่มและบังคับเปลี่ยนก่อนใช้งาน
+// เดินผ่านเบราว์เซอร์จริงแล้วเจอ: ธุรการเสนอหนังสือให้ครูคนหนึ่ง แล้วแอดมินลบบัญชีครูคนนั้น (ย้าย/ลาออก
+// ซึ่งเกิดทุกปีการศึกษา) หนังสือฉบับนั้นค้างถาวร — แอดมินเปิดหน้าหนังสือก็ไม่มีปุ่มดำเนินการ ธุรการผู้บันทึก
+// ก็ไม่มีช่องมอบหมายใหม่ (canAssign ต้องการสถานะ registered/returned แต่เรื่องอยู่ที่ in_progress) และ
+// หน้าเว็บไม่บอกด้วยซ้ำว่าทำไมเรื่องไม่เดิน มีทางเดียวคือยิง API เอง ซึ่งไม่มีครูคนไหนทำได้
+describe('หนังสือที่ค้างอยู่กับคนที่ปิดบัญชีไปแล้ว ต้องกู้ได้', () => {
+  let docId; let stepId; let leaverId;
+  const anyDepartmentId = () => deptId;
+
+  const makeStuckDocument = () => {
+    leaverId = uuid();
+    db.prepare(`
+      INSERT INTO users (id, employee_code, prefix, first_name, last_name, position, department_id,
+        password_hash, pin_hash, status, must_change_password, created_at, updated_at)
+      VALUES (?, ?, 'นาย', 'ครู', 'ย้ายโรงเรียน', 'ครู', ?, 'x', 'x', 'active', 0, ?, ?)
+    `).run(leaverId, 'leaver' + leaverId.slice(0, 6), anyDepartmentId(), nowIso(), nowIso());
+    const doc = makeDoc({ title: 'หนังสือที่ค้างกับคนที่ลาออก' });
+    docId = doc.id;
+    stepId = assignStep({ documentId: doc.id, assigneeId: leaverId, actorUser: registrarUser });
+    return doc;
+  };
+
+  test('ตรวจจับได้ว่าเรื่องค้างอยู่กับบัญชีที่ปิดไปแล้ว', () => {
+    makeStuckDocument();
+    assert.equal(inactiveStepHolder(currentStep(docId)), null, 'ตอนบัญชียังใช้งานได้ ต้องไม่นับว่าค้าง');
+    db.prepare("UPDATE users SET deleted_at = ?, status = 'suspended' WHERE id = ?").run(nowIso(), leaverId);
+    const holder = inactiveStepHolder(currentStep(docId));
+    assert.ok(holder, 'ปิดบัญชีแล้วต้องตรวจจับได้ว่าเรื่องค้าง');
+    assert.equal(holder.id, leaverId);
+  });
+
+  test('ผู้บันทึกเอกสารและแอดมินมอบหมายผู้รับผิดชอบใหม่ได้ คนอื่นทำไม่ได้', () => {
+    makeStuckDocument();
+    db.prepare("UPDATE users SET deleted_at = ?, status = 'suspended' WHERE id = ?").run(nowIso(), leaverId);
+
+    assert.throws(
+      () => reassignStuckStep({ stepId, newAssigneeId: seed.userIds.head_acad, actorUser: teacherUser }),
+      /เฉพาะผู้บันทึกเอกสารหรือผู้ดูแลระบบ/,
+      'ครูทั่วไปต้องมอบหมายใหม่ไม่ได้',
+    );
+    assert.doesNotThrow(() => reassignStuckStep({ stepId, newAssigneeId: seed.userIds.head_acad, actorUser: registrarUser }));
+
+    const after = db.prepare('SELECT assignee_id, status, step_order, instruction FROM workflow_steps WHERE id = ?').get(stepId);
+    assert.equal(after.assignee_id, seed.userIds.head_acad, 'ต้องย้ายไปที่คนใหม่');
+    assert.equal(after.status, 'waiting', 'ขั้นตอนต้องยังรอดำเนินการอยู่');
+    assert.match(after.instruction, /มอบหมายใหม่/, 'ต้องบันทึกร่องรอยว่าเดิมเป็นของใคร');
+    assert.match(after.instruction, /ย้ายโรงเรียน/, 'ต้องระบุชื่อคนเดิม');
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM workflow_steps WHERE document_id = ?').get(docId).c, 1,
+      'ต้องไม่เกิดขั้นตอนซ้ำ ลำดับการเดินหนังสือต้องไม่เพี้ยน');
+    // คนใหม่ต้องดำเนินการต่อได้จริง ไม่ใช่แค่ชื่อเปลี่ยน
+    assert.doesNotThrow(() => acknowledgeAndComplete({ stepId, actorUser: loadUserForTest(seed.userIds.head_acad) }));
+    assert.equal(getDocument(docId).status, 'completed');
+  });
+
+  // ทางนี้ต้องไม่กลายเป็นช่องให้ดึงเรื่องออกจากมือคนที่กำลังพิจารณาอยู่จริงๆ ซึ่งข้ามลำดับบังคับบัญชา
+  test('ถ้าผู้ถือเรื่องยังใช้งานบัญชีได้ตามปกติ ห้ามใช้ทางนี้เปลี่ยนตัว', () => {
+    makeStuckDocument();
+    assert.throws(
+      () => reassignStuckStep({ stepId, newAssigneeId: seed.userIds.head_acad, actorUser: adminUser }),
+      /ยังใช้งานบัญชีได้ตามปกติ/,
+      'แม้แต่แอดมินก็ห้ามดึงเรื่องจากคนที่ยังทำงานได้',
+    );
+  });
+
+  // ถ้ามีผู้รักษาการแทนอยู่แล้ว ก็ยังมีคนดำเนินการต่อได้ ไม่ควรนับว่าค้างและไม่ควรเปลี่ยนตัวทิ้ง
+  test('ถ้ามีผู้รักษาการแทนที่ยังมีผล ไม่นับว่าเรื่องค้าง', () => {
+    makeStuckDocument();
+    db.prepare("UPDATE users SET deleted_at = ?, status = 'suspended' WHERE id = ?").run(nowIso(), leaverId);
+    const today = todayInBangkok();
+    db.prepare(`
+      INSERT INTO user_delegations (id, delegator_id, delegate_id, start_date, end_date, created_by, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(uuid(), leaverId, seed.userIds.head_acad, today, dayOffset(today, 3), seed.userIds.admin, nowIso());
+    assert.equal(inactiveStepHolder(currentStep(docId)), null, 'มีผู้รักษาการแทนอยู่ ต้องไม่นับว่าค้าง');
+    assert.throws(() => reassignStuckStep({ stepId, newAssigneeId: seed.userIds.vicedir01, actorUser: adminUser }),
+      /ยังใช้งานบัญชีได้ตามปกติ/);
+    db.prepare('UPDATE user_delegations SET cancelled_at = ? WHERE delegator_id = ?').run(nowIso(), leaverId);
+  });
+
+  test('มอบหมายใหม่ให้บัญชีที่ปิดไปแล้วอีกคนไม่ได้', () => {
+    makeStuckDocument();
+    db.prepare("UPDATE users SET deleted_at = ?, status = 'suspended' WHERE id = ?").run(nowIso(), leaverId);
+    const otherClosed = uuid();
+    db.prepare(`
+      INSERT INTO users (id, employee_code, first_name, last_name, department_id, password_hash, pin_hash,
+        status, must_change_password, deleted_at, created_at, updated_at)
+      VALUES (?, ?, 'ครู', 'ปิดบัญชีแล้ว', ?, 'x', 'x', 'suspended', 0, ?, ?, ?)
+    `).run(otherClosed, 'closed' + otherClosed.slice(0, 6), anyDepartmentId(), nowIso(), nowIso(), nowIso());
+    assert.throws(() => reassignStuckStep({ stepId, newAssigneeId: otherClosed, actorUser: registrarUser }),
+      /ไม่พบผู้รับงานที่เลือก|ปิดใช้งาน/);
+    assert.throws(() => reassignStuckStep({ stepId, newAssigneeId: leaverId, actorUser: registrarUser }),
+      /เลือกผู้รับผิดชอบคนใหม่/, 'เลือกคนเดิมที่ปิดบัญชีไปแล้วก็ต้องไม่ได้');
+  });
+});
+
 describe('ด่านบังคับตั้งรหัสผ่านเองตอนเข้าใช้ครั้งแรก', () => {
   // ผู้ใช้เฉพาะกิจของ describe นี้ จะได้ไม่ไปรบกวนเทสต์อื่นที่จำลองระบบที่ใช้งานอยู่จริง
   function freshUser(code, { password = 'TempPass1234', pin = '482913' } = {}) {

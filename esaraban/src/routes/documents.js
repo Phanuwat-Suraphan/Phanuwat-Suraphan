@@ -7,7 +7,7 @@ import {
   getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
   voidDocument, archiveDocument, forceDeleteDocument, httpError, assertStepBelongsToDocument,
-  isSignedStep, signerIdentity,
+  isSignedStep, signerIdentity, inactiveStepHolder, reassignStuckStep,
 } from '../services/workflow.js';
 import { renderPdfFirstPageImage } from '../services/pdfPreview.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream, deleteFile } from '../services/googleDrive.js';
@@ -1243,6 +1243,41 @@ router.get('/documents/:id', requirePage((ctx) => {
       }
     </script>` : '';
 
+  // หนังสือค้างอยู่กับคนที่ปิดบัญชีไปแล้ว (ครูย้ายโรงเรียน/ลาออก) — เดิมไม่มีทางออกจากหน้าเว็บเลย
+  // ไม่ว่าจะเป็นแอดมินหรือธุรการผู้บันทึก และหน้าเว็บก็ไม่บอกด้วยว่าทำไมเรื่องไม่เดิน
+  const stuckHolder = step ? inactiveStepHolder(step) : null;
+  const stuckHolderName = stuckHolder ? `${stuckHolder.prefix || ''}${stuckHolder.first_name} ${stuckHolder.last_name}`.trim() : '';
+  const stuckBox = stuckHolder ? `
+    <div class="card">
+      <h3 class="mt-0">⚠️ เรื่องนี้ค้างอยู่</h3>
+      <p style="margin-top:0">หนังสือฉบับนี้รออยู่ที่ <strong>${esc(stuckHolderName)}</strong>
+        ซึ่ง<strong>ปิดบัญชีไปแล้ว</strong> (ย้าย/ลาออก/ถูกระงับ) จึงไม่มีใครกดดำเนินการต่อได้
+        ${isCreatorOrAdmin ? 'เลือกผู้รับผิดชอบคนใหม่ด้านล่างเพื่อให้เรื่องเดินต่อ' : 'กรุณาแจ้งธุรการผู้บันทึกเรื่องนี้หรือผู้ดูแลระบบให้มอบหมายผู้รับผิดชอบคนใหม่'}
+      </p>
+      ${isCreatorOrAdmin ? `
+      <div class="stack">
+        <div class="field">
+          <label>มอบหมายให้คนใหม่แทน</label>
+          <select id="reassignTo">${listUserOptions(stuckHolder.id)}</select>
+        </div>
+        <button class="btn btn-primary" onclick="doReassign(this)">มอบหมายใหม่</button>
+        <div class="help-text">ขั้นตอนเดิมยังอยู่ที่เดิม ไม่เสียลำดับการเดินหนังสือ และระบบบันทึกไว้ว่าเดิมเป็นของใคร</div>
+      </div>
+      <script>
+        function doReassign(btn){
+          var to = document.getElementById('reassignTo').value;
+          if (!to) { toast('กรุณาเลือกผู้รับผิดชอบคนใหม่', 'warning'); return; }
+          window.setBtnLoading(btn, 'กำลังบันทึก...');
+          fetch('/documents/${doc.id}/workflow/${step.id}/reassign', {
+            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ assigneeId: to }),
+          })
+            .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+            .then(function(res){ if(!res.ok) throw new Error(res.d.error); location.reload(); })
+            .catch(function(e){ toast(e.message, 'danger'); window.restoreBtn(btn); });
+        }
+      </script>` : ''}
+    </div>` : '';
+
   const assignBox = canAssign ? `
     <div class="card">
       <h3>${doc.status === 'returned' ? 'แก้ไขแล้วเสนอใหม่' : 'เสนอ / มอบหมายงาน'}</h3>
@@ -1569,6 +1604,7 @@ router.get('/documents/:id', requirePage((ctx) => {
       </div>
 
       <div class="doc-side">
+        ${stuckBox}
         ${actionBox}
         ${assignBox}
         <div class="card">
@@ -1694,6 +1730,13 @@ router.post('/documents/:id/workflow/:stepId/reject', requireApi(async (ctx) => 
 router.post('/documents/:id/workflow/:stepId/return', requireApi(async (ctx) => {
   assertStepBelongsToDocument(ctx.params.id, ctx.params.stepId);
   returnStep({ stepId: ctx.params.stepId, reason: ctx.body.reason, actorUser: ctx.user });
+  json(ctx, 200, { ok: true });
+}));
+
+// กู้หนังสือที่ค้างอยู่กับคนที่ปิดบัญชีไปแล้ว (ครูย้ายโรงเรียน/ลาออก) — ดูเหตุผลเต็มใน workflow.js
+router.post('/documents/:id/workflow/:stepId/reassign', requireApi(async (ctx) => {
+  assertStepBelongsToDocument(ctx.params.id, ctx.params.stepId);
+  reassignStuckStep({ stepId: ctx.params.stepId, newAssigneeId: ctx.body.assigneeId, actorUser: ctx.user });
   json(ctx, 200, { ok: true });
 }));
 

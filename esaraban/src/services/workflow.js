@@ -350,6 +350,59 @@ export function assignStep({ documentId, assigneeId, instruction, actorUser }) {
   return id;
 }
 
+// ผู้ถือขั้นตอนที่ "ล็อกอินเข้ามาทำงานไม่ได้แล้วจริงๆ" — บัญชีถูกลบ (ย้ายโรงเรียน/ลาออก) หรือถูกระงับ
+// assertAssignableUser กันไม่ให้มอบหมายให้คนแบบนี้ตั้งแต่แรกอยู่แล้ว แต่ไม่ได้กันกรณีที่บัญชีถูกปิด
+// "หลังจาก" มอบหมายไปแล้ว ซึ่งเป็นเรื่องปกติมากในโรงเรียน เพราะครูย้ายกันทุกปีการศึกษา
+export function inactiveStepHolder(step) {
+  if (!step) return null;
+  const u = db.prepare('SELECT id, prefix, first_name, last_name, status, deleted_at FROM users WHERE id = ?').get(step.assignee_id);
+  if (!u) return null;
+  if (!u.deleted_at && u.status === 'active') return null;
+  // ถ้ามีผู้รักษาการแทนที่ยังมีผลอยู่ ก็ยังมีคนดำเนินการต่อได้ตามปกติ ไม่นับว่าเรื่องค้าง
+  if (getActiveDelegateFor(step.assignee_id)) return null;
+  return u;
+}
+
+// กู้หนังสือที่ค้างอยู่กับคนที่ปิดบัญชีไปแล้ว — เดินผ่านเบราว์เซอร์จริงแล้วพบว่าเดิมไม่มีทางออกเลย:
+// แอดมินเปิดหน้าหนังสือก็ไม่มีปุ่มดำเนินการ (isCurrentAssignee ไม่รวมแอดมิน) ธุรการผู้บันทึกก็ไม่มีช่อง
+// มอบหมายใหม่ (canAssign ต้องการสถานะ registered/returned แต่เรื่องค้างอยู่ที่ in_progress) และหน้าเว็บ
+// ไม่บอกด้วยซ้ำว่าทำไมเรื่องไม่เดิน — หนังสือราชการฉบับนั้นค้างถาวรจนกว่าจะมีคนยิง API เอง
+//
+// ย้ายผู้รับผิดชอบในขั้นตอนเดิมแทนการปิดขั้นตอนแล้วเปิดใหม่ เพราะขั้นตอนนี้ยังไม่มีใครลงนาม จึงไม่มี
+// ลายเซ็น/ตราประทับให้ต้องรักษา และการคงขั้นที่เดิมไว้ทำให้ลำดับใน Workflow กับหน้าพิมพ์ไม่เพี้ยน
+// ร่องรอยว่าเดิมเป็นของใครเก็บไว้ทั้งในหมายเหตุของขั้นตอนและใน audit log
+export function reassignStuckStep({ stepId, newAssigneeId, actorUser }) {
+  const step = db.prepare('SELECT * FROM workflow_steps WHERE id = ?').get(stepId);
+  if (!step || step.status !== 'waiting') throw httpError(409, 'ขั้นตอนนี้ถูกดำเนินการไปแล้วหรือไม่พบ');
+  const doc = documentOfStep(step);
+  // เฉพาะแอดมินหรือผู้บันทึกเอกสาร — เงื่อนไขเดียวกับการมอบหมายงานปกติ
+  assertCanManageDocument(doc, actorUser, 'มอบหมายผู้รับผิดชอบใหม่ในเอกสาร');
+
+  // ต้องมี "คนถือเรื่องที่ทำงานไม่ได้จริงๆ" เท่านั้นถึงจะใช้ทางนี้ได้ ไม่งั้นทางนี้จะกลายเป็นช่องให้แอดมิน/
+  // ผู้บันทึกดึงเรื่องออกจากมือคนที่กำลังพิจารณาอยู่ได้เงียบๆ ซึ่งข้ามลำดับการบังคับบัญชาใน Workflow
+  const holder = inactiveStepHolder(step);
+  if (!holder) throw httpError(409, 'ผู้รับผิดชอบคนปัจจุบันยังใช้งานบัญชีได้ตามปกติ จึงเปลี่ยนตัวด้วยวิธีนี้ไม่ได้ — ให้ผู้ที่ถือเรื่องอยู่กด "ส่งต่อ" หรือ "ส่งกลับแก้ไข" เอง');
+  if (newAssigneeId === step.assignee_id) throw httpError(400, 'กรุณาเลือกผู้รับผิดชอบคนใหม่');
+  assertAssignableUser(newAssigneeId);
+
+  const oldName = `${holder.prefix || ''}${holder.first_name} ${holder.last_name}`.trim();
+  db.prepare(`
+    UPDATE workflow_steps SET assignee_id = ?, instruction = COALESCE(instruction,'') || ? WHERE id = ?
+  `).run(newAssigneeId, `\n[มอบหมายใหม่] เดิมเป็นของ ${oldName} ซึ่งปิดบัญชีไปแล้ว`, stepId);
+  db.prepare('UPDATE documents SET updated_at = ? WHERE id = ?').run(nowIso(), doc.id);
+
+  notifyUser({
+    userId: newAssigneeId, documentId: doc.id,
+    title: `หนังสือที่ต้องดำเนินการแทน: ${doc.doc_number_display}`,
+    message: `${doc.title} — เดิมเป็นของ ${oldName} ซึ่งปิดบัญชีไปแล้ว`,
+    priority: doc.priority === 'most_urgent' || doc.priority === 'very_urgent' ? 'urgent' : 'info',
+  });
+  audit({
+    userId: actorUser.id, action: 'workflow_reassigned', tableName: 'workflow_steps', recordId: stepId,
+    detail: { documentId: doc.id, from: step.assignee_id, to: newAssigneeId, reason: 'ผู้ถือเรื่องเดิมปิดบัญชีแล้ว' },
+  });
+}
+
 function assertOwnsStep(step, actorUser) {
   if (!step || step.status !== 'waiting') throw httpError(409, 'ขั้นตอนนี้ถูกดำเนินการไปแล้วหรือไม่พบ');
   if (step.assignee_id === actorUser.id) return;
