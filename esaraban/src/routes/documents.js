@@ -427,6 +427,20 @@ router.get('/documents/new', requirePage((ctx) => {
   html(ctx, 200, layout({ user: ctx.user, title: 'สร้างเอกสารใหม่', path: '/documents/new', content }));
 }));
 
+// ผู้ใช้เลือกไฟล์มาแล้ว แต่ไฟล์นั้นไม่มีข้อมูลเลย (0 ไบต์) — เกิดขึ้นจริงเวลาสแกนค้างกลางคัน ไฟล์เสีย
+// หรือคัดลอกจากมือถือ/แฟลชไดรฟ์ไม่จบ เดิมเงื่อนไข `if (!fileDataBase64)` กลืนกรณีนี้รวมกับ "ไม่ได้แนบ
+// ไฟล์มาเลย" ซึ่งเป็นคนละเรื่องกัน ผลคือผู้ใช้กด "แนบไฟล์เพิ่ม" แล้วได้หน้าเดิมกลับมาเหมือนสำเร็จ
+// โดยไม่มีไฟล์แนบจริงและไม่มีข้อความอะไรบอกเลย (ทดสอบผ่านฟอร์มจริงยืนยันแล้ว) กว่าจะรู้ว่าหนังสือ
+// ฉบับนั้นไม่มีไฟล์สแกนก็ตอนต้องหยิบมาใช้ ซึ่งอาจเป็นเดือนถัดไป
+const EMPTY_UPLOAD_MESSAGE = 'ไฟล์ที่แนบมาไม่มีข้อมูล (0 ไบต์) — อาจสแกนไม่สำเร็จหรือไฟล์เสียหาย กรุณาตรวจสอบไฟล์แล้วแนบใหม่อีกครั้ง';
+
+// "เลือกไฟล์มาแล้วแต่ไฟล์ว่าง" ต่างจาก "ไม่ได้เลือกไฟล์" — หน้าเว็บส่ง fileName/fileType/fileDataBase64
+// มาพร้อมกันทั้งชุดเฉพาะตอนที่ผู้ใช้เลือกไฟล์จริงเท่านั้น จึงใช้ตรงนี้แยกสองกรณีออกจากกันได้
+function isEmptyUpload(b) {
+  const supplied = typeof b?.fileDataBase64 === 'string' || b?.fileName != null || b?.fileType != null;
+  return supplied && !(typeof b?.fileDataBase64 === 'string' && b.fileDataBase64.trim());
+}
+
 async function saveAttachment({ documentId, fileName, fileType, fileDataBase64, uploader }) {
   if (!fileDataBase64) return null;
   // ตัดชื่อไฟล์ตั้งแต่ตอนบันทึก ไม่ใช่ตอนส่งออกอย่างเดียว — ผู้ใช้จะได้เห็นชื่อเดียวกันทั้งในหน้าเว็บและ
@@ -488,7 +502,11 @@ router.post('/documents', requireApi(async (ctx) => {
   });
   const warnParts = [];
   if (doc.duplicateDocNumberWarning) warnParts.push(doc.duplicateDocNumberWarning);
-  if (b.fileDataBase64) {
+  // ตรงนี้เลขที่หนังสือถูกออกไปแล้วและใช้ซ้ำไม่ได้ตามหลักงานสารบรรณ จึงไม่โยน error ทิ้งทั้งฟอร์ม
+  // แต่เตือนผ่าน ?warn= ให้ธุรการรู้ทันทีว่าต้องแนบไฟล์ใหม่ที่หน้ารายละเอียด
+  if (isEmptyUpload(b)) {
+    warnParts.push(EMPTY_UPLOAD_MESSAGE);
+  } else if (b.fileDataBase64) {
     const att = await saveAttachment({ documentId: doc.id, fileName: b.fileName, fileType: b.fileType, fileDataBase64: b.fileDataBase64, uploader: ctx.user });
     if (att?.duplicateWarning) warnParts.push(att.duplicateWarning);
   }
@@ -949,6 +967,8 @@ router.get('/documents/register', requirePage((ctx) => {
 router.post('/documents/:id/attachments', requireApi(async (ctx) => {
   const doc = getDocument(ctx.params.id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
+  // ที่นี่ยังไม่ได้บันทึกอะไรเลย ปฏิเสธไปตรงๆ ได้ ไม่มีอะไรเสียหาย
+  if (isEmptyUpload(ctx.body)) throw httpError(400, EMPTY_UPLOAD_MESSAGE);
   const att = await saveAttachment({ documentId: doc.id, fileName: ctx.body.fileName, fileType: ctx.body.fileType, fileDataBase64: ctx.body.fileDataBase64, uploader: ctx.user });
   json(ctx, 200, { redirect: `/documents/${doc.id}${att?.duplicateWarning ? '?warn=' + encodeURIComponent(att.duplicateWarning) : ''}` });
 }));

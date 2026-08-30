@@ -1594,6 +1594,64 @@ describe('คำเตือนไฟล์ซ้ำต้องไม่บอ�
   });
 });
 
+// เดินผ่านฟอร์มจริงในเบราว์เซอร์แล้วเจอ: เลือกไฟล์ PDF ที่มี 0 ไบต์ (สแกนค้างกลางคัน/ไฟล์เสีย/ก๊อป
+// ไม่จบ ซึ่งเกิดขึ้นจริง) แล้วกด "แนบไฟล์เพิ่ม" ระบบตอบสำเร็จและพากลับหน้าเดิม โดยไม่มีไฟล์แนบจริง
+// และไม่มีข้อความอะไรบอกเลย เพราะเงื่อนไข `if (!fileDataBase64)` กลืนกรณีนี้รวมกับ "ไม่ได้แนบไฟล์มา"
+// ซึ่งเป็นคนละเรื่องกัน กว่าธุรการจะรู้ว่าหนังสือฉบับนั้นไม่มีไฟล์สแกนก็ตอนต้องหยิบมาใช้
+describe('แนบไฟล์ที่ไม่มีข้อมูล (0 ไบต์) ต้องไม่เงียบ', () => {
+  const makeDocFor = async () => {
+    const res = await dispatchPost(registrarUser, '/documents', {
+      title: 'หนังสือสำหรับทดสอบไฟล์ว่าง', departmentId: deptId, correspondentName: 'ทดสอบ',
+    });
+    return /\/documents\/([0-9a-f-]{36})/.exec(res.body)?.[1];
+  };
+
+  test('แนบไฟล์ว่างที่หน้ารายละเอียด ต้องถูกปฏิเสธพร้อมบอกสาเหตุ', async () => {
+    const id = await makeDocFor();
+    const before = db.prepare('SELECT COUNT(*) c FROM attachments WHERE document_id = ?').get(id).c;
+    const res = await dispatchPost(registrarUser, `/documents/${id}/attachments`, {
+      fileName: 'สแกนค้าง.pdf', fileType: 'application/pdf', fileDataBase64: '',
+    });
+    assert.equal(res.status, 400, `ต้องปฏิเสธ ไม่ใช่ตอบสำเร็จ (ได้ ${res.status}: ${res.body})`);
+    assert.match(res.body, /0 ไบต์/, 'ต้องบอกว่าไฟล์ไม่มีข้อมูล');
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM attachments WHERE document_id = ?').get(id).c, before,
+      'ต้องไม่มีไฟล์แนบเปล่าๆ ค้างไว้');
+  });
+
+  test('ลงทะเบียนพร้อมไฟล์ว่าง ต้องยังได้เลขที่หนังสือ แต่ต้องเตือน', async () => {
+    const res = await dispatchPost(registrarUser, '/documents', {
+      title: 'ลงทะเบียนพร้อมไฟล์ว่าง', departmentId: deptId, correspondentName: 'ทดสอบ',
+      fileName: 'สแกนค้าง.pdf', fileType: 'application/pdf', fileDataBase64: '',
+    });
+    // เลขที่หนังสือออกไปแล้วใช้ซ้ำไม่ได้ตามหลักงานสารบรรณ จึงต้องบันทึกหนังสือให้ ไม่ใช่ทิ้งทั้งฟอร์ม
+    assert.equal(res.status, 201, `ต้องยังลงทะเบียนสำเร็จ (ได้ ${res.status}: ${res.body})`);
+    const id = /\/documents\/([0-9a-f-]{36})/.exec(res.body)?.[1];
+    assert.ok(id, 'ต้องได้เอกสารจริง');
+    assert.match(decodeURIComponent(res.body), /0 ไบต์/, 'ต้องเตือนธุรการว่าไฟล์ไม่ได้แนบ');
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM attachments WHERE document_id = ?').get(id).c, 0,
+      'ต้องไม่มีไฟล์แนบหลอกๆ ติดอยู่');
+  });
+
+  test('ไม่ได้เลือกไฟล์มาเลย ต้องลงทะเบียนได้ตามปกติ ไม่ใช่ถูกเตือน', async () => {
+    const res = await dispatchPost(registrarUser, '/documents', {
+      title: 'ลงทะเบียนโดยยังไม่มีไฟล์สแกน', departmentId: deptId, correspondentName: 'ทดสอบ',
+    });
+    assert.equal(res.status, 201);
+    assert.ok(!/0 ไบต์/.test(decodeURIComponent(res.body)),
+      'การลงทะเบียนโดยยังไม่แนบไฟล์เป็นเรื่องปกติ ต้องไม่ขึ้นคำเตือน');
+  });
+
+  test('ไฟล์ที่มีข้อมูลจริงต้องยังแนบได้ตามเดิม', async () => {
+    const id = await makeDocFor();
+    const pdf = Buffer.from(`%PDF-1.4\n% ไฟล์ปกติ ${Date.now()}\ntrailer<</Root 1 0 R>>\n%%EOF\n`).toString('base64');
+    const res = await dispatchPost(registrarUser, `/documents/${id}/attachments`, {
+      fileName: 'ปกติ.pdf', fileType: 'application/pdf', fileDataBase64: pdf,
+    });
+    assert.equal(res.status, 200, res.body);
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM attachments WHERE document_id = ?').get(id).c, 1);
+  });
+});
+
 describe('สิทธิ์เห็นหนังสือ: เงื่อนไขใน SQL ต้องตรงกับการตรวจรายฉบับเสมอ', () => {
   test('ทุกฉบับ x ทุกบทบาท ให้ผลเหมือนกันทั้งสองทาง', async () => {
     const { canUserSeeDocument, visibleDocumentsSqlFilter } = await import('../src/services/workflow.js');

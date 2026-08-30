@@ -462,7 +462,9 @@ router.post('/leave/:id/attachments', requireApi(async (ctx) => {
   if (req.status !== 'pending') throw httpError(409, 'ใบลานี้ตัดสินไปแล้ว แนบหลักฐานเพิ่มไม่ได้');
 
   const { fileName, fileType, fileDataBase64 } = ctx.body;
-  if (!fileDataBase64) throw httpError(400, 'ไม่พบไฟล์');
+  // ข้อความเดิมคือ "ไม่พบไฟล์" ซึ่งชวนงงเพราะผู้ใช้เพิ่งเลือกไฟล์ไปหมาดๆ — สาเหตุจริงคือไฟล์นั้น
+  // ไม่มีข้อมูลเลย (สแกนค้าง/ไฟล์เสีย) จึงบอกให้ตรงกับที่เกิดขึ้นและบอกวิธีแก้ไปด้วย
+  if (!fileDataBase64) throw httpError(400, 'ไฟล์ที่แนบมาไม่มีข้อมูล (0 ไบต์) — อาจสแกนไม่สำเร็จหรือไฟล์เสียหาย กรุณาตรวจสอบไฟล์แล้วแนบใหม่อีกครั้ง');
   const buffer = Buffer.from(fileDataBase64, 'base64');
   const ext = assertAllowedLeaveFile({ mimeType: fileType, buffer });
 
