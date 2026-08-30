@@ -1339,22 +1339,63 @@ describe('นำเข้ารายชื่อบุคลากรจาก 
       ['kru02', 'นางสาว', 'สมหญิง', 'ตั้งใจ', '', ''],           // ไม่ระบุบทบาท -> ครู
       ['มีอยู่แล้ว', 'นาย', 'ซ้ำ', 'ของเดิม', '', 'ครู'],
       ['kru01', 'นาย', 'ซ้ำในไฟล์', 'เอง', '', 'ครู'],
-      ['kru03', '', '', '', '', ''],                              // ข้อมูลไม่ครบ
+      ['kru03', '', '', '', '', ''],                              // มีรหัสแต่ยังไม่เติมชื่อ -> ข้าม ไม่ใช่ error
       ['kru04', 'นาง', 'ฝ่าย', 'ไม่มี', 'ฝ่ายที่ไม่มีจริง', 'ครู'],
       ['kru05', 'นาย', 'บทบาท', 'ไม่มี', '', 'ผู้วิเศษ'],
       ['', '', '', '', '', ''],                                    // แถวว่างล้วน ต้องข้ามเงียบๆ
     ];
     const plan = planUserImport(rows, { departments, roles, existingCodes: ['มีอยู่แล้ว'] });
-    assert.deepEqual(plan.summary, { ok: 2, skip: 1, error: 4 });
-    assert.deepEqual(plan.items.map((i) => i.status), ['ok', 'ok', 'skip', 'error', 'error', 'error', 'error']);
+    // แถวที่มีรหัสประจำตัวแต่ยังไม่เติมชื่อนับเป็น "ข้าม" ไม่ใช่ "ผิดพลาด" — ไฟล์รายชื่อตั้งต้นที่ระบบ
+    // แจกเตรียมช่องไว้เกินจำนวนครูที่มีจริง แถวที่เหลือจึงว่างเป็นเรื่องปกติ ถ้าขึ้นเป็นสีแดงยกแถว
+    // แอดมินจะเข้าใจว่าไฟล์เสียแล้วไม่กล้ากดนำเข้าทั้งไฟล์
+    assert.deepEqual(plan.summary, { ok: 2, skip: 2, error: 3 });
+    assert.deepEqual(plan.items.map((i) => i.status), ['ok', 'ok', 'skip', 'error', 'skip', 'error', 'error']);
     assert.match(plan.items[2].reason, /มีรหัสประจำตัวนี้ในระบบอยู่แล้ว/);
     assert.match(plan.items[3].reason, /ซ้ำกับแถวก่อนหน้าในไฟล์เดียวกัน/);
+    assert.match(plan.items[4].reason, /ยังไม่ได้เติมชื่อ/);
     assert.match(plan.items[5].reason, /ไม่พบฝ่าย/);
     assert.match(plan.items[6].reason, /ไม่พบบทบาท/);
     // ไม่ระบุบทบาทต้องได้ "ครู" เป็นค่าตั้งต้น ไม่ใช่ error
     assert.equal(plan.items[1].roleId, 'r1');
     // เลขแถวต้องตรงกับที่เห็นใน Excel จริง ไม่งั้นแอดมินหาแถวที่ผิดไม่เจอ
     assert.deepEqual(plan.items.map((i) => i.rowNumber), [2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  // ไฟล์ตั้งต้นเดิมเป็นตัวอย่างฮาร์ดโค้ด 2 แถว และช่อง "ฝ่าย" เขียนว่า "กลุ่มบริหารวิชาการ" ซึ่งไม่ตรง
+  // กับชื่อฝ่ายที่มีจริงในระบบสักฝ่าย ใครโหลดไปกรอกแล้วอัปโหลดกลับมาจึงเจอ "ไม่พบฝ่าย ... ในระบบ"
+  // ทุกแถว โดยไม่มีอะไรบอกว่าต้องพิมพ์ว่าอะไรถึงจะถูก — เทสต์นี้บังคับว่าไฟล์ที่แจกต้องนำเข้ากลับได้จริง
+  test('ไฟล์รายชื่อตั้งต้นที่ระบบแจก ต้องอัปโหลดกลับเข้าระบบได้โดยไม่มีแถวผิด', async () => {
+    const { templateCsv, readTable, planUserImport } = await import('../src/services/userImport.js');
+    const csv = templateCsv({ departments, roles, existingCodes: ['มีอยู่แล้ว'] });
+    const rows = readTable(Buffer.from(csv, 'utf8'), 'รายชื่อ.csv');
+
+    // เตรียมแถวไว้ให้ครบทุกฝ่ายที่มีในระบบ ไม่ใช่แค่ตัวอย่างสองแถวเหมือนเดิม
+    assert.ok(rows.length - 1 >= departments.length * 2,
+      `ควรเตรียมแถวไว้ให้ครบทุกฝ่าย แต่มีแค่ ${rows.length - 1} แถว`);
+
+    // กรอกชื่อให้สองแถวแรกเหมือนที่โรงเรียนจริงจะทำ ที่เหลือปล่อยว่างไว้
+    const map = { prefix: 1, firstName: 2, lastName: 3 };
+    rows[1][map.prefix] = 'นาย'; rows[1][map.firstName] = 'ทดสอบ'; rows[1][map.lastName] = 'หนึ่ง';
+    rows[2][map.prefix] = 'นาง'; rows[2][map.firstName] = 'ทดสอบ'; rows[2][map.lastName] = 'สอง';
+
+    const plan = planUserImport(rows, { departments, roles, existingCodes: ['มีอยู่แล้ว'] });
+    assert.equal(plan.summary.error, 0,
+      `ไฟล์ที่ระบบแจกเองต้องไม่มีแถวผิด: ${JSON.stringify(plan.items.filter((i) => i.status === 'error').map((i) => i.reason))}`);
+    assert.equal(plan.summary.ok, 2, 'แถวที่เติมชื่อแล้วต้องนำเข้าได้');
+    assert.ok(plan.items.filter((i) => i.status === 'skip').every((i) => /ยังไม่ได้เติมชื่อ/.test(i.reason)),
+      'แถวที่เหลือต้องถูกข้ามเพราะยังไม่เติมชื่อ ไม่ใช่เพราะเหตุอื่น');
+  });
+
+  test('ไฟล์รายชื่อตั้งต้นต้องไม่ตั้งรหัสประจำตัวชนกับบัญชีที่มีอยู่แล้ว', async () => {
+    const { templateCsv, readTable } = await import('../src/services/userImport.js');
+    // จำลองว่าโรงเรียนมีบัญชีที่ใช้รหัสเดียวกับที่ไฟล์ตั้งต้นจะตั้งให้อยู่แล้ว
+    const clash = ['dir01', 'vdir01', 'head01'];
+    const rows = readTable(Buffer.from(templateCsv({ departments, roles, existingCodes: clash }), 'utf8'), 'x.csv');
+    const codes = rows.slice(1).map((r) => r[0]).filter(Boolean);
+    for (const c of clash) {
+      assert.ok(!codes.includes(c), `รหัส "${c}" ชนกับบัญชีที่มีอยู่แล้ว จะทำให้แถวนั้นถูกข้ามทิ้งเงียบๆ`);
+    }
+    assert.equal(new Set(codes).size, codes.length, 'รหัสประจำตัวในไฟล์ต้องไม่ซ้ำกันเอง');
   });
 
   test('หัวตารางที่ตั้งชื่อต่างกันเล็กน้อยต้องยังจับคู่ได้ และบอกให้รู้ถ้าขาดคอลัมน์บังคับ', async () => {

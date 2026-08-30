@@ -135,12 +135,16 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
         เปิดใช้ระบบครั้งแรกไม่ต้องพิมพ์ทีละคน — อัปโหลดไฟล์รายชื่อครูที่มีอยู่แล้วได้เลย
         รองรับทั้ง <code>.xlsx</code> และ <code>.csv</code>
       </p>
-      <a class="btn btn-outline btn-sm" href="/admin/users/template.csv">⬇️ ดาวน์โหลดไฟล์ตัวอย่าง</a>
+      <a class="btn btn-outline btn-sm" href="/admin/users/template.csv">⬇️ ดาวน์โหลดไฟล์รายชื่อตั้งต้น</a>
       <div class="callout-tip" style="margin-top:.8rem">
-        ต้องมีคอลัมน์อย่างน้อย <strong>รหัสประจำตัว, ชื่อ, นามสกุล</strong> —
-        ส่วน คำนำหน้า/อีเมล/ตำแหน่ง/ฝ่าย/บทบาท ใส่หรือไม่ใส่ก็ได้ (ไม่ใส่บทบาทจะเป็น "ครู")
-        <br/>ชื่อฝ่ายและบทบาทต้องตรงกับที่มีในระบบ ระบบจะบอกให้ก่อนถ้าไม่ตรง
+        <strong>ใช้ครั้งแรกทำแค่ 3 ขั้น</strong> — ไฟล์ตั้งต้นกรอกมาให้แล้วทุกช่อง
+        (รหัสประจำตัว ตำแหน่ง ฝ่าย บทบาท ครบทุกฝ่ายที่มีในระบบ)
+        <br/>1) กดปุ่มด้านบนเพื่อโหลดไฟล์ &nbsp; 2) เปิดด้วย Excel แล้ว<strong>พิมพ์แค่ คำนำหน้า/ชื่อ/นามสกุล</strong>
+        แถวที่ไม่ได้ใช้ปล่อยว่างไว้หรือลบทิ้งก็ได้ &nbsp; 3) อัปโหลดไฟล์กลับมาที่ช่องด้านล่าง
         <br/><strong>รหัสผ่านและ PIN ระบบสุ่มให้คนละชุด</strong> แล้วแสดงครั้งเดียวหลังนำเข้าเสร็จ ให้พิมพ์เก็บไว้แจก
+        (ทุกคนต้องตั้งรหัสของตัวเองใหม่ทันทีที่เข้าใช้ครั้งแรก)
+        <br/>ถ้ามีไฟล์รายชื่อครูของโรงเรียนอยู่แล้ว จะใช้ไฟล์นั้นแทนก็ได้ ขอแค่มีคอลัมน์
+        <strong>รหัสประจำตัว, ชื่อ, นามสกุล</strong> เป็นอย่างน้อย
       </div>
       <input type="file" id="importFile" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="margin-top:.8rem" />
       <div id="importResult" style="margin-top:1rem"></div>
@@ -173,7 +177,7 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
         var s = data.summary;
         var rows = data.items.map(function (it) {
           var badge = it.status === 'ok' ? '<span class="badge badge-success">นำเข้าได้</span>'
-            : it.status === 'skip' ? '<span class="badge badge-muted">มีอยู่แล้ว</span>'
+            : it.status === 'skip' ? '<span class="badge badge-muted">ข้าม</span>'
             : '<span class="badge badge-danger">ผิดพลาด</span>';
           return '<tr><td>' + it.rowNumber + '</td><td>' + esc(it.employeeCode) + '</td><td>' +
             esc((it.prefix || '') + it.firstName + ' ' + it.lastName) + '</td><td>' + esc(it.roleLabel || it.roleName || '') +
@@ -181,7 +185,9 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
         }).join('');
         document.getElementById('importResult').innerHTML =
           '<div class="alert ' + (s.error ? 'alert-warning' : 'alert-success') + '">ตรวจไฟล์แล้ว — นำเข้าได้ <strong>' + s.ok +
-          '</strong> คน · มีอยู่แล้ว ' + s.skip + ' · ผิดพลาด ' + s.error + '</div>' +
+          // "ข้าม" มีได้หลายสาเหตุ (มีบัญชีนั้นอยู่แล้ว หรือยังไม่ได้เติมชื่อในไฟล์ตั้งต้น) จึงบอกรวมเป็น
+          // "ข้าม" แล้วให้ดูสาเหตุรายแถวในคอลัมน์หมายเหตุ — เดิมเหมาว่า "มีอยู่แล้ว" ทุกกรณี ซึ่งไม่จริง
+          '</strong> คน · ข้าม ' + s.skip + ' · ผิดพลาด ' + s.error + ' <span class="text-muted">(ดูสาเหตุที่ช่องหมายเหตุ)</span></div>' +
           '<div class="table-wrap"><table><thead><tr><th>แถว</th><th>รหัส</th><th>ชื่อ</th><th>บทบาท</th><th>ผล</th><th>หมายเหตุ</th></tr></thead><tbody>' +
           rows + '</tbody></table></div>' +
           (s.ok ? '<button class="btn btn-primary" style="margin-top:.8rem" onclick="confirmImport(this)">✅ ยืนยันนำเข้า ' + s.ok + ' คน</button>' : '');
@@ -693,11 +699,17 @@ router.get('/admin/google-drive/callback', requireRole('admin')(requirePage(asyn
 
 // ---------------- นำเข้ารายชื่อบุคลากรจาก Excel/CSV ----------------
 router.get('/admin/users/template.csv', requireRole('admin')(requirePage((ctx) => {
-  const body = Buffer.from(templateCsv(), 'utf8');
+  // สร้างจากฝ่าย/บทบาทที่มีอยู่จริงในระบบ ชื่อฝ่ายในไฟล์จึงตรงกับที่ระบบรู้จักเสมอ และเลี่ยงรหัส
+  // ประจำตัวที่มีบัญชีใช้อยู่แล้ว เพื่อไม่ให้แถวถูกข้ามเพราะรหัสซ้ำตอนนำเข้า
+  const body = Buffer.from(templateCsv({
+    departments: db.prepare('SELECT id, name FROM departments ORDER BY name').all(),
+    roles: db.prepare('SELECT name, name_th FROM roles').all(),
+    existingCodes: db.prepare('SELECT employee_code FROM users').all().map((u) => u.employee_code),
+  }), 'utf8');
   ctx.res.writeHead(200, {
     'Content-Type': 'text/csv; charset=utf-8',
     'Content-Length': body.length,
-    'Content-Disposition': contentDispositionHeader('ตัวอย่างรายชื่อบุคลากร.csv', 'user-import-template.csv', 'attachment'),
+    'Content-Disposition': contentDispositionHeader('รายชื่อบุคลากร-กรอกชื่อแล้วอัปโหลดกลับ.csv', 'staff-roster.csv', 'attachment'),
   });
   ctx.res.end(body);
 })));

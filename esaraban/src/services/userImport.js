@@ -135,6 +135,13 @@ export function planUserImport(rows, { departments, roles, existingCodes, existi
     const item = { rowNumber: i + 1, employeeCode, prefix: get('prefix'), firstName, lastName,
       email: get('email'), position: get('position'), departmentName: get('department'), roleName: get('role') };
 
+    // ไฟล์ตั้งต้นที่ระบบแจกมีรหัสประจำตัว/ตำแหน่ง/ฝ่ายกรอกไว้ให้แล้ว เหลือแค่ชื่อ-นามสกุลที่โรงเรียน
+    // พิมพ์เอง แถวที่ยังไม่ได้เติมชื่อจึงเป็นเรื่องปกติ (เตรียมช่องไว้เกินจำนวนครูที่มีจริง) ไม่ใช่
+    // ความผิดพลาด — ถ้าขึ้นเป็นสีแดงยกแถว แอดมินจะเข้าใจว่าไฟล์เสียแล้วไม่กล้ากดนำเข้าเลยทั้งไฟล์
+    if (employeeCode && !firstName && !lastName) {
+      items.push({ ...item, status: 'skip', reason: 'ยังไม่ได้เติมชื่อ-นามสกุล จึงข้ามแถวนี้ไว้ก่อน' });
+      continue;
+    }
     if (!employeeCode || !firstName || !lastName) {
       items.push({ ...item, status: 'error', reason: 'ต้องมีรหัสประจำตัว ชื่อ และนามสกุล ครบทั้งสามช่อง' });
       continue;
@@ -244,12 +251,58 @@ export function applyUserImport(items, actorId) {
   return created;
 }
 
-// ไฟล์ตัวอย่างเป็น CSV พร้อม BOM — Excel ต้องเห็น BOM ถึงจะเปิดภาษาไทยไม่เป็นตัวยึกยือ
-export function templateCsv() {
-  const rows = [
-    ['รหัสประจำตัว', 'คำนำหน้า', 'ชื่อ', 'นามสกุล', 'อีเมล', 'ตำแหน่ง', 'ฝ่าย', 'บทบาท'],
-    ['teacher101', 'นาย', 'สมชาย', 'ใจดี', 'somchai@school.ac.th', 'ครู', 'กลุ่มบริหารวิชาการ', 'ครู'],
-    ['teacher102', 'นางสาว', 'สมหญิง', 'ตั้งใจ', '', 'ครูผู้ช่วย', '', 'ครู'],
-  ];
+// จำนวนแถวครูที่เตรียมไว้ให้ต่อหนึ่งฝ่าย — โรงเรียนขนาดเล็กมีครูฝ่ายละไม่กี่คน เตรียมเกินไว้ดีกว่าขาด
+// เพราะแถวที่ไม่ได้ใช้แค่ลบทิ้งหรือปล่อยว่างไว้ก็ได้ (แถวที่ยังไม่เติมชื่อจะถูกข้าม ไม่ใช่ขึ้นเป็นข้อผิดพลาด)
+const TEMPLATE_TEACHERS_PER_DEPT = 4;
+
+/**
+ * ไฟล์ตั้งต้นรายชื่อบุคลากร — กรอกให้แล้วทุกช่อง ยกเว้นชื่อ-นามสกุลที่โรงเรียนต้องพิมพ์เอง
+ *
+ * เดิมไฟล์นี้เป็นแค่ตัวอย่าง 2 แถวที่ฮาร์ดโค้ดไว้ และช่อง "ฝ่าย" เขียนว่า "กลุ่มบริหารวิชาการ" ซึ่ง
+ * ไม่ตรงกับชื่อฝ่ายที่มีจริงในระบบสักฝ่าย ใครดาวน์โหลดไปกรอกแล้วอัปโหลดกลับมาจึงเจอ "ไม่พบฝ่าย ...
+ * ในระบบ" ทุกแถวโดยไม่รู้ว่าต้องพิมพ์ว่าอะไรถึงจะถูก — ตอนนี้สร้างจากฝ่าย/บทบาทที่มีอยู่จริงในฐานข้อมูล
+ * ชื่อฝ่ายจึงตรงเสมอแม้โรงเรียนจะเพิ่ม/เปลี่ยนชื่อฝ่ายเองภายหลัง
+ *
+ * รหัสประจำตัวตั้งให้แบบอ่านออก (dir/vdir/head/saraban/kru + เลขฝ่าย) และเลี่ยงรหัสที่มีอยู่แล้วในระบบ
+ * เพื่อไม่ให้แถวถูกข้ามเพราะรหัสซ้ำ ส่วนรหัสผ่านกับ PIN ไม่ได้อยู่ในไฟล์นี้โดยตั้งใจ — ระบบสุ่มให้คนละชุด
+ * ตอนนำเข้าแล้วแสดงครั้งเดียวให้พิมพ์แจก ถ้าใส่ไว้ในไฟล์ ไฟล์นี้จะกลายเป็นไฟล์รหัสผ่านของทั้งโรงเรียน
+ * ที่วางอยู่ในเครื่องหรือถูกส่งต่อในไลน์กลุ่ม
+ */
+export function templateCsv({ departments = [], roles = [], existingCodes = [] } = {}) {
+  // คืน null ถ้าโรงเรียนไม่มีบทบาทนั้นในระบบ แล้วข้ามแถวนั้นไปเลย — เขียนชื่อบทบาทที่ระบบไม่รู้จัก
+  // ลงไฟล์ที่ระบบแจกเอง เท่ากับแจกไฟล์ที่นำเข้ากลับไม่ได้ ซึ่งเป็นข้อผิดพลาดแบบเดียวกับที่กำลังแก้อยู่
+  const roleLabel = (name) => roles.find((r) => r.name === name)?.name_th || null;
+  const taken = new Set(existingCodes.map(norm));
+  // ถ้ารหัสที่ตั้งให้ชนกับบัญชีที่มีอยู่แล้ว เติมเลขต่อท้ายไปเรื่อยๆ จนกว่าจะว่าง
+  const freeCode = (base) => {
+    if (!taken.has(norm(base))) { taken.add(norm(base)); return base; }
+    for (let n = 2; ; n++) {
+      const candidate = `${base}-${n}`;
+      if (!taken.has(norm(candidate))) { taken.add(norm(candidate)); return candidate; }
+    }
+  };
+
+  const header = ['รหัสประจำตัว', 'คำนำหน้า', 'ชื่อ', 'นามสกุล', 'อีเมล', 'ตำแหน่ง', 'ฝ่าย', 'บทบาท'];
+  const row = (code, position, deptName, role) => [freeCode(code), '', '', '', '', position, deptName || '', role];
+
+  // ฝ่ายธุรการแยกออกมาเพราะบทบาทต่างจากฝ่ายอื่น (เป็นผู้ลงทะเบียนหนังสือ ไม่ใช่ครูผู้สอน)
+  const registrarDept = departments.find((d) => /ธุรการ|สารบรรณ/.test(d.name));
+  const teachingDepts = departments.filter((d) => d !== registrarDept);
+
+  const rows = [header];
+  const push = (code, position, deptName, role) => { if (role) rows.push(row(code, position, deptName, role)); };
+  push('dir01', 'ผู้อำนวยการโรงเรียน', '', roleLabel('director'));
+  push('vdir01', 'รองผู้อำนวยการโรงเรียน', '', roleLabel('vice_director'));
+  if (registrarDept) {
+    for (let i = 1; i <= 2; i++) push(`saraban0${i}`, 'เจ้าหน้าที่ธุรการ', registrarDept.name, roleLabel('registrar'));
+  }
+  teachingDepts.forEach((dept, di) => {
+    push(`head0${di + 1}`, `หัวหน้า${dept.name}`, dept.name, roleLabel('head'));
+    for (let i = 1; i <= TEMPLATE_TEACHERS_PER_DEPT; i++) {
+      push(`kru${di + 1}0${i}`, 'ครู', dept.name, roleLabel('teacher'));
+    }
+  });
+
+  // BOM นำหน้าเสมอ — Excel ต้องเห็น BOM ถึงจะเปิดภาษาไทยไม่เป็นตัวยึกยือ
   return '﻿' + rows.map((r) => r.map((c) => (/[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c)).join(',')).join('\r\n') + '\r\n';
 }
