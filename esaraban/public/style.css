@@ -73,6 +73,14 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 body {
+  /* ข้อความที่ผู้ใช้พิมพ์เองอาจมีสตริงยาวที่ไม่มีจุดให้ตัดบรรทัด — URL ที่วางมาจากไลน์ อีเมล ชื่อไฟล์
+     ภาษาอังกฤษ หรือเลขที่หนังสือยาวๆ ภาษาไทยเองเบราว์เซอร์ตัดบรรทัดให้ถูกอยู่แล้ว (ทดสอบกับชื่อเรื่อง
+     ไทยจริง 106 ตัวอักษรที่ไม่มีช่องว่างเลย แล้ว wrap ปกติ) แต่สตริงพวกนั้นไม่มีจุดตัด ถ้าไม่บังคับ
+     มันจะดันทั้งหน้าให้เลื่อนแนวนอนได้บนมือถือ ซึ่งเป็นความเสียหายที่กว้างกว่าตัวข้อความเอง
+
+     ใช้ break-word ไม่ใช่ anywhere เพราะ anywhere มีผลกับการคำนวณความกว้างขั้นต่ำของ flex/grid ด้วย
+     ซึ่งจะทำให้เลย์เอาต์อื่นเปลี่ยนตามโดยไม่ตั้งใจ */
+  overflow-wrap: break-word;
   font-family: "Noto Sans Thai", "Prompt", "Inter", -apple-system, "Segoe UI", sans-serif;
   background: var(--bg);
   color: var(--text);
@@ -188,7 +196,19 @@ img { max-width: 100%; }
   width: 100%; font-size: .9rem;
 }
 .topbar-spacer { flex: 1; }
-.topbar-right { display: flex; align-items: center; gap: .5rem; }
+.topbar-right { display: flex; align-items: center; gap: .5rem; flex-shrink: 0; }
+
+/* จอแคบมาก (iPhone SE รุ่นแรกและแอนดรอยด์รุ่นเล็ก กว้าง 320px ซึ่งยังมีใช้อยู่จริงในโรงเรียน)
+   ของบนแถบบนสุดรวมกันกว้างเกินจอไป 19px ทำให้ "ทุกหน้า" เลื่อนแนวนอนได้เล็กน้อย ซึ่งบนมือถือ
+   ทำให้เนื้อหาขยับไปมาตอนเลื่อนขึ้นลง รู้สึกเหมือนหน้าเสีย (วัดจริงแล้วเกิดกับทั้ง 24 หน้า)
+   ปุ่มลัดคีย์บอร์ดไม่มีประโยชน์บนมือถืออยู่แล้วเพราะไม่มีคีย์บอร์ด — ซ่อนตัวนั้นก่อน
+   และลดระยะห่าง/ขนาดปุ่มลงเล็กน้อยให้ที่เหลือพอดีจอ */
+@media (max-width: 360px) {
+  .topbar { padding: 0 .5rem; gap: .4rem; }
+  .topbar-right { gap: .25rem; }
+  .topbar-right .icon-btn[title^="ปุ่มลัด"] { display: none; }
+  .avatar { width: 30px; height: 30px; }
+}
 .avatar {
   width: 34px; height: 34px; border-radius: 50%;
   background: var(--primary); color: var(--primary-contrast);
@@ -321,6 +341,24 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); o
   color: var(--text); margin: 0 0 .9rem; cursor: pointer;
 }
 .check-inline input[type=checkbox] { width: auto; margin: 0; }
+
+/* ขนาดพื้นที่แตะบนมือถือ
+   ช่องติ๊กตามค่าเริ่มต้นของเบราว์เซอร์กว้าง 13×13px ซึ่งเล็กเกินกว่าจะแตะให้ตรงด้วยนิ้ว (คำแนะนำของ
+   ทั้ง Apple และ Google อยู่ที่ 44-48px) จุดที่สำคัญที่สุดคือช่องติ๊กเลือกหนังสือใน "บัญชีทำลายหนังสือ"
+   ซึ่งการแตะพลาดหมายถึงเลือกหนังสือผิดฉบับไปทำลาย และย้อนคืนไม่ได้
+   ขยายเฉพาะบนจอเล็ก เพราะบนเดสก์ท็อปใช้เมาส์ซึ่งแม่นยำอยู่แล้ว */
+@media (max-width: 899px) {
+  /* .check-inline ตั้ง width:auto ไว้ (ไม่ให้ยืดเต็มความกว้างเหมือน input อื่น) ต้องระบุซ้ำที่นี่
+     ด้วยความเฉพาะเจาะจงที่สูงกว่า ไม่งั้นช่องติ๊กในแถบตัวกรองจะเหลือกว้าง 13px สูง 22px ซึ่งเบี้ยว */
+  input[type=checkbox], input[type=radio],
+  .check-inline input[type=checkbox] {
+    width: 22px; height: 22px;
+    /* เผื่อพื้นที่แตะรอบๆ ให้ถึงเกณฑ์โดยไม่ทำให้ตัวช่องติ๊กใหญ่จนเสียรูปตาราง */
+    outline-offset: 8px;
+    margin: 6px;
+  }
+  .btn-sm { min-height: 36px; }
+}
 /* จอแคบไม่ต้องเว้นที่ว่างเปล่า เพราะช่องต่างๆ เรียงลงล่างอยู่แล้ว */
 .label-spacer { display: none; }
 @media (min-width: 640px) { .label-spacer { display: block; } }
