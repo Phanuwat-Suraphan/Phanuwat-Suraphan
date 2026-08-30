@@ -299,6 +299,9 @@ export function approveLeaveRequest({ id, note, actorUser }) {
     createDelegation({
       delegatorId: req.requester_id, delegateId: req.delegate_id, startDate: req.start_date, endDate: req.end_date,
       reason: `${LEAVE_TYPE_LABEL[req.leave_type]}: ${req.reason}`, leaveRequestId: id, createdBy: actorUser.id,
+      // ใบลาถูกบันทึกว่าอนุมัติไปแล้วด้านบน ถ้าชนกับการมอบหมายเดิมแล้วโยน error ออกไป ใบลาจะค้างครึ่งๆ
+      // และผู้อนุมัติเห็นแต่หน้า error ทั้งที่กดสำเร็จ — ให้แทนที่รายการเดิมแทน (ดูเหตุผลใน delegation.js)
+      supersedeOverlapping: true,
     });
   }
 }

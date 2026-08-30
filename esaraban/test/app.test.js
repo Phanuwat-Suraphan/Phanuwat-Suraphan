@@ -33,7 +33,7 @@ const { planUserImport, MAX_IMPORT_ROWS } = await import('../src/services/userIm
 const { truncateFilename, MAX_HEADER_FILENAME_CHARS } = await import('../src/router.js');
 const { buildDocumentQuery, describeFilters, listRegisterYears } = await import('../src/services/documentQuery.js');
 const { asText, asTextOrNull } = await import('../src/services/validate.js');
-const { createDelegation } = await import('../src/services/delegation.js');
+const { createDelegation, cancelDelegation } = await import('../src/services/delegation.js');
 const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, planBackupCleanup, thaiDateParts } = await import('../src/services/dbBackup.js');
 const sqliteModule = await import('node:sqlite');
 const { createDestructionBatch, approveDestructionBatch, ELIGIBLE_PAGE_SIZE } = await import('../src/services/retention.js');
@@ -73,6 +73,17 @@ let leaveWindowCursor = 2000;
 function nextLeaveWindow(days = 2) {
   const start = leaveWindowCursor;
   leaveWindowCursor += days + 5; // เว้นช่องว่างระหว่างใบ กันการชนขอบ
+  const at = (n) => new Date(Date.parse(`${todayInBangkok()}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+  return { startDate: at(start), endDate: at(start + days - 1) };
+}
+
+// เหตุผลเดียวกับ nextLeaveWindow แต่สำหรับการมอบหมายรักษาการแทน — ระบบกันไม่ให้ผู้มอบหมายคนเดียวกัน
+// มอบซ้อนช่วงเวลากันได้ (โดยตั้งใจ ดู delegation.js) fixture ที่ใช้วันที่ตายตัวจึงชนกันเองข้ามเทสต์
+const dayOffset = (isoDate, days) => new Date(Date.parse(`${isoDate}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
+let delegationWindowCursor = 5000;
+function nextDelegationWindow(days = 5) {
+  const start = delegationWindowCursor;
+  delegationWindowCursor += days + 5;
   const at = (n) => new Date(Date.parse(`${todayInBangkok()}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
   return { startDate: at(start), endDate: at(start + days - 1) };
 }
@@ -3267,7 +3278,7 @@ describe('วันที่ของใบลาและการมอบห�
   const spanDays = (days) => nextLeaveWindow(days);
   const mkDelegation = (over = {}) => createDelegation({
     delegatorId: seed.userIds.director01, delegateId: seed.userIds.vicedir01,
-    startDate: '2026-10-01', endDate: '2026-10-05', reason: 'ทดสอบ', createdBy: seed.userIds.director01, ...over,
+    ...nextDelegationWindow(5), reason: 'ทดสอบ', createdBy: seed.userIds.director01, ...over,
   });
 
   test('ค่าที่ไม่ใช่วันที่ต้องถูกปฏิเสธ ไม่ใช่บันทึกแล้วมีผลตลอดไป', () => {
@@ -3294,6 +3305,73 @@ describe('วันที่ของใบลาและการมอบห�
       WHERE cancelled_at IS NULL AND start_date <= ? AND end_date >= ?
     `).all(farFuture, farFuture);
     assert.deepEqual(stillActive, [], `มีการมอบหมายที่ไม่มีวันหมดอายุ: ${JSON.stringify(stillActive)}`);
+  });
+
+  // เดินผ่านเบราว์เซอร์จริงแล้วเจอ: มอบให้ รอง ผอ. ช่วงหนึ่ง แล้วมอบให้หัวหน้าวิชาการช่วงเดียวกันซ้ำได้
+  // ผลคือ รอง ผอ. เห็นป้ายเขียว "กำลังรักษาการ" ในหน้า /delegations แต่กดปุ่มดำเนินการจริงได้ 403 ทุกครั้ง
+  // (getActiveDelegateFor คืนรายการล่าสุดรายการเดียว) — ระบบบอกว่ามีอำนาจแต่ไม่ให้ใช้
+  test('มอบหมายรักษาการแทนซ้อนช่วงเวลากันไม่ได้ ต้องยกเลิกรายการเดิมก่อน', () => {
+    const win = nextDelegationWindow(6);
+    const firstId = mkDelegation({ ...win, delegateId: seed.userIds.vicedir01 });
+    assert.ok(firstId, 'รายการแรกต้องบันทึกได้ตามปกติ');
+
+    const overlaps = [
+      ['ช่วงเดียวกันเป๊ะ', win],
+      ['คร่อมทับทั้งช่วง', { startDate: dayOffset(win.startDate, -2), endDate: dayOffset(win.endDate, 2) }],
+      ['ทับแค่วันสุดท้าย', { startDate: win.endDate, endDate: dayOffset(win.endDate, 3) }],
+      ['ทับแค่วันแรก', { startDate: dayOffset(win.startDate, -3), endDate: win.startDate }],
+    ];
+    for (const [label, range] of overlaps) {
+      assert.throws(
+        () => mkDelegation({ ...range, delegateId: seed.userIds.head_acad }),
+        /รักษาการแทนอยู่แล้ว/,
+        `ต้องกันการมอบซ้อน: ${label}`,
+      );
+    }
+    // ข้อความต้องบอกชื่อคนที่ถืออยู่ ไม่ใช่แค่ว่า "ซ้ำ" เฉยๆ ไม่งั้นผู้ใช้ไม่รู้ว่าต้องไปยกเลิกรายการไหน
+    const viceName = db.prepare('SELECT last_name FROM users WHERE id = ?').get(seed.userIds.vicedir01).last_name;
+    assert.throws(() => mkDelegation({ ...win, delegateId: seed.userIds.head_acad }),
+      (err) => err.message.includes(viceName), 'ข้อความต้องบอกว่าชนกับใคร');
+
+    // ช่วงที่ไม่ทับกันต้องยังมอบได้ตามปกติ ไม่ใช่ปิดตายไปเลย
+    assert.ok(mkDelegation({ startDate: dayOffset(win.endDate, 1), endDate: dayOffset(win.endDate, 4), delegateId: seed.userIds.head_acad }),
+      'ช่วงที่ต่อท้ายกันโดยไม่ทับต้องยังมอบได้');
+    // ยกเลิกรายการเดิมแล้วต้องมอบให้คนใหม่ในช่วงเดิมได้
+    cancelDelegation({ id: firstId, actorUser: loadUserForTest(seed.userIds.director01) });
+    assert.ok(mkDelegation({ ...win, delegateId: seed.userIds.head_acad }),
+      'ยกเลิกรายการเดิมแล้วต้องมอบช่วงเดิมให้คนใหม่ได้');
+
+    // ณ วันใดก็ตาม ต้องมีผู้รักษาการแทนที่ยังมีผลของผู้มอบคนเดียวกันได้ไม่เกินหนึ่งราย
+    const dup = db.prepare(`
+      SELECT d1.id FROM user_delegations d1 JOIN user_delegations d2
+        ON d1.delegator_id = d2.delegator_id AND d1.id != d2.id
+      WHERE d1.cancelled_at IS NULL AND d2.cancelled_at IS NULL
+        AND d1.start_date <= d2.end_date AND d1.end_date >= d2.start_date
+    `).all();
+    assert.deepEqual(dup, [], 'ห้ามมีการมอบหมายที่ยังมีผลซ้อนช่วงกันหลงเหลือในฐานข้อมูล');
+  });
+
+  // เส้นทางอนุมัติใบลาต้องไม่พังเพราะกฎข้อบน — ใบลาถูกบันทึกว่าอนุมัติไปก่อนแล้ว ถ้าโยน error ตรงนั้น
+  // ใบลาจะค้างครึ่งๆ และผู้อนุมัติเห็นแต่หน้า error ทั้งที่กดสำเร็จ จึงต้องแทนที่รายการเดิมแทน
+  test('อนุมัติใบลาที่มีผู้รักษาการแทน แม้ชนกับรายการเดิม ใบลาต้องอนุมัติสำเร็จ', () => {
+    const win = nextDelegationWindow(4);
+    mkDelegation({ ...win, delegateId: seed.userIds.vicedir01 });
+    const leave = createLeaveRequest({
+      requesterId: seed.userIds.director01, leaveType: 'personal',
+      startDate: win.startDate, endDate: win.endDate,
+      reason: 'ไปราชการ', approverId: seed.userIds.admin, delegateId: seed.userIds.head_acad,
+    });
+    assert.doesNotThrow(
+      () => approveLeaveRequest({ id: leave.id, note: 'อนุญาต', actorUser: loadUserForTest(seed.userIds.admin) }),
+      'การอนุมัติใบลาต้องไม่ล้มเพราะมีการมอบหมายเดิมซ้อนอยู่',
+    );
+    assert.equal(db.prepare('SELECT status FROM leave_requests WHERE id = ?').get(leave.id).status, 'approved');
+    const active = db.prepare(`
+      SELECT delegate_id FROM user_delegations
+      WHERE delegator_id = ? AND cancelled_at IS NULL AND start_date <= ? AND end_date >= ?
+    `).all(seed.userIds.director01, win.startDate, win.startDate);
+    assert.equal(active.length, 1, 'ต้องเหลือผู้รักษาการแทนที่มีผลเพียงรายเดียว');
+    assert.equal(active[0].delegate_id, seed.userIds.head_acad, 'ต้องเป็นคนที่ระบุไว้ในใบลา');
   });
 
   test('ช่วงเวลาที่ยาวผิดปกติต้องถูกปฏิเสธ (พิมพ์ปีผิดหนึ่งหลัก)', () => {
