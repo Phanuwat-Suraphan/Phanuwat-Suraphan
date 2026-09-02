@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: esaraban
+    runtime: docker # ต้องใช้ Docker ไม่ใช่ Node เพราะ OCR + ประทับตราลง PDF จริงต้องมี
+    # tesseract/poppler-utils/chromium/qpdf บนเซิร์ฟเวอร์ (apt install ได้เฉพาะบน Docker runtime
+    # เท่านั้น — Node runtime ธรรมดาของ Render ไม่อนุญาต) ดู /Dockerfile (root ของ repo) และ
+    # deploy/RENDER.md หัวข้อ "Docker runtime"
+    #
+    # ไม่ต้องตั้ง dockerfilePath/dockerContext/rootDir เลย — Dockerfile อยู่ที่ root ของ repo
+    # (ไม่ใช่ esaraban/Dockerfile) ซึ่งตรงกับค่าเริ่มต้นของ Render พอดี (./Dockerfile ที่ root, build
+    # context = root) ตั้งใจย้ายมาไว้ตรงนี้เพื่อเลี่ยงปัญหาต้องตั้งค่า path เพิ่มเอง ทั้งฝั่ง Blueprint
+    # และตอนสร้าง Web Service เองผ่านหน้าเว็บ Render
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+    healthCheckPath: /login

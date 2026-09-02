@@ -1,0 +1,14 @@
+{
+  "name": "esaraban-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ระบบสารบรรณอิเล็กทรอนิกส์ โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ ๑ — MVP prototype (zero external dependencies)",
+  "engines": { "node": ">=22.5.0" },
+  "scripts": {
+    "start": "node --no-warnings server.js",
+    "dev": "node --no-warnings --watch server.js",
+    "test": "node --no-warnings --test test/app.test.js"
+  },
+  "dependencies": {}
+}
