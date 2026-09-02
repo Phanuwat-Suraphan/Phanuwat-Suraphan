@@ -367,7 +367,10 @@ export function listBroadcasts(documentId) {
   return db.prepare(`
     SELECT b.*, u.prefix, u.first_name, u.last_name
     FROM document_broadcasts b JOIN users u ON u.id = b.sent_by
-    WHERE b.document_id = ? ORDER BY b.created_at DESC
+    -- rowid ตัดสินเมื่อ created_at เท่ากัน — แจ้งเวียนสองครั้งรวดในวินาทีเดียวกันเกิดขึ้นได้จริง
+    -- (กดซ้ำเพราะคิดว่าครั้งแรกไม่ติด) ถ้าเรียงด้วยเวลาอย่างเดียว ลำดับจะไม่แน่นอน แล้วกล่อง
+    -- "ประชาสัมพันธ์แล้ว ... ล่าสุด" อาจโชว์ข้อความของครั้งเก่ากว่า
+    WHERE b.document_id = ? ORDER BY b.created_at DESC, b.rowid DESC
   `).all(documentId);
 }
 

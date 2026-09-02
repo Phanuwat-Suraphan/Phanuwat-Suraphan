@@ -1,5 +1,5 @@
 import { router, html, contentDispositionHeader } from '../router.js';
-import { layout, esc, fmtDate, statusBadge, LABELS } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateShort, statusBadge, LABELS } from '../render.js';
 import { requirePage } from '../middleware.js';
 import { db, audit, todayInBangkok } from '../db.js';
 import { visibleDocumentsSqlFilter, canUserSeeDocument } from '../services/workflow.js';
@@ -123,7 +123,12 @@ router.get('/reports/export.csv', requirePage((ctx) => {
     lines.push([
       r.doc_number_display, r.direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก', r.title, r.dept_name,
       LABELS.PRIORITY_LABEL[r.priority] || r.priority, LABELS.SECRET_LABEL[r.secret_level] || r.secret_level,
-      LABELS.STATUS_LABEL[r.status] || r.status, r.correspondent_name, r.created_at,
+      // ห้ามใส่ created_at ดิบลงไฟล์ — เป็น ISO UTC เต็มรูป ("2026-09-02T01:46:09.983Z") ซึ่งมีปัญหา 3 ชั้น:
+      // เป็น ค.ศ. ไม่ใช่ พ.ศ. ที่ทะเบียนราชการต้องใช้, เป็นรูปแบบเครื่องที่ไม่มีใครในโรงเรียนอ่านออก และ
+      // ที่ร้ายที่สุดคือเป็นเวลา UTC — หนังสือที่ลงทะเบียนก่อน 07:00 น. ตามเวลาไทยจะแสดง "วันก่อนหน้า"
+      // ในรายงาน ซึ่งทำให้ยอดรายวัน/รายปีงบประมาณคลาดเคลื่อนโดยไม่มีอะไรฟ้อง
+      // (ไฟล์ทะเบียน .xlsx ใช้ fmtThaiDateShort อยู่แล้ว ตรงนี้จึงหลุดไปคนละมาตรฐานกับที่อื่นทั้งระบบ)
+      LABELS.STATUS_LABEL[r.status] || r.status, r.correspondent_name, fmtThaiDateShort(r.created_at),
     ].map(csvEscape).join(','));
   }
   audit({ userId: ctx.user.id, action: 'report_exported', detail: { rows: rows.length, range: range.key }, ip: ctx.ip });
