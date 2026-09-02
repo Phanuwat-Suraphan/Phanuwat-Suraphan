@@ -350,6 +350,93 @@ export function assignStep({ documentId, assigneeId, instruction, actorUser }) {
   return id;
 }
 
+// ---------------- แจ้งเวียนประชาสัมพันธ์ (ส่งให้ทุกคนอ่าน ไม่ต้องลงนามรับทราบรายคน) ----------------
+
+// ใครกดแจ้งเวียนได้ — ชุดเดียวกับผู้ที่โพสต์ประกาศบนบอร์ดได้ (routes/announcements.js) เพราะเป็น
+// การสื่อสารถึงบุคลากรทั้งโรงเรียนเหมือนกัน ในทางปฏิบัติธุรการเป็นคนกดจริง ส่วน ผอ./รอง ผอ. สั่งให้
+// ธุรการแจ้งเวียน แต่เปิดให้กดเองได้ด้วยจะได้ไม่ติดขัดเวลาธุรการไม่อยู่
+const CAN_BROADCAST_ROLES = ['admin', 'director', 'vice_director', 'registrar'];
+export const canBroadcast = (user) => user.roleCodes.some((r) => CAN_BROADCAST_ROLES.includes(r));
+
+const MAX_BROADCAST_NOTE = 1000;
+
+// สถานะที่แจ้งเวียนไม่ได้ — เรื่องที่ยกเลิก/ทำลาย/ไม่อนุมัติไปแล้ว ไม่ควรถูกส่งให้ทั้งโรงเรียนอ่าน
+const UNBROADCASTABLE_STATUSES = ['voided', 'destroyed', 'rejected'];
+
+export function listBroadcasts(documentId) {
+  return db.prepare(`
+    SELECT b.*, u.prefix, u.first_name, u.last_name
+    FROM document_broadcasts b JOIN users u ON u.id = b.sent_by
+    WHERE b.document_id = ? ORDER BY b.created_at DESC
+  `).all(documentId);
+}
+
+/**
+ * ส่งหนังสือให้บุคลากรทุกคนอ่าน โดยไม่สร้างขั้นตอน workflow ให้ใครต้องกด "ทราบ"
+ *
+ * ใช้กับหนังสือประชาสัมพันธ์/หนังสือเวียน ซึ่งตามระเบียบงานสารบรรณเป็นเรื่องที่ "แจ้งให้ทราบทั่วกัน"
+ * ไม่ใช่เรื่องที่ต้องมอบหมายให้ใครไปดำเนินการแล้วลงนามกลับมา
+ */
+export function broadcastDocument({ documentId, note, actorUser }) {
+  note = asTextOrNull(note);
+  assertMaxLength(note, MAX_BROADCAST_NOTE, 'ข้อความประชาสัมพันธ์');
+  const doc = getDocument(documentId);
+  if (!doc) throw httpError(404, 'ไม่พบเอกสาร');
+  if (!canBroadcast(actorUser)) {
+    throw httpError(403, 'ประชาสัมพันธ์ให้ทุกคนได้เฉพาะธุรการ ผู้บริหาร หรือผู้ดูแลระบบเท่านั้น');
+  }
+  // หนังสือ "ลับ"/"ลับมาก" เปิดอ่านได้เฉพาะคนในสายเรื่องเท่านั้น (canUserSeeDocument) การส่งแจ้งเตือน
+  // พร้อมชื่อเรื่องไปหาครูทุกคนจึงเป็นการเปิดเผยสิ่งที่ตั้งใจปกปิด แม้กดลิงก์เข้าไปแล้วจะเปิดไม่ได้ก็ตาม
+  if (['secret', 'top_secret'].includes(doc.secret_level)) {
+    throw httpError(400, 'หนังสือชั้นความลับ "ลับ"/"ลับมาก" ประชาสัมพันธ์ให้ทุกคนไม่ได้ — ถ้าต้องการให้คนอื่นเห็น ให้เปลี่ยนชั้นความลับก่อน หรือมอบหมายเป็นรายคนแทน');
+  }
+  if (UNBROADCASTABLE_STATUSES.includes(doc.status)) {
+    throw httpError(409, 'หนังสือที่ยกเลิก/ไม่อนุมัติ/ทำลายไปแล้ว ประชาสัมพันธ์ไม่ได้');
+  }
+
+  const recipients = db.prepare(`
+    SELECT id FROM users WHERE deleted_at IS NULL AND status = 'active' AND id != ?
+  `).all(actorUser.id);
+  if (!recipients.length) throw httpError(409, 'ยังไม่มีบุคลากรคนอื่นในระบบให้ประชาสัมพันธ์ถึง');
+
+  const id = uuid();
+  const now = nowIso();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const r of recipients) {
+      notifyUser({
+        userId: r.id, documentId: doc.id,
+        title: `📢 ประชาสัมพันธ์: ${doc.doc_number_display}`,
+        message: note ? `${doc.title} — ${note}` : doc.title,
+        priority: doc.priority === 'most_urgent' || doc.priority === 'very_urgent' ? 'urgent' : 'info',
+      });
+    }
+    db.prepare(`
+      INSERT INTO document_broadcasts (id, document_id, note, recipient_count, sent_by, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, doc.id, note, recipients.length, actorUser.id, now);
+
+    // ไม่มีใครต้องดำเนินการต่อแล้ว จึงปิดเรื่องให้เลย ไม่งั้นหนังสือจะค้างเป็น "รอดำเนินการ" บนหน้าแรก
+    // ของธุรการตลอดไป ทั้งที่งานเสร็จแล้ว (หน้าแรกนับสถานะ registered/in_progress/returned เป็นงานค้าง)
+    // แต่ถ้ายังมีขั้นตอนที่รอใครอยู่ ห้ามแตะสถานะ — การแจ้งเวียนเป็นการแจ้งให้ทราบคู่ขนาน ไม่ได้แปลว่า
+    // งานที่มอบหมายไว้เสร็จแล้ว
+    const stillWaiting = db.prepare(`SELECT 1 x FROM workflow_steps WHERE document_id = ? AND status = 'waiting'`).get(doc.id);
+    if (!stillWaiting && !['completed', 'archived'].includes(doc.status)) {
+      db.prepare(`UPDATE documents SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`).run(now, now, doc.id);
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+
+  audit({
+    userId: actorUser.id, action: 'document_broadcast', tableName: 'document_broadcasts', recordId: id,
+    detail: { documentId: doc.id, recipientCount: recipients.length, note },
+  });
+  return { id, recipientCount: recipients.length };
+}
+
 // ผู้ถือขั้นตอนที่ "ล็อกอินเข้ามาทำงานไม่ได้แล้วจริงๆ" — บัญชีถูกลบ (ย้ายโรงเรียน/ลาออก) หรือถูกระงับ
 // assertAssignableUser กันไม่ให้มอบหมายให้คนแบบนี้ตั้งแต่แรกอยู่แล้ว แต่ไม่ได้กันกรณีที่บัญชีถูกปิด
 // "หลังจาก" มอบหมายไปแล้ว ซึ่งเป็นเรื่องปกติมากในโรงเรียน เพราะครูย้ายกันทุกปีการศึกษา

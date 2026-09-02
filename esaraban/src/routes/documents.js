@@ -8,6 +8,7 @@ import {
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
   voidDocument, archiveDocument, forceDeleteDocument, httpError, assertStepBelongsToDocument,
   isSignedStep, signerIdentity, inactiveStepHolder, reassignStuckStep,
+  broadcastDocument, listBroadcasts, canBroadcast,
 } from '../services/workflow.js';
 import { renderPdfFirstPageImage } from '../services/pdfPreview.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream, deleteFile } from '../services/googleDrive.js';
@@ -1263,6 +1264,62 @@ router.get('/documents/:id', requirePage((ctx) => {
       }
     </script>` : '';
 
+  // ---- แจ้งเวียนประชาสัมพันธ์ ----
+  // หนังสือประชาสัมพันธ์/หนังสือเวียน ตามระเบียบงานสารบรรณคือเรื่องที่ "แจ้งให้ทราบทั่วกัน" ไม่ใช่เรื่อง
+  // ที่มอบหมายให้ใครไปดำเนินการแล้วลงนามกลับมา ธุรการจึงต้องส่งให้ทุกคนอ่านได้ในคลิกเดียว โดยครูไม่ต้อง
+  // กด "ทราบ" ทีละคน (ถ้าบังคับให้กด จะได้ขั้นตอนค้างเป็นสิบรายการต่อหนังสือหนึ่งฉบับ ซึ่งไม่มีใครตามเก็บไหว)
+  const broadcasts = listBroadcasts(doc.id);
+  const isSecretDoc = ['secret', 'top_secret'].includes(doc.secret_level);
+  const showBroadcastBox = canBroadcast(ctx.user) && !['voided', 'destroyed', 'rejected'].includes(doc.status);
+  const lastBroadcast = broadcasts[0];
+  const broadcastBox = showBroadcastBox ? `
+    <div class="card">
+      <h3 class="mt-0">📢 ประชาสัมพันธ์ให้ทุกคนอ่าน</h3>
+      ${broadcasts.length ? `
+        <div class="alert alert-success" style="font-size:.85rem">
+          ประชาสัมพันธ์แล้ว ${broadcasts.length > 1 ? `${broadcasts.length} ครั้ง ล่าสุด` : ''}
+          เมื่อ ${esc(fmtDate(lastBroadcast.created_at))} ถึงบุคลากร ${lastBroadcast.recipient_count} คน
+          โดย ${esc(`${lastBroadcast.prefix || ''}${lastBroadcast.first_name} ${lastBroadcast.last_name}`.trim())}
+          ${lastBroadcast.note ? `<br/>ข้อความ: ${esc(lastBroadcast.note)}` : ''}
+        </div>` : ''}
+      ${isSecretDoc ? `
+        <div class="alert alert-warning" style="font-size:.85rem">
+          หนังสือชั้นความลับ <strong>${esc(LABELS.SECRET_LABEL[doc.secret_level] || doc.secret_level)}</strong>
+          ประชาสัมพันธ์ให้ทุกคนไม่ได้ เพราะแจ้งเตือนจะพาชื่อเรื่องไปถึงคนที่ไม่มีสิทธิ์เปิดอ่าน —
+          ถ้าต้องการให้ทุกคนเห็น ให้เปลี่ยนชั้นความลับก่อน
+        </div>` : `
+        <p class="text-muted" style="font-size:.85rem;margin-top:0">
+          ส่งให้บุคลากร<strong>ทุกคน</strong>ได้รับแจ้งเตือนให้เข้ามาอ่านหนังสือฉบับนี้
+          <strong>โดยไม่ต้องกด "ทราบ" ทีละคน</strong> — เหมาะกับหนังสือประชาสัมพันธ์/หนังสือเวียน
+        </p>
+        <div class="stack">
+          <div class="field">
+            <label>ข้อความเพิ่มเติม <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+            <input type="text" id="broadcastNote" placeholder="เช่น ขอเชิญคณะครูทุกท่านเข้าร่วม" />
+          </div>
+          <button class="btn btn-primary" onclick="doBroadcast(this)">📢 ${broadcasts.length ? 'ประชาสัมพันธ์ซ้ำอีกครั้ง' : 'ประชาสัมพันธ์ให้ทุกคน'}</button>
+          ${!broadcasts.length && !currentStep(doc.id) && !['completed', 'archived'].includes(doc.status)
+            ? '<div class="help-text">เมื่อประชาสัมพันธ์แล้ว ระบบจะปิดเรื่องนี้ให้อัตโนมัติ เพราะไม่มีใครต้องดำเนินการต่อ</div>' : ''}
+        </div>
+        <script>
+          function doBroadcast(btn){
+            if (!confirm('ยืนยันส่งหนังสือฉบับนี้ให้บุคลากรทุกคนอ่าน?')) return;
+            window.setBtnLoading(btn, 'กำลังส่ง...');
+            fetch('/documents/${doc.id}/broadcast', {
+              method: 'POST', headers: {'Content-Type':'application/json'},
+              body: JSON.stringify({ note: document.getElementById('broadcastNote').value }),
+            })
+              .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+              .then(function(res){
+                if(!res.ok) throw new Error(res.d.error);
+                window.toast('ประชาสัมพันธ์ถึงบุคลากร ' + res.d.recipientCount + ' คนแล้ว', 'success');
+                setTimeout(function(){ location.reload(); }, 1200);
+              })
+              .catch(function(e){ toast(e.message, 'danger'); window.restoreBtn(btn); });
+          }
+        </script>`}
+    </div>` : '';
+
   // หนังสือค้างอยู่กับคนที่ปิดบัญชีไปแล้ว (ครูย้ายโรงเรียน/ลาออก) — เดิมไม่มีทางออกจากหน้าเว็บเลย
   // ไม่ว่าจะเป็นแอดมินหรือธุรการผู้บันทึก และหน้าเว็บก็ไม่บอกด้วยว่าทำไมเรื่องไม่เดิน
   const stuckHolder = step ? inactiveStepHolder(step) : null;
@@ -1627,6 +1684,7 @@ router.get('/documents/:id', requirePage((ctx) => {
         ${stuckBox}
         ${actionBox}
         ${assignBox}
+        ${broadcastBox}
         <div class="card">
           <h3>Timeline การเดินหนังสือ</h3>
           ${timelineHtml}
@@ -1751,6 +1809,14 @@ router.post('/documents/:id/workflow/:stepId/return', requireApi(async (ctx) => 
   assertStepBelongsToDocument(ctx.params.id, ctx.params.stepId);
   returnStep({ stepId: ctx.params.stepId, reason: ctx.body.reason, actorUser: ctx.user });
   json(ctx, 200, { ok: true });
+}));
+
+// แจ้งเวียนหนังสือประชาสัมพันธ์ให้บุคลากรทุกคนอ่าน โดยไม่ต้องให้ใครกด "ทราบ" ทีละคน
+router.post('/documents/:id/broadcast', requireApi(async (ctx) => {
+  const doc = getDocument(ctx.params.id);
+  if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
+  const result = broadcastDocument({ documentId: doc.id, note: ctx.body.note, actorUser: ctx.user });
+  json(ctx, 200, { ok: true, recipientCount: result.recipientCount });
 }));
 
 // กู้หนังสือที่ค้างอยู่กับคนที่ปิดบัญชีไปแล้ว (ครูย้ายโรงเรียน/ลาออก) — ดูเหตุผลเต็มใน workflow.js

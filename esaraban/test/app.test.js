@@ -19,6 +19,7 @@ const {
   createDocument, createDocumentsBulk, MAX_BULK_DOCUMENTS, getDocument, canUserSeeDocument, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep, voidDocument, archiveDocument,
   assertStepBelongsToDocument, forceDeleteDocument, inactiveStepHolder, reassignStuckStep,
+  broadcastDocument, listBroadcasts,
 } = await import('../src/services/workflow.js');
 const { nextRunningNumber } = await import('../src/numbering.js');
 const { readWorkbook } = await import('../src/services/xlsx.js');
@@ -3519,6 +3520,98 @@ describe('วันที่ของใบลาและการมอบห�
 // ซึ่งเกิดทุกปีการศึกษา) หนังสือฉบับนั้นค้างถาวร — แอดมินเปิดหน้าหนังสือก็ไม่มีปุ่มดำเนินการ ธุรการผู้บันทึก
 // ก็ไม่มีช่องมอบหมายใหม่ (canAssign ต้องการสถานะ registered/returned แต่เรื่องอยู่ที่ in_progress) และ
 // หน้าเว็บไม่บอกด้วยซ้ำว่าทำไมเรื่องไม่เดิน มีทางเดียวคือยิง API เอง ซึ่งไม่มีครูคนไหนทำได้
+// หนังสือประชาสัมพันธ์/หนังสือเวียน ตามระเบียบงานสารบรรณคือเรื่องที่ "แจ้งให้ทราบทั่วกัน" ไม่ใช่เรื่อง
+// ที่มอบหมายให้ใครไปดำเนินการแล้วลงนามกลับมา — ถ้าบังคับให้ครูทุกคนกด "ทราบ" ทีละคน จะได้ขั้นตอนค้าง
+// เป็นสิบรายการต่อหนังสือหนึ่งฉบับ ซึ่งไม่มีใครตามเก็บไหว
+describe('ประชาสัมพันธ์: ส่งให้ทุกคนอ่านโดยไม่ต้องลงนามรับทราบรายคน', () => {
+  const activeCount = () => db.prepare("SELECT COUNT(*) c FROM users WHERE deleted_at IS NULL AND status = 'active'").get().c;
+  const notiCount = (id) => db.prepare('SELECT COUNT(*) c FROM notifications WHERE document_id = ?').get(id).c;
+
+  test('ธุรการกดครั้งเดียว ทุกคนได้รับแจ้ง และไม่มีใครต้องกดทราบ', () => {
+    const doc = makeDoc({ title: 'ขอเชิญประชุมคณะครู' });
+    const before = activeCount();
+    const res = broadcastDocument({ documentId: doc.id, note: 'เชิญทุกท่าน', actorUser: registrarUser });
+
+    assert.equal(res.recipientCount, before - 1, 'ต้องส่งถึงทุกคนยกเว้นตัวผู้ส่งเอง');
+    assert.equal(notiCount(doc.id), before - 1, 'ทุกคนต้องได้รับแจ้งเตือนจริง');
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM workflow_steps WHERE document_id = ?').get(doc.id).c, 0,
+      'ต้องไม่สร้างขั้นตอนให้ใครต้องกดทราบ');
+    // ไม่มีใครต้องทำอะไรต่อแล้ว ถ้าไม่ปิดเรื่องจะค้างเป็น "รอดำเนินการ" บนหน้าแรกของธุรการตลอดไป
+    assert.equal(getDocument(doc.id).status, 'completed', 'ต้องปิดเรื่องให้เอง');
+    assert.ok(getDocument(doc.id).completed_at, 'ต้องบันทึกเวลาที่ปิดเรื่องด้วย');
+    // ผู้ส่งเองต้องไม่ได้รับแจ้งเตือนของตัวเอง
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM notifications WHERE document_id = ? AND user_id = ?')
+      .get(doc.id, registrarUser.id).c, 0);
+  });
+
+  test('ข้อความเพิ่มเติมที่ธุรการพิมพ์ ต้องไปถึงทุกคน', () => {
+    const doc = makeDoc({ title: 'แจ้งกำหนดการ' });
+    broadcastDocument({ documentId: doc.id, note: 'เริ่ม ๐๙.๐๐ น. ณ ห้องประชุม', actorUser: registrarUser });
+    const sample = db.prepare('SELECT message FROM notifications WHERE document_id = ? LIMIT 1').get(doc.id);
+    assert.match(sample.message, /เริ่ม ๐๙\.๐๐ น\./);
+    assert.equal(listBroadcasts(doc.id)[0].note, 'เริ่ม ๐๙.๐๐ น. ณ ห้องประชุม');
+  });
+
+  // สำคัญที่สุดในชุดนี้ — แจ้งเตือนพาชื่อเรื่องไปถึงทุกคน ถ้าปล่อยให้แจ้งเวียนหนังสือลับได้
+  // ก็เท่ากับเปิดเผยสิ่งที่ตั้งใจปกปิด แม้กดลิงก์เข้าไปแล้วจะเปิดอ่านไม่ได้ก็ตาม
+  test('หนังสือชั้นความลับ ประชาสัมพันธ์ไม่ได้ และต้องไม่มีแจ้งเตือนหลุดไปเลย', () => {
+    for (const level of ['secret', 'top_secret']) {
+      const doc = makeDoc({ title: `รายงานสอบสวน ${level}`, secretLevel: level });
+      assert.throws(() => broadcastDocument({ documentId: doc.id, actorUser: registrarUser }),
+        /ประชาสัมพันธ์ให้ทุกคนไม่ได้/, `ต้องกัน ${level}`);
+      assert.equal(notiCount(doc.id), 0, `ต้องไม่มีแจ้งเตือนหลุดไปหาใครเลย (${level})`);
+      assert.equal(listBroadcasts(doc.id).length, 0);
+    }
+  });
+
+  test('ครูทั่วไปประชาสัมพันธ์เองไม่ได้', () => {
+    const doc = makeDoc({ title: 'ครูลองส่งเอง' });
+    assert.throws(() => broadcastDocument({ documentId: doc.id, actorUser: teacherUser }),
+      /เฉพาะธุรการ ผู้บริหาร หรือผู้ดูแลระบบ/);
+    assert.equal(notiCount(doc.id), 0);
+  });
+
+  test('ผอ. ประชาสัมพันธ์เองได้ ไม่ต้องรอธุรการ', () => {
+    const doc = makeDoc({ title: 'ผอ. แจ้งเอง' });
+    assert.doesNotThrow(() => broadcastDocument({ documentId: doc.id, actorUser: loadUserForTest(seed.userIds.director01) }));
+    assert.ok(listBroadcasts(doc.id).length);
+  });
+
+  // การแจ้งเวียนเป็นการแจ้งให้ทราบคู่ขนาน ไม่ได้แปลว่างานที่มอบหมายไว้เสร็จแล้ว
+  test('หนังสือที่ยังรอคนพิจารณาอยู่ แจ้งเวียนได้แต่ต้องไม่ปิดเรื่องทิ้ง', () => {
+    const doc = makeDoc({ title: 'ยังรอ ผอ. พิจารณา' });
+    const stepId = assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, actorUser: registrarUser });
+    broadcastDocument({ documentId: doc.id, actorUser: registrarUser });
+
+    assert.equal(getDocument(doc.id).status, 'in_progress', 'ต้องไม่ปิดเรื่องทิ้งทั้งที่ ผอ. ยังไม่ได้พิจารณา');
+    assert.equal(db.prepare('SELECT status FROM workflow_steps WHERE id = ?').get(stepId).status, 'waiting',
+      'ขั้นตอนของ ผอ. ต้องยังรออยู่เหมือนเดิม');
+  });
+
+  test('แจ้งเวียนซ้ำได้ และเก็บประวัติทุกครั้ง', () => {
+    const doc = makeDoc({ title: 'แจ้งย้ำอีกรอบ' });
+    broadcastDocument({ documentId: doc.id, note: 'ครั้งแรก', actorUser: registrarUser });
+    broadcastDocument({ documentId: doc.id, note: 'แจ้งย้ำ', actorUser: registrarUser });
+    const rows = listBroadcasts(doc.id);
+    assert.equal(rows.length, 2, 'ต้องเก็บประวัติทั้งสองครั้ง');
+    assert.equal(rows[0].note, 'แจ้งย้ำ', 'ครั้งล่าสุดต้องมาก่อน');
+  });
+
+  test('หนังสือที่ยกเลิก/ไม่อนุมัติไปแล้ว ประชาสัมพันธ์ไม่ได้', () => {
+    const doc = makeDoc({ title: 'เรื่องที่ยกเลิกไปแล้ว' });
+    voidDocument({ documentId: doc.id, reason: 'ลงซ้ำ', actorUser: registrarUser });
+    assert.throws(() => broadcastDocument({ documentId: doc.id, actorUser: registrarUser }), /ยกเลิก/);
+    assert.equal(notiCount(doc.id), 0);
+  });
+
+  test('ข้อความยาวเกินเพดานต้องถูกปฏิเสธ และต้องไม่ส่งอะไรออกไปเลย', () => {
+    const doc = makeDoc({ title: 'ข้อความยาวเกิน' });
+    assert.throws(() => broadcastDocument({ documentId: doc.id, note: 'ก'.repeat(1001), actorUser: registrarUser }),
+      /ยาวเกินไป/);
+    assert.equal(notiCount(doc.id), 0, 'ปฏิเสธแล้วต้องไม่มีแจ้งเตือนค้างไปครึ่งทาง');
+  });
+});
+
 describe('หนังสือที่ค้างอยู่กับคนที่ปิดบัญชีไปแล้ว ต้องกู้ได้', () => {
   let docId; let stepId; let leaverId;
   const anyDepartmentId = () => deptId;

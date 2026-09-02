@@ -327,6 +327,24 @@ export function migrate() {
   );
   CREATE INDEX IF NOT EXISTS idx_leave_signatures_req ON leave_signatures(leave_request_id);
 
+  -- แจ้งเวียนหนังสือประชาสัมพันธ์ให้บุคลากรทุกคนอ่าน โดย "ไม่ต้องลงนามรับทราบรายคน"
+  --
+  -- ต่างจาก workflow_steps ตรงที่ขั้นตอน workflow คือการมอบหมายให้คนใดคนหนึ่งไปดำเนินการแล้วลงนาม
+  -- ยืนยันด้วย PIN ส่วนการแจ้งเวียนคือการส่งให้ทุกคน "อ่านเพื่อทราบ" เฉยๆ ตามที่โรงเรียนใช้จริงกับ
+  -- หนังสือประชาสัมพันธ์ — ถ้าบังคับให้ครูทุกคนกดทราบทีละคน จะได้ขั้นตอนค้างเป็นสิบรายการต่อหนังสือ
+  -- หนึ่งฉบับ ซึ่งไม่มีใครตามเก็บไหวและไม่ใช่สิ่งที่ระเบียบงานสารบรรณกำหนดสำหรับหนังสือประเภทนี้
+  --
+  -- เก็บเป็นตารางแยก (ไม่ใช่คอลัมน์บน documents) เพราะแจ้งเวียนซ้ำได้ เช่นใกล้ถึงกำหนดแล้วแจ้งย้ำอีกรอบ
+  CREATE TABLE IF NOT EXISTS document_broadcasts (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL REFERENCES documents(id),
+    note TEXT,
+    recipient_count INTEGER NOT NULL,
+    sent_by TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_broadcasts_doc ON document_broadcasts(document_id, created_at DESC);
+
   CREATE TABLE IF NOT EXISTS announcements (
     id TEXT PRIMARY KEY,
     category TEXT NOT NULL DEFAULT 'ประกาศ', -- ประกาศ | ประชาสัมพันธ์
