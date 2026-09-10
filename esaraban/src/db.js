@@ -327,6 +327,19 @@ export function migrate() {
   );
   CREATE INDEX IF NOT EXISTS idx_leave_signatures_req ON leave_signatures(leave_request_id);
 
+  -- ค่าตั้งค่าของระบบที่แอดมินแก้เองได้จากหน้าเว็บ (key/value) — ตอนนี้ใช้เก็บชื่อโรงเรียน
+  --
+  -- ทำไมต้องเก็บในฐานข้อมูล ไม่ใช่ฝังในโค้ดหรือ environment variable: ชื่อโรงเรียนถูกพิมพ์ลงบน
+  -- "ตัวเอกสารราชการจริง" ทั้งหัวหนังสือ ตราประทับใน PDF และแบบฟอร์มใบลา ถ้าพิมพ์ผิดสักตัว
+  -- โรงเรียนต้องรอผู้พัฒนามาแก้โค้ดหรือรอ deploy ใหม่ ซึ่งไม่ควรเป็นเงื่อนไขของการแก้คำผิด
+  -- (ยังอ่านค่าเริ่มต้นจาก env var SCHOOL_NAME ได้ เพื่อให้ตั้งค่าครั้งแรกตอน deploy ได้ในทีเดียว)
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_by TEXT REFERENCES users(id),
+    updated_at TEXT NOT NULL
+  );
+
   -- แจ้งเวียนหนังสือประชาสัมพันธ์ให้บุคลากรทุกคนอ่าน โดย "ไม่ต้องลงนามรับทราบรายคน"
   --
   -- ต่างจาก workflow_steps ตรงที่ขั้นตอน workflow คือการมอบหมายให้คนใดคนหนึ่งไปดำเนินการแล้วลงนาม

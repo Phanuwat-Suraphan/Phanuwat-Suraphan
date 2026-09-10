@@ -1,11 +1,12 @@
 import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
-import { layout, esc, fmtDate, emptyState } from '../render.js';
+import { layout, esc, fmtDate, emptyState, schoolName, schoolShortName, schoolInitials } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { db, uuid, nowIso, hashSecret, audit } from '../db.js';
 import { readTable, planUserImport, applyUserImport, templateCsv, generatePassword, generatePin } from '../services/userImport.js';
 import { httpError } from '../services/workflow.js';
 import { positionInput } from '../services/positions.js';
 import { asText, asTextOrNull } from '../services/validate.js';
+import { getSetting, setSetting, MAX_SETTING_LENGTH } from '../services/settings.js';
 import {
   isGoogleDriveEnabled, isGoogleDriveConnected, getOAuthClientConfig, exchangeCodeForTokens, DRIVE_SCOPE, AUTH_URL,
   listAllAttachmentFiles, deleteFile,
@@ -35,6 +36,81 @@ function oauthRedirectUri(ctx) {
   const host = ctx.req.headers.host;
   return `${proto}://${host}/admin/google-drive/callback`;
 }
+
+// ---------------- ตั้งค่าโรงเรียน ----------------
+// ชื่อโรงเรียนถูกพิมพ์ลงบน "ตัวเอกสารราชการจริง" — หัวหนังสือ ตราประทับใน PDF และแบบฟอร์มใบลา
+// จึงต้องให้โรงเรียนแก้เองได้ ไม่ใช่ต้องรอผู้พัฒนามาแก้โค้ดแล้ว deploy ใหม่เพียงเพราะพิมพ์ผิดหนึ่งตัว
+router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
+  const content = `
+    <h2>🏫 ตั้งค่าโรงเรียน</h2>
+    <div class="card">
+      <p class="text-muted" style="margin-top:0;font-size:.88rem">
+        ชื่อที่ตั้งไว้ที่นี่จะขึ้นบน<strong>เอกสารราชการจริงทุกใบ</strong> — หัวหนังสือ ตราประทับที่พิมพ์ลงไฟล์ PDF
+        แบบฟอร์มใบลา หน้าเข้าสู่ระบบ และแถบเมนูด้านข้าง กรุณาตรวจตัวสะกดให้ถูกก่อนบันทึก
+      </p>
+      <form id="schoolForm" class="stack">
+        <div class="field">
+          <label>ชื่อโรงเรียน (เต็ม) *</label>
+          <input type="text" id="school_name" required maxlength="${MAX_SETTING_LENGTH.school_name}"
+            value="${esc(getSetting('school_name'))}" placeholder="เช่น โรงเรียนบ้านห้วยแก้ว" />
+          <div class="help-text">
+            ต้องมีคำว่า <strong>“โรงเรียน”</strong> นำหน้าด้วย เพราะระบบนำไปต่อท้ายคำอื่นตรงๆ
+            เช่น “ผู้อำนวยการ<u>โรงเรียนบ้านห้วยแก้ว</u>” และ “เขียนที่ <u>โรงเรียนบ้านห้วยแก้ว</u>” บนใบลา
+          </div>
+        </div>
+        <div class="field">
+          <label>ชื่อย่อ <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+          <input type="text" id="school_short_name" maxlength="${MAX_SETTING_LENGTH.school_short_name}"
+            value="${esc(getSetting('school_short_name'))}" placeholder="ไม่กรอก = ${esc(schoolShortName())}" />
+          <div class="help-text">ใช้ในแถบเมนูด้านข้างและชื่อแอปบนมือถือ — ไม่กรอกระบบจะย่อ “โรงเรียน” เป็น “ร.ร.” ให้เอง</div>
+        </div>
+        <div class="field">
+          <label>ตัวอักษรย่อในโลโก้ <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+          <input type="text" id="school_initials" maxlength="${MAX_SETTING_LENGTH.school_initials}"
+            value="${esc(getSetting('school_initials'))}" placeholder="ไม่กรอก = ${esc(schoolInitials())}" style="max-width:8rem" />
+          <div class="help-text">ตัวอักษรในวงกลมมุมบนซ้ายและหน้าเข้าสู่ระบบ — 1-2 ตัวกำลังดี</div>
+        </div>
+        <button class="btn btn-primary" type="submit">บันทึก</button>
+      </form>
+    </div>
+    <div class="card">
+      <h3 class="mt-0">ตัวอย่างที่จะขึ้นบนเอกสาร</h3>
+      <div class="table-plain">
+        <p style="margin:.2rem 0">หัวหนังสือ / ตราประทับ: <strong>${esc(schoolName())}</strong></p>
+        <p style="margin:.2rem 0">กล่องความเห็น ผอ.: <strong>ผู้อำนวยการ${esc(schoolName())}</strong></p>
+        <p style="margin:.2rem 0">ใบลา: <strong>เขียนที่ ${esc(schoolName())}</strong></p>
+        <p style="margin:.2rem 0">แถบเมนู: <strong>${esc(schoolShortName())}</strong> · โลโก้: <strong>${esc(schoolInitials())}</strong></p>
+      </div>
+      <div class="help-text">เอกสารที่ประทับตราไปแล้วจะไม่เปลี่ยนตาม เพราะชื่อถูกฝังลงไฟล์ PDF ไปแล้วตอนลงนาม</div>
+    </div>
+    <script>
+      document.getElementById('schoolForm').addEventListener('submit', function(e){
+        e.preventDefault();
+        var btn = this.querySelector('button[type=submit]');
+        var payload = {
+          school_name: document.getElementById('school_name').value,
+          school_short_name: document.getElementById('school_short_name').value,
+          school_initials: document.getElementById('school_initials').value,
+        };
+        window.setBtnLoading(btn, 'กำลังบันทึก...');
+        fetch('/admin/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+          .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+          .then(function(res){ if(!res.ok) throw new Error(res.d.error); location.reload(); })
+          .catch(function(e){ window.toast(e.message, 'danger'); window.restoreBtn(btn); });
+      });
+    </script>`;
+  html(ctx, 200, layout({ user: ctx.user, title: 'ตั้งค่าโรงเรียน', path: '/admin/settings', content }));
+})));
+
+router.post('/admin/settings', requireApi(async (ctx) => {
+  if (!ctx.user.roleCodes.includes('admin')) return json(ctx, 403, { error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
+  // ชื่อเต็มเว้นว่างไม่ได้ ไม่งั้นเอกสารราชการจะขึ้นหัวเป็นค่าตั้งต้น "โรงเรียน (ยังไม่ได้ตั้งชื่อ)"
+  if (!asText(ctx.body.school_name)) return json(ctx, 400, { error: 'กรุณากรอกชื่อโรงเรียน' });
+  for (const key of ['school_name', 'school_short_name', 'school_initials']) {
+    setSetting({ key, value: ctx.body[key], actorUser: ctx.user });
+  }
+  json(ctx, 200, { ok: true });
+}));
 
 router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
   const users = db.prepare(`

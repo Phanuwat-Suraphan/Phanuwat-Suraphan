@@ -7,7 +7,7 @@
 //
 // เนื้อหาต้องตรงกับสิ่งที่ระบบทำจริงเสมอ — ถ้าเพิ่มการเก็บข้อมูลใหม่ ต้องมาแก้หน้านี้ด้วย
 import { router, html } from '../router.js';
-import { layout, esc, SCHOOL_NAME } from '../render.js';
+import { layout, esc, schoolName } from '../render.js';
 
 // อีเมลผู้ดูแล ตั้งผ่าน env var ได้ เพราะเป็นข้อมูลของแต่ละโรงเรียน ไม่ควรฝังตายในโค้ด
 const CONTACT_EMAIL = process.env.PRIVACY_CONTACT_EMAIL || '';
@@ -21,11 +21,11 @@ router.get('/privacy', (ctx) => {
     <div class="card" style="max-width:820px;margin:0 auto">
       <h2 class="mt-0">นโยบายความเป็นส่วนตัว</h2>
       <p class="text-muted" style="margin-top:-.4rem">
-        ระบบสารบรรณอิเล็กทรอนิกส์ ${esc(SCHOOL_NAME)}
+        ระบบสารบรรณอิเล็กทรอนิกส์ ${esc(schoolName())}
       </p>
 
       <p>
-        ระบบนี้เป็นระบบงานสารบรรณภายในของ${esc(SCHOOL_NAME)} ใช้สำหรับรับ-ส่ง ลงทะเบียน เสนอ และจัดเก็บ
+        ระบบนี้เป็นระบบงานสารบรรณภายในของ${esc(schoolName())} ใช้สำหรับรับ-ส่ง ลงทะเบียน เสนอ และจัดเก็บ
         หนังสือราชการของโรงเรียน <strong>เปิดให้เฉพาะบุคลากรของโรงเรียนที่ได้รับบัญชีผู้ใช้เท่านั้น</strong>
         ไม่เปิดให้บุคคลทั่วไปสมัครใช้งาน
       </p>
@@ -86,7 +86,7 @@ router.get('/privacy', (ctx) => {
       `)}
 
       ${section('ติดต่อ', `
-        <p>หากมีข้อสงสัยเกี่ยวกับนโยบายนี้ กรุณาติดต่อผู้ดูแลระบบของ${esc(SCHOOL_NAME)}
+        <p>หากมีข้อสงสัยเกี่ยวกับนโยบายนี้ กรุณาติดต่อผู้ดูแลระบบของ${esc(schoolName())}
           ${CONTACT_EMAIL ? `ทางอีเมล <a href="mailto:${esc(CONTACT_EMAIL)}">${esc(CONTACT_EMAIL)}</a>` : ''}</p>
       `)}
 

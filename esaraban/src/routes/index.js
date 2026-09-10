@@ -13,3 +13,4 @@ import './delegation.js';
 import './dailySummary.js';
 import './backups.js';
 import './privacy.js';
+import './manifest.js';

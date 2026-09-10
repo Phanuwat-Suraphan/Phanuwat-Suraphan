@@ -1,5 +1,5 @@
 import { router, html, json, redirect, contentDispositionHeader, truncateFilename } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, stampDateThai, stampTimeThai, priorityBadge, secretBadge, statusBadge, emptyState, fmtCount, LABELS, SCHOOL_NAME } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, stampDateThai, stampTimeThai, priorityBadge, secretBadge, statusBadge, emptyState, fmtCount, LABELS, schoolName } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, nowIso, audit, todayInBangkok, RETENTION_LABEL } from '../db.js';
 import {
@@ -941,7 +941,7 @@ router.get('/documents/register', requirePage((ctx) => {
   </div>
   <div class="sheet-head">
     <h1>${esc(title)}</h1>
-    <div class="sub">${esc(SCHOOL_NAME)}</div>
+    <div class="sub">${esc(schoolName())}</div>
     <div class="meta">
       รวม ${rows.length} ฉบับ · พิมพ์เมื่อ ${esc(fmtThaiDateLong(todayInBangkok()))}
       ${filterNote ? ` · เงื่อนไข: ${esc(filterNote)}` : ''}
@@ -1051,7 +1051,7 @@ router.get('/documents/:id/print', requirePage((ctx) => {
     <button onclick="window.print()">🖨️ พิมพ์ / บันทึกเป็น PDF</button>
   </div>
   <h1>บันทึกข้อความ</h1>
-  <p><span class="field-label">ส่วนราชการ</span> ${esc(doc.dept_name)} ${esc(SCHOOL_NAME)}</p>
+  <p><span class="field-label">ส่วนราชการ</span> ${esc(doc.dept_name)} ${esc(schoolName())}</p>
   <div class="header-row">
     <p><span class="field-label">ที่</span> ${esc(doc.doc_number_display)}</p>
     <p><span class="field-label">วันที่</span> ${fmtThaiDateLong(doc.created_at)}</p>
@@ -1093,9 +1093,9 @@ router.get('/documents/:id', requirePage((ctx) => {
   const stepAssignee = step ? db.prepare('SELECT prefix, first_name, last_name FROM users WHERE id = ?').get(step.assignee_id) : null;
   // ข้อความหัวกล่องความเห็นในตัวอย่างบนเว็บ ต้องตรงกับที่จะฝังจริงตอนกดปุ่ม (ดู stampDirectorDecisionIfApplicable)
   const decisionBoxMode = step ? directorTitleMode(step.id, ctx.user) : 'generic';
-  const decisionBoxTitleHtml = decisionBoxMode === 'director' ? esc(`ผู้อำนวยการ${SCHOOL_NAME}`)
-    : decisionBoxMode === 'acting_director' ? esc('รักษาการในตำแหน่งผู้อำนวยการสถานศึกษา') + '<br/>' + esc(SCHOOL_NAME)
-    : esc(SCHOOL_NAME);
+  const decisionBoxTitleHtml = decisionBoxMode === 'director' ? esc(`ผู้อำนวยการ${schoolName()}`)
+    : decisionBoxMode === 'acting_director' ? esc('รักษาการในตำแหน่งผู้อำนวยการสถานศึกษา') + '<br/>' + esc(schoolName())
+    : esc(schoolName());
   // เฉพาะ ผอ. ตัวจริง/ผู้รักษาการแทน ผอ. เท่านั้นที่มีเมนูตัดสินใจแบบเต็ม (checkbox ตราประทับ, ความเห็น,
   // อนุมัติ/ไม่อนุมัติ/ส่งกลับแก้ไข) — คนอื่นในสาย workflow มีแค่ "ทราบ" กับ "มอบหมายให้" พอ เพราะตราประทับ
   // ความเห็นทางการเป็นของ ผอ. คนเดียว ไม่ใช่ของทุกคนที่ผ่านเรื่อง
@@ -1497,7 +1497,7 @@ router.get('/documents/:id', requirePage((ctx) => {
             var STAMP_X = ${doc.stamp_x != null ? doc.stamp_x : 70};
             var STAMP_Y = ${doc.stamp_y != null ? doc.stamp_y : 3};
             var STAMP_HTML = '<div class="doc-stamp doc-overlay-box" id="docStamp" data-label="ตราลงรับของธุรการ" style="left:' + STAMP_X + '%;top:' + STAMP_Y + '%">' +
-              '<div class="stamp-title">${esc(SCHOOL_NAME)}</div>' +
+              '<div class="stamp-title">${esc(schoolName())}</div>' +
               '<div>เลขรับ......${esc(doc.doc_number_display)}......</div>' +
               '<div>วันที่......${stampDateThai(new Date(doc.created_at))}......</div>' +
               '<div>เวลา......${stampTimeThai(new Date(doc.created_at))}......</div>' +
@@ -2094,7 +2094,7 @@ async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser
     const originalBuffer = await readAttachmentBytes(att, { preferStamped: true });
     const stampedBuffer = await stampDirectorDecision({
       originalBuffer,
-      schoolName: SCHOOL_NAME,
+      schoolName: schoolName(),
       decision,
       note,
       marks: marks || [],
@@ -2138,7 +2138,7 @@ router.post('/documents/:id/attachments/:attId/apply-stamp', requireApi(async (c
   const timeStr = typeof ctx.body.timeOverride === 'string' ? ctx.body.timeOverride.trim() : stampTimeThai(now);
   const stampedBuffer = await stampPdf({
     originalBuffer,
-    schoolName: SCHOOL_NAME,
+    schoolName: schoolName(),
     docNumberDisplay,
     dateThaiLong: stampDateThai(now),
     timeStr,

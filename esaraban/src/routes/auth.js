@@ -1,5 +1,5 @@
 import { router, html, redirect, json } from '../router.js';
-import { layout, esc, illustration } from '../render.js';
+import { layout, esc, illustration, schoolName, schoolInitials } from '../render.js';
 import { login, logout, sessionCookieHeader, revokeOtherSessions } from '../auth.js';
 import { db, audit, nowIso, hashSecret, verifySecret, isWeakPin } from '../db.js';
 
@@ -9,11 +9,11 @@ function loginPage({ error } = {}) {
       <div class="login-illustration">
         ${illustration('loginWelcome')}
         <h3>ระบบสารบรรณอิเล็กทรอนิกส์</h3>
-        <p>โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ ๑</p>
+        <p>${esc(schoolName())}</p>
       </div>
       <div class="login-form-panel">
         <div class="login-logo">
-          <div class="logo-dot" style="display:flex;align-items:center;justify-content:center;background:var(--primary);color:var(--primary-contrast);border-radius:12px;font-weight:800;">จพ</div>
+          <div class="logo-dot" style="display:flex;align-items:center;justify-content:center;background:var(--primary);color:var(--primary-contrast);border-radius:12px;font-weight:800;">${esc(schoolInitials())}</div>
           <h2 style="margin-top:.6rem">ลงชื่อเข้าใช้งาน</h2>
         </div>
         ${error ? `<div class="alert alert-danger">${esc(error)}</div>` : ''}

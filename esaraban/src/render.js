@@ -16,9 +16,14 @@ export function esc(str) {
 // (บ่ายสามครึ่งจะถูกประทับเป็น 08:30 บนหนังสือจริง)
 export const SCHOOL_TZ = 'Asia/Bangkok';
 
-// ชื่อโรงเรียนที่พิมพ์ลงบนหัวเอกสารราชการทุกใบ — เดิมประกาศซ้ำกันอยู่หลายไฟล์ ซึ่งวันที่โรงเรียน
-// เปลี่ยนชื่อ (หรือระบบนี้ถูกนำไปใช้ที่อื่น) จะต้องไล่แก้ทีละที่และพลาดได้ง่าย
-export const SCHOOL_NAME = 'โรงเรียนเจ้าพ่อหลวงอุปถัมภ์ ๑';
+// ชื่อโรงเรียนที่พิมพ์ลงบนหัวเอกสารราชการทุกใบ — เดิมเป็นค่าคงที่ฝังในโค้ด ซึ่งวันที่โรงเรียนเปลี่ยนชื่อ
+// (หรือระบบนี้ถูกนำไปใช้ที่โรงเรียนอื่น ซึ่งเกิดขึ้นแล้วจริง) ต้องไล่แก้โค้ดทีละที่แล้ว deploy ใหม่
+// ตอนนี้เป็นค่าตั้งค่าที่แอดมินแก้เองได้จากหน้าเว็บ (ดู services/settings.js) — ยังคง re-export ที่นี่
+// เพื่อให้ไฟล์ที่ใช้ชื่อโรงเรียนอยู่แล้วเรียกจากที่เดียวเหมือนเดิม
+// ต้อง import เข้ามาเป็น binding จริงด้วย ไม่ใช่ `export ... from` เฉยๆ เพราะไฟล์นี้เรียกใช้เองในแถบข้าง
+import { schoolName, schoolShortName, schoolInitials } from './services/settings.js';
+
+export { schoolName, schoolShortName, schoolInitials };
 
 // ค่าที่เป็น "วันที่ล้วน" (YYYY-MM-DD เช่น วันครบกำหนด) ไม่ใช่จุดเวลา — ต้องอ่านเป็นวันที่ตามปฏิทินตรงๆ
 // ไม่ผ่านการแปลงโซนเวลา ไม่งั้นวันจะเลื่อนไปหนึ่งวันบนเครื่องที่ตั้งโซนเวลาต่างจากไทย
@@ -202,8 +207,8 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
   <div id="sidebarBackdrop" class="sidebar-backdrop" onclick="toggleSidebar(false)"></div>
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
-      <div class="logo-dot">จพ</div>
-      <div>ระบบสารบรรณ<br/><span class="text-muted" style="font-weight:400;font-size:.72rem">ร.ร.เจ้าพ่อหลวงอุปถัมภ์ ๑</span></div>
+      <div class="logo-dot">${esc(schoolInitials())}</div>
+      <div>ระบบสารบรรณ<br/><span class="text-muted" style="font-weight:400;font-size:.72rem">${esc(schoolShortName())}</span></div>
     </div>
     ${navItem('/', '🏠', 'แดชบอร์ด', currentPath)}
     ${navItem('/tasks', '📌', 'งานของฉัน', currentPath)}
@@ -225,6 +230,7 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
     ${user.roleCodes.some((r) => ['admin', 'registrar', 'director', 'vice_director'].includes(r)) ? navItem('/retention', '🗄️', 'อายุการเก็บ/ทำลาย', currentPath) : ''}
 
     <div class="nav-section-label">ระบบ</div>
+    ${user.roleCodes.includes('admin') ? navItem('/admin/settings', '🏫', 'ตั้งค่าโรงเรียน', currentPath) : ''}
     ${user.roleCodes.includes('admin') ? navItem('/admin/users', '⚙️', 'จัดการผู้ใช้', currentPath) : ''}
     ${user.roleCodes.includes('admin') ? navItem('/admin/audit', '🧾', 'Audit Log', currentPath) : ''}
     ${user.roleCodes.includes('admin') ? navItem('/admin/google-drive', '🗂️', 'เชื่อมต่อ Google Drive', currentPath) : ''}

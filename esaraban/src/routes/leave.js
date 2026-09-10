@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { router, html, json, contentDispositionHeader, truncateFilename } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateShort, fmtThaiDateLong, SCHOOL_NAME } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateShort, fmtThaiDateLong, schoolName } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, audit, beYear } from '../db.js';
 import {
@@ -369,16 +369,16 @@ router.get('/leave/:id/print', requirePage((ctx) => {
 
   <h1>${isTravel ? 'บันทึกข้อความ' : 'แบบใบลา' + esc(LEAVE_TYPE_LABEL[req.leave_type]).replace('ลา', '')}</h1>
   <div class="place">
-    เขียนที่ ${esc(SCHOOL_NAME)}<br />
+    เขียนที่ ${esc(schoolName())}<br />
     วันที่ ${fmtThaiDateLong(req.created_at)}
   </div>
 
   <p><strong>เรื่อง</strong> ขอ${esc(LEAVE_TYPE_LABEL[req.leave_type])}</p>
-  <p><strong>เรียน</strong> ผู้อำนวยการ${esc(SCHOOL_NAME)}</p>
+  <p><strong>เรียน</strong> ผู้อำนวยการ${esc(schoolName())}</p>
 
   <p class="indent">
     ข้าพเจ้า ${esc(requesterName)} ตำแหน่ง ${esc(requesterPosition || '.....................................')}
-    สังกัด ${esc(SCHOOL_NAME)}
+    สังกัด ${esc(schoolName())}
     ขอ${esc(LEAVE_TYPE_LABEL[req.leave_type])} เนื่องจาก ${esc(req.reason)}
     ${req.destination ? `ณ ${esc(req.destination)}` : ''}
     ตั้งแต่วันที่ ${fmtThaiDateLong(req.start_date)} ถึงวันที่ ${fmtThaiDateLong(req.end_date)}

@@ -92,7 +92,10 @@ const server = http.createServer(async (req, res) => {
     const pathname = decodeURIComponent(url.pathname);
 
     if (pathname === '/' || !pathname.startsWith('/api') ) {
-      if (pathname.startsWith('/style.css') || pathname.startsWith('/app.js') || pathname.match(/\.(css|js|png|svg|ico|webmanifest)$/)) {
+      // manifest.webmanifest ไม่เสิร์ฟเป็นไฟล์นิ่ง เพราะต้องใส่ชื่อโรงเรียนที่แอดมินตั้งไว้ลงไป
+      // (ชื่อแอปบนหน้าจอมือถือ) — มี route สร้างให้แบบ dynamic ใน src/routes/index.js แทน
+      if (pathname !== '/manifest.webmanifest'
+        && (pathname.startsWith('/style.css') || pathname.startsWith('/app.js') || pathname.match(/\.(css|js|png|svg|ico|webmanifest)$/))) {
         if (serveStatic(req, res, pathname)) return;
       }
     }

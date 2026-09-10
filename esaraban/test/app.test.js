@@ -34,6 +34,8 @@ const { planUserImport, MAX_IMPORT_ROWS } = await import('../src/services/userIm
 const { truncateFilename, MAX_HEADER_FILENAME_CHARS } = await import('../src/router.js');
 const { buildDocumentQuery, describeFilters, listRegisterYears } = await import('../src/services/documentQuery.js');
 const { asText, asTextOrNull } = await import('../src/services/validate.js');
+const { setSetting, getSetting } = await import('../src/services/settings.js');
+const { schoolName, schoolShortName, schoolInitials } = await import('../src/render.js');
 const { createDelegation, cancelDelegation } = await import('../src/services/delegation.js');
 const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, planBackupCleanup, thaiDateParts } = await import('../src/services/dbBackup.js');
 const sqliteModule = await import('node:sqlite');
@@ -4021,6 +4023,91 @@ describe('เขียนไฟล์ Excel', () => {
 // Google บังคับให้กรอก Privacy policy URL ที่เปิดดูได้โดยไม่ต้องล็อกอิน ก่อนจะกด PUBLISH APP ได้
 // ถ้าหน้านี้กลายเป็นต้องล็อกอินเมื่อไหร่ Google จะตรวจไม่ผ่าน แล้วแอปจะตกกลับไปสถานะ Testing
 // ซึ่งโทเคนหมดอายุทุก 7 วัน — ไฟล์แนบและการสำรองฐานข้อมูลจะหยุดทำงานทั้งระบบ
+// ระบบถูกนำไปใช้ที่โรงเรียนที่สอง ชื่อโรงเรียนเดิมจึงต้องไม่ฝังอยู่ในโค้ดอีกต่อไป — และเพราะชื่อนี้ถูกพิมพ์
+// ลงบน "ตัวเอกสารราชการจริง" (หัวหนังสือ ตราประทับใน PDF แบบฟอร์มใบลา) โรงเรียนต้องแก้คำผิดเองได้
+// โดยไม่ต้องรอผู้พัฒนาหรือรอ deploy ใหม่
+describe('ชื่อโรงเรียน: ตั้งค่าได้จากหน้าเว็บ ไม่ฝังในโค้ด', () => {
+  const admin = () => loadUserForTest(seed.userIds.admin);
+  const restore = () => setSetting({ key: 'school_name', value: 'โรงเรียนทดสอบตั้งต้น', actorUser: admin() });
+
+  test('ตั้งชื่อแล้วมีผลกับทุกที่ที่พิมพ์ชื่อโรงเรียนลงเอกสาร', async () => {
+    setSetting({ key: 'school_name', value: 'โรงเรียนบ้านห้วยแก้ว', actorUser: admin() });
+    assert.equal(schoolName(), 'โรงเรียนบ้านห้วยแก้ว');
+
+    // หน้าเข้าสู่ระบบ (ยังไม่ล็อกอิน) ต้องขึ้นชื่อใหม่
+    const login = await dispatchGet(null, '/login');
+    assert.match(login.body, /โรงเรียนบ้านห้วยแก้ว/);
+    assert.ok(!/เจ้าพ่อหลวง/.test(login.body), 'ต้องไม่เหลือชื่อโรงเรียนเดิมค้างอยู่');
+
+    // แบบฟอร์มใบลาเป็นเอกสารราชการ ต้องขึ้น "เขียนที่ <ชื่อโรงเรียน>" และ "เรียน ผู้อำนวยการ<ชื่อ>"
+    const leave = createLeaveRequest({
+      requesterId: teacherUser.id, leaveType: 'sick', ...nextLeaveWindow(1),
+      reason: 'ทดสอบชื่อโรงเรียนบนใบลา', approverId: seed.userIds.director01,
+    });
+    const printed = await dispatchGet(teacherUser, `/leave/${leave.id}/print`);
+    assert.match(printed.body, /เขียนที่ โรงเรียนบ้านห้วยแก้ว/);
+    assert.match(printed.body, /ผู้อำนวยการโรงเรียนบ้านห้วยแก้ว/);
+    restore();
+  });
+
+  test('ชื่อย่อและอักษรย่อสร้างให้เองได้ถ้าไม่ได้กรอก', () => {
+    setSetting({ key: 'school_name', value: 'โรงเรียนบ้านห้วยแก้ว', actorUser: admin() });
+    setSetting({ key: 'school_short_name', value: '', actorUser: admin() });
+    setSetting({ key: 'school_initials', value: '', actorUser: admin() });
+    assert.equal(schoolShortName(), 'ร.ร.บ้านห้วยแก้ว', 'ต้องย่อ "โรงเรียน" เป็น "ร.ร." ให้เอง');
+    // ตัดคำว่า "โรงเรียน" ออกก่อน ไม่งั้นทุกโรงเรียนจะได้อักษรย่อ "รง" เหมือนกันหมด
+    assert.ok(!schoolInitials().startsWith('รง'), `อักษรย่อไม่ควรเป็น "รง" — ได้ ${schoolInitials()}`);
+    assert.ok(schoolInitials().length > 0 && schoolInitials().length <= 2);
+
+    // ถ้ากรอกเอง ต้องใช้ค่าที่กรอกแทน
+    setSetting({ key: 'school_short_name', value: 'ร.ร.ห้วยแก้ว', actorUser: admin() });
+    setSetting({ key: 'school_initials', value: 'หก', actorUser: admin() });
+    assert.equal(schoolShortName(), 'ร.ร.ห้วยแก้ว');
+    assert.equal(schoolInitials(), 'หก');
+    restore();
+  });
+
+  test('ชื่อโรงเรียนเว้นว่างไม่ได้ และเฉพาะแอดมินแก้ได้', async () => {
+    const before = schoolName();
+    const blank = await dispatchPost(admin(), '/admin/settings', { school_name: '   ' });
+    assert.equal(blank.status, 400, blank.body);
+    assert.equal(schoolName(), before, 'ปฏิเสธแล้วต้องไม่แตะค่าเดิม');
+
+    const byTeacher = await dispatchPost(teacherUser, '/admin/settings', { school_name: 'โรงเรียนครูตั้งเอง' });
+    assert.equal(byTeacher.status, 403, byTeacher.body);
+    assert.equal(schoolName(), before, 'ครูแก้ไม่ได้ ค่าต้องไม่เปลี่ยน');
+  });
+
+  test('ไฟล์ manifest ของ PWA ใช้ชื่อที่ตั้งไว้ และเปิดได้โดยไม่ต้องล็อกอิน', async () => {
+    setSetting({ key: 'school_name', value: 'โรงเรียนบ้านห้วยแก้ว', actorUser: admin() });
+    setSetting({ key: 'school_short_name', value: '', actorUser: admin() });
+    // เบราว์เซอร์ต้องโหลด manifest ได้ตั้งแต่หน้าเข้าสู่ระบบ ถึงจะเสนอ "เพิ่มลงในหน้าจอโฮม" ได้
+    const res = await dispatchGet(null, '/manifest.webmanifest');
+    assert.equal(res.status, 200, 'ต้องเปิดได้โดยไม่ต้องล็อกอิน');
+    assert.match(res.headers['Content-Type'], /manifest\+json/);
+    const m = JSON.parse(res.body);
+    assert.match(m.name, /โรงเรียนบ้านห้วยแก้ว/);
+    assert.match(m.description, /โรงเรียนบ้านห้วยแก้ว/);
+    assert.ok(!JSON.stringify(m).includes('เจ้าพ่อหลวง'), 'ต้องไม่เหลือชื่อโรงเรียนเดิม');
+    // ชื่อใต้ไอคอนบนมือถือมีที่แสดงจำกัด ถ้ายาวเกินระบบปฏิบัติการจะตัดทิ้ง
+    assert.ok(m.short_name.length <= 30, `short_name ยาวเกินไป: ${m.short_name}`);
+    assert.ok(m.share_target, 'ต้องยังรับไฟล์ที่แชร์มาจาก LINE ได้เหมือนเดิม');
+    restore();
+  });
+
+  test('ไม่มีชื่อโรงเรียนเดิมหลงเหลือในโค้ดที่รันจริง', async () => {
+    const { readdirSync, readFileSync, statSync } = await import('node:fs');
+    const walk = (dir) => readdirSync(dir).flatMap((f) => {
+      const full = `${dir}/${f}`;
+      return statSync(full).isDirectory() ? walk(full) : [full];
+    });
+    const offenders = walk(new URL('../src', import.meta.url).pathname)
+      .filter((f) => f.endsWith('.js'))
+      .filter((f) => /เจ้าพ่อหลวง/.test(readFileSync(f, 'utf8')));
+    assert.deepEqual(offenders, [], `ยังมีชื่อโรงเรียนฝังอยู่ในโค้ด: ${offenders.join(', ')}`);
+  });
+});
+
 describe('หน้านโยบายความเป็นส่วนตัว ต้องเปิดดูได้โดยไม่ต้องล็อกอิน', () => {
   test('/privacy ไม่ถูกห่อด้วย requirePage และมีลิงก์จากหน้าเข้าสู่ระบบ', () => {
     const privacySrc = fs.readFileSync(new URL('../src/routes/privacy.js', import.meta.url), 'utf8');
