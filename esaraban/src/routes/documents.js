@@ -110,7 +110,12 @@ router.get('/documents', requirePage((ctx) => {
     <tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer${n !== null && n < 0 ? ';background:rgba(220,38,38,.06)' : ''}">
       <td style="white-space:nowrap"><strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong></td>
       ${direction === 'all' ? `<td style="white-space:nowrap">${d.direction === 'incoming' ? '📥 เข้า' : '📤 ออก'}</td>` : ''}
-      <td class="wrap">${esc(d.title)}${d.secret_level !== 'normal' ? ' 🔒' : ''}</td>
+      <td class="wrap">${esc(d.title)}${d.secret_level !== 'normal' ? ' 🔒' : ''}${d.attachment_count
+        ? ` <span class="clip-inline" title="มีไฟล์แนบ ${d.attachment_count} ไฟล์">📎${d.attachment_count > 1 ? d.attachment_count : ''}</span>` : ''}
+        ${d.external_doc_number ? `<div class="text-muted" style="font-size:.78rem">ที่ ${esc(d.external_doc_number)}</div>` : ''}</td>
+      <td class="clip-col" style="white-space:nowrap;text-align:center">${d.attachment_count
+        ? `<span title="มีไฟล์แนบ ${d.attachment_count} ไฟล์">📎${d.attachment_count > 1 ? ` ${d.attachment_count}` : ''}</span>`
+        : '<span class="text-muted" title="ยังไม่ได้แนบไฟล์สแกน">—</span>'}</td>
       <td>${esc(d.dept_name)}</td>
       <td>${priorityBadge(d.priority)}</td>
       <td>${statusBadge(d.status)}</td>
@@ -153,7 +158,10 @@ router.get('/documents', requirePage((ctx) => {
     <form method="get" style="margin-bottom:1rem">
       <input type="hidden" name="direction" value="${direction}" />
       <div class="flex gap-2 flex-wrap items-center">
-        <input type="text" name="q" value="${esc(q)}" placeholder="ค้นหาเลขหนังสือ/ชื่อเรื่อง/หน่วยงาน" style="max-width:280px" />
+        <!-- ช่องนี้ค้นได้มากกว่าที่คนเดาเอง (เลขที่ต้นทาง และชื่อไฟล์แนบ) ถ้าไม่บอกไว้ตรงนี้ก็ไม่มีใครลอง -->
+        <input type="text" name="q" value="${esc(q)}" placeholder="ค้นเลขทะเบียน / เรื่อง / ที่ต้นทาง / ชื่อไฟล์แนบ"
+          title="ค้นได้จาก: เลขทะเบียน, ชื่อเรื่อง, สาระสำคัญ, หน่วยงานต้นทาง/ปลายทาง, เลขที่หนังสือต้นทาง และชื่อไฟล์ที่แนบไว้"
+          style="max-width:320px" />
         <select name="status" style="max-width:180px">
           <option value="">ทุกสถานะ</option>
           ${Object.entries(LABELS.STATUS_LABEL).map(([k, v]) => opt(k, v, statusFilter)).join('')}
@@ -201,6 +209,10 @@ router.get('/documents', requirePage((ctx) => {
               <input type="checkbox" name="overdue" value="1" ${f.overdue ? 'checked' : ''} />
               เฉพาะที่เลยกำหนดและยังไม่ปิด
             </label>
+            <label class="check-inline">
+              <input type="checkbox" name="hasFile" value="1" ${f.hasFile ? 'checked' : ''} />
+              เฉพาะที่มีไฟล์แนบแล้ว
+            </label>
           </div>
         </div>
         <button class="btn btn-primary btn-sm" type="submit">กรองตามเงื่อนไข</button>
@@ -234,7 +246,7 @@ router.get('/documents', requirePage((ctx) => {
     <div class="card">
       ${filterForm}
       ${rows.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>เลขที่</th>${direction === 'all' ? '<th>ประเภท</th>' : ''}<th>เรื่อง</th><th>ฝ่าย</th><th>ความเร็ว</th><th>สถานะ</th><th>ครบกำหนด</th><th>วันที่ลงทะเบียน</th></tr></thead>
+        <thead><tr><th>เลขที่</th>${direction === 'all' ? '<th>ประเภท</th>' : ''}<th>เรื่อง</th><th class="clip-col" title="ไฟล์แนบ">📎</th><th>ฝ่าย</th><th>ความเร็ว</th><th>สถานะ</th><th>ครบกำหนด</th><th>วันที่ลงทะเบียน</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table></div>${pager}`
       : emptyState('📭', filtering
         ? 'ไม่พบหนังสือที่ตรงกับเงื่อนไขที่เลือก — ลองลดเงื่อนไขลงหรือกด "ล้างตัวกรอง"'
@@ -844,6 +856,9 @@ function registerColumns(direction) {
     { head: 'การปฏิบัติ', width: 16, get: (d) => LABELS.STATUS_LABEL[d.status] || d.status },
     { head: 'ครบกำหนด', width: 13, get: (d) => (d.due_date ? fmtThaiDateShort(d.due_date) : '') },
     { head: 'วันที่ลงทะเบียน', width: 15, get: (d) => fmtThaiDateShort(d.created_at) },
+    // อยู่ท้ายสุดเพราะไม่ใช่คอลัมน์ตามแบบทะเบียนราชการ แต่จำเป็นเวลาใช้ทะเบียนที่พิมพ์/ส่งออกไปแล้ว
+    // ตามหาไฟล์สแกน — ไม่ต้องเปิดระบบทีละฉบับเพื่อดูว่าฉบับไหนสแกนไว้แล้วและฉบับไหนยังค้าง
+    { head: 'ไฟล์แนบ', width: 10, get: (d) => (d.attachment_count ? `${d.attachment_count} ไฟล์` : '-') },
   ];
 }
 
@@ -909,7 +924,7 @@ router.get('/documents/register', requirePage((ctx) => {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${esc(title)}</title>
 <style>
-  /* แนวนอนเพราะทะเบียนมี 11 คอลัมน์ ถ้าพิมพ์แนวตั้งช่อง "เรื่อง" จะแคบจนอ่านไม่ออก */
+  /* แนวนอนเพราะทะเบียนมี 12 คอลัมน์ ถ้าพิมพ์แนวตั้งช่อง "เรื่อง" จะแคบจนอ่านไม่ออก */
   @page { size: A4 landscape; margin: 12mm 10mm; }
   body { font-family: "Sarabun", "TH SarabunPSK", "Noto Sans Thai", sans-serif; font-size: 12px; line-height: 1.5; color: #000; margin: 0; padding: 1rem; }
   .sheet-head { text-align: center; margin-bottom: .8rem; }

@@ -1838,6 +1838,120 @@ describe('ลงรับหลายฉบับรวดเดียว', () =
 
 // ตัวกรองละเอียดของทะเบียนหนังสือ — เรียกเส้นทางจริงผ่าน router.dispatch แล้วอ่าน HTML ที่ได้ เพราะ
 // ตรรกะการกรองอยู่ในตัวเส้นทางเอง ถ้าเทสต์ระดับฟังก์ชันอย่างเดียวจะไม่ได้ตรวจสิ่งที่ผู้ใช้เห็นจริงเลย
+// "จะได้หาไฟล์ง่าย" — ทะเบียนมีอยู่แล้ว แต่การ "ตามหาหนังสือ" ยังขาดสามอย่าง: ค้นด้วยเลขที่ของ
+// หนังสือต้นทางไม่ได้ (ทั้งที่ระบบเก็บและพิมพ์ลงทะเบียนอยู่แล้ว และมักเป็นสิ่งเดียวที่คนโทรมาถามบอกได้)
+// ค้นด้วยชื่อไฟล์แนบไม่ได้ และดูจากรายการไม่ออกว่าฉบับไหนสแกนแล้วบ้าง ต้องเปิดทีละฉบับ
+describe('ทะเบียนหนังสือ: ตามหาไฟล์ให้เจอ', () => {
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  const rowIds = (body) => [...body.matchAll(/location\.href='\/documents\/([^']+)'/g)].map((m) => m[1]);
+  const pdf = (tag) => Buffer.from(`%PDF-1.4\n% ${tag}\ntrailer<</Root 1 0 R>>\n%%EOF\n`).toString('base64');
+  const attach = (id, name) => dispatchPost(reg(), `/documents/${id}/attachments`,
+    { fileName: name, fileType: 'application/pdf', fileDataBase64: pdf(name + Date.now()) });
+
+  test('ค้นด้วยเลขที่ของหนังสือต้นทางได้', async () => {
+    const number = `ศธ ๐๔๐๔๙/ว${Date.now() % 100000}`;
+    const hit = makeDoc({ title: 'หนังสือที่มีเลขต้นทาง', externalDocNumber: number });
+    const miss = makeDoc({ title: 'หนังสือที่ไม่เกี่ยวกัน' });
+
+    const res = await dispatchGet(reg(), '/documents', { direction: 'incoming', q: number });
+    assert.equal(res.status, 200);
+    const ids = rowIds(res.body);
+    assert.ok(ids.includes(hit.id), `ต้องค้นเจอด้วยเลขที่ต้นทาง "${number}"`);
+    assert.ok(!ids.includes(miss.id), 'ฉบับที่ไม่เกี่ยวต้องไม่ติดมาด้วย');
+  });
+
+  test('ค้นด้วยชื่อไฟล์แนบได้', async () => {
+    const name = `สแกนใบเสร็จ-${Date.now()}.pdf`;
+    const hit = makeDoc({ title: 'หนังสือที่มีไฟล์ชื่อเฉพาะ' });
+    const miss = makeDoc({ title: 'หนังสือที่ไม่มีไฟล์นั้น' });
+    assert.equal((await attach(hit.id, name)).status, 200);
+
+    const ids = rowIds((await dispatchGet(reg(), '/documents', { direction: 'incoming', q: name })).body);
+    assert.ok(ids.includes(hit.id), `ต้องค้นเจอด้วยชื่อไฟล์ "${name}"`);
+    assert.ok(!ids.includes(miss.id));
+  });
+
+  test('รายการทะเบียนบอกได้ว่าฉบับไหนแนบไฟล์แล้ว โดยไม่ต้องเปิดทีละฉบับ', async () => {
+    const withFile = makeDoc({ title: 'ฉบับที่สแกนแล้ว' });
+    const without = makeDoc({ title: 'ฉบับที่ยังไม่ได้สแกน' });
+    await attach(withFile.id, 'scan0001.pdf');
+
+    const { listDocuments, buildDocumentQuery: build } = await import('../src/services/documentQuery.js');
+    const rows = listDocuments(build(reg(), { direction: 'incoming' }));
+    const a = rows.find((r) => r.id === withFile.id);
+    const b = rows.find((r) => r.id === without.id);
+    assert.equal(a.attachment_count, 1, 'ฉบับที่แนบแล้วต้องนับได้ 1');
+    assert.equal(b.attachment_count, 0, 'ฉบับที่ยังไม่แนบต้องเป็น 0');
+
+    const body = (await dispatchGet(reg(), '/documents', { direction: 'incoming' })).body;
+    assert.match(body, /📎/, 'หน้าทะเบียนต้องมีสัญลักษณ์ไฟล์แนบให้เห็น');
+
+    // บนจอแคบตารางเลื่อนซ้ายขวา คอลัมน์ 📎 จึงตกไปอยู่นอกจอ ต้องมีตัวบอกซ้ำอยู่ในช่อง "เรื่อง"
+    // ที่เห็นตลอด (ซ่อน/แสดงสลับกันด้วย CSS) ไม่งั้นธุรการที่เปิดจากมือถือยังต้องเลื่อนดูทีละแถว
+    const rowOf = (id) => body.split(`location.href='/documents/${id}'`)[1]?.split('</tr>')[0] || '';
+    assert.match(rowOf(withFile.id), /class="clip-inline"[^>]*>📎/,
+      'แถวที่มีไฟล์ต้องมีตัวบอกสำหรับจอแคบอยู่ในช่องเรื่องด้วย');
+    assert.doesNotMatch(rowOf(without.id), /clip-inline/,
+      'แถวที่ยังไม่มีไฟล์ต้องไม่มีตัวบอกนั้น');
+  });
+
+  test('กรองเฉพาะที่มีไฟล์แนบแล้วได้ และตัวกรองติดไปกับไฟล์ที่ส่งออกด้วย', async () => {
+    const withFile = makeDoc({ title: 'สแกนแล้ว-กรองได้' });
+    const without = makeDoc({ title: 'ยังไม่สแกน-ต้องถูกกรองออก' });
+    await attach(withFile.id, 'scan-filter.pdf');
+
+    const ids = rowIds((await dispatchGet(reg(), '/documents', { direction: 'incoming', hasFile: '1' })).body);
+    assert.ok(ids.includes(withFile.id), 'ฉบับที่มีไฟล์ต้องอยู่ในผล');
+    assert.ok(!ids.includes(without.id), 'ฉบับที่ยังไม่มีไฟล์ต้องถูกกรองออก');
+
+    // ไฟล์ที่ส่งออกต้องเป็นชุดเดียวกับที่เห็นบนหน้าจอ ไม่ใช่ทั้งทะเบียน
+    const xlsx = await dispatchGet(reg(), '/documents/export.xlsx', { direction: 'incoming', hasFile: '1' });
+    assert.equal(xlsx.status, 200);
+    const sheet = readWorkbook(xlsx.buffer)[0];
+    const flat = sheet.rows.map((r) => r.join(' ')).join('\n');
+    assert.ok(flat.includes('สแกนแล้ว-กรองได้'), 'ฉบับที่มีไฟล์ต้องอยู่ในไฟล์ที่ส่งออก');
+    assert.ok(!flat.includes('ยังไม่สแกน-ต้องถูกกรองออก'), 'ตัวกรองต้องมีผลกับไฟล์ที่ส่งออกด้วย');
+  });
+
+  // ทะเบียนที่พิมพ์เก็บแฟ้มหรือส่งออกเป็น Excel ต้องบอกเองได้ว่าฉบับไหนมีไฟล์สแกนแล้ว
+  // ไม่งั้นคนที่ถือทะเบียนกระดาษอยู่ในมือยังต้องกลับมาเปิดระบบทีละฉบับ
+  test('ทะเบียนที่ส่งออกและที่พิมพ์ต้องมีช่องไฟล์แนบติดไปด้วย', async () => {
+    const withFile = makeDoc({ title: 'ฉบับที่มีไฟล์-ส่งออก' });
+    makeDoc({ title: 'ฉบับที่ไม่มีไฟล์-ส่งออก' });
+    await attach(withFile.id, 'scan-export.pdf');
+
+    const xlsx = await dispatchGet(reg(), '/documents/export.xlsx', { direction: 'incoming' });
+    const sheet = readWorkbook(xlsx.buffer)[0];
+    const header = sheet.rows.find((r) => r.includes('เรื่อง'));
+    assert.ok(header, 'ต้องหาหัวตารางในไฟล์ที่ส่งออกเจอ');
+    const col = header.indexOf('ไฟล์แนบ');
+    assert.ok(col >= 0, `ไฟล์ที่ส่งออกต้องมีคอลัมน์ "ไฟล์แนบ" — หัวตารางที่ได้: ${header.join(' | ')}`);
+    const hit = sheet.rows.find((r) => r.includes('ฉบับที่มีไฟล์-ส่งออก'));
+    const nofile = sheet.rows.find((r) => r.includes('ฉบับที่ไม่มีไฟล์-ส่งออก'));
+    assert.equal(hit[col], '1 ไฟล์', 'ฉบับที่แนบแล้วต้องบอกจำนวนไฟล์');
+    assert.equal(nofile[col], '-', 'ฉบับที่ยังไม่แนบต้องเว้นเป็นขีด');
+
+    const print = await dispatchGet(reg(), '/documents/register', { direction: 'incoming' });
+    assert.equal(print.status, 200);
+    assert.match(print.body, /ไฟล์แนบ/, 'หน้าพิมพ์ทะเบียนต้องมีช่องไฟล์แนบ');
+  });
+
+  // การนับไฟล์และการค้นชื่อไฟล์วิ่งผ่าน attachments.document_id ทุกแถวในทะเบียน
+  // ถ้าไม่มี index จะกลายเป็นสแกนทั้งตาราง attachments ต่อหนึ่งแถวในทะเบียน
+  //
+  // ต้องดูที่ตาราง attachments (ชื่อย่อ ac) เท่านั้น ห้ามตรวจแค่ว่าแผนมีคำว่า "USING INDEX" อยู่ที่ไหน
+  // ก็ได้ เพราะแถวนอกสุด (SCAN d) ใช้ index ของ documents อยู่แล้วเสมอ เทสต์จะผ่านทั้งที่ไม่มี
+  // idx_attachments_doc — ลองลบ index ออกแล้วรันดูได้ ต้องเห็นเป็น "SCAN ac"
+  test('การนับไฟล์แนบต้องวิ่งผ่าน index ไม่ใช่สแกนตารางไฟล์แนบทั้งตารางต่อหนึ่งแถว', () => {
+    const plan = db.prepare(`EXPLAIN QUERY PLAN
+      SELECT (SELECT COUNT(*) FROM attachments ac WHERE ac.document_id = d.id) c FROM documents d`)
+      .all().map((r) => r.detail).join(' | ');
+    assert.match(plan, /SEARCH ac USING (COVERING )?INDEX idx_attachments_doc/,
+      `ต้องค้นผ่าน idx_attachments_doc — แผนที่ได้: ${plan}`);
+    assert.doesNotMatch(plan, /SCAN ac\b/, `ยังสแกนตารางไฟล์แนบทั้งตาราง — แผนที่ได้: ${plan}`);
+  });
+});
+
 describe('ทะเบียนหนังสือ: ตัวกรองละเอียด', () => {
   const getDocumentsPage = (user, query) => dispatchGet(user, '/documents', query);
   const rowIds = (body) => [...body.matchAll(/location\.href='\/documents\/([^']+)'/g)].map((m) => m[1]);

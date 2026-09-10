@@ -36,7 +36,13 @@ export function buildDocumentQuery(user, query = {}) {
   if (direction !== 'all') { where.push('d.direction = :direction'); params.direction = direction; }
   if (statusFilter) { where.push('d.status = :status'); params.status = statusFilter; }
   if (q) {
-    where.push('(d.title LIKE :like OR d.doc_number_display LIKE :like OR d.subject LIKE :like OR d.correspondent_name LIKE :like)');
+    // ค้นให้ครบทุกอย่างที่ธุรการ "มีอยู่ในมือ" ตอนตามหาหนังสือ ไม่ใช่แค่ข้อมูลที่ระบบออกให้เอง:
+    // - external_doc_number = "ที่" ของหนังสือต้นทาง (เช่น ศธ ๐๔๐๔๙/ว๑๒๓) ซึ่งบ่อยครั้งเป็นสิ่งเดียว
+    //   ที่คนโทรมาถามบอกได้ ระบบเก็บและพิมพ์ลงทะเบียนอยู่แล้ว แต่เดิมค้นไม่เจอ
+    // - ชื่อไฟล์แนบ = เวลาจำได้แต่ชื่อไฟล์สแกน หรือหาว่า "ไฟล์นี้อยู่กับหนังสือฉบับไหน"
+    where.push(`(d.title LIKE :like OR d.doc_number_display LIKE :like OR d.subject LIKE :like
+      OR d.correspondent_name LIKE :like OR d.external_doc_number LIKE :like
+      OR EXISTS (SELECT 1 FROM attachments af WHERE af.document_id = d.id AND af.filename LIKE :like))`);
     params.like = `%${q}%`;
   }
 
@@ -51,6 +57,9 @@ export function buildDocumentQuery(user, query = {}) {
     // กรองจาก year_be ตรงๆ ไม่ใช่จาก created_at เพราะเลขบนหน้าเอกสารคือปีนั้น
     year: /^\d{4}$/.test(query.year || '') ? Number(query.year) : '',
     overdue: query.overdue === '1',
+    // "เฉพาะที่มีไฟล์แนบ" — ธุรการตามหา "ตัวไฟล์สแกน" ไม่ใช่แค่แถวในทะเบียน หนังสือที่ลงเลขไว้ก่อน
+    // แล้วยังไม่ได้สแกนจึงเป็นสิ่งที่อยากกรองออก (หรือกรองเข้ามาเพื่อไล่ตามให้ครบ)
+    hasFile: query.hasFile === '1',
   };
   if (f.year) { where.push('d.year_be = :yearBe'); params.yearBe = f.year; }
   if (f.dept) { where.push('d.department_id = :dept'); params.dept = f.dept; }
@@ -60,6 +69,7 @@ export function buildDocumentQuery(user, query = {}) {
   // ไม่งั้น "ถึงวันที่ 31 ส.ค." จะไม่รวมเอกสารที่ลงทะเบียนตอนบ่ายของวันที่ 31 เอง
   if (f.from) { where.push('substr(d.created_at, 1, 10) >= :from'); params.from = f.from; }
   if (f.to) { where.push('substr(d.created_at, 1, 10) <= :to'); params.to = f.to; }
+  if (f.hasFile) where.push('EXISTS (SELECT 1 FROM attachments ax WHERE ax.document_id = d.id)');
   if (f.overdue) {
     // "เลยกำหนด" ต้องนับจากวันนี้ตามเวลาไทย และนับเฉพาะเรื่องที่ยังไม่ปิด
     where.push(`d.due_date IS NOT NULL AND d.due_date < :today
@@ -77,7 +87,9 @@ export function buildDocumentQuery(user, query = {}) {
 }
 
 const SELECT_COLUMNS = `
-  d.*, dt.name as type_name, dep.name as dept_name
+  d.*, dt.name as type_name, dep.name as dept_name,
+  -- นับไฟล์แนบมาด้วยเลย เพื่อให้รายการทะเบียนบอกได้ว่าฉบับไหน "มีไฟล์แล้ว" โดยไม่ต้องเปิดทีละฉบับ
+  (SELECT COUNT(*) FROM attachments ac WHERE ac.document_id = d.id) AS attachment_count
   FROM documents d
   JOIN document_types dt ON dt.id = d.doc_type_id
   JOIN departments dep ON dep.id = d.department_id`;
@@ -115,6 +127,7 @@ export function describeFilters({ q, statusFilter, f }) {
     if (dep) parts.push(`ฝ่าย ${dep.name}`);
   }
   if (f.priority) parts.push(`ความเร็ว ${LABELS.PRIORITY_LABEL[f.priority]}`);
+  if (f.hasFile) parts.push('เฉพาะที่มีไฟล์แนบแล้ว');
   if (f.secret) parts.push(`ชั้นความลับ ${LABELS.SECRET_LABEL[f.secret]}`);
   // ข้อความนี้ถูกพิมพ์กำกับหัว "ทะเบียนหนังสือรับ/ส่ง" ที่เก็บเข้าแฟ้มเป็นเอกสารราชการ — วันที่บนนั้น
   // ต้องเป็น พ.ศ. แบบไทย ไม่ใช่ค่าดิบจาก <input type="date"> ที่เป็น ค.ศ. (เดิมพิมพ์ออกมาว่า

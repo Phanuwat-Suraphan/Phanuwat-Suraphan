@@ -417,6 +417,18 @@ thead th { background: var(--surface-2); color: var(--text-muted); font-size: .8
 tbody tr:hover { background: var(--surface-2); }
 tbody tr:last-child td { border-bottom: none; }
 
+/* ตัวบอก "ฉบับนี้มีไฟล์สแกนแล้ว" ในทะเบียนหนังสือ
+   จอกว้าง: เป็นคอลัมน์ 📎 ของตัวเอง อ่านเป็นแถวยาวลงมาได้ว่าฉบับไหนยังค้างไม่ได้สแกน
+   จอแคบ: ตารางกว้างเกินจอและเลื่อนซ้ายขวาอยู่ใน .table-wrap คอลัมน์ท้ายๆ จึงตกไปอยู่นอกจอ
+   ถ้าปล่อยไว้แบบนั้น ธุรการที่เปิดจากมือถือต้องเลื่อนตารางไปดูทีละแถว ซึ่งแย่กว่าไม่มีเสียอีก
+   จึงย้ายไปเกาะท้ายช่อง "เรื่อง" ที่เห็นตลอดแทน */
+.clip-col { display: none; }
+.clip-inline { display: inline; }
+@media (min-width: 640px) {
+  .clip-col { display: table-cell; }
+  .clip-inline { display: none; }
+}
+
 /* ---------- Timeline ---------- */
 .timeline { list-style: none; margin: 0; padding: 0; }
 .timeline li { position: relative; padding: 0 0 1.1rem 1.6rem; border-left: 2px solid var(--border); margin-left: .4rem; }

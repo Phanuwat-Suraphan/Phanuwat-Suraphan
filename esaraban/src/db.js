@@ -404,6 +404,10 @@ export function migrate() {
     stamped_drive_file_id TEXT,
     stamped_at TEXT
   );
+  -- ทะเบียนหนังสือค้นด้วยชื่อไฟล์แนบ กรอง "เฉพาะที่มีไฟล์แนบ" และนับจำนวนไฟล์มาแสดงทุกแถว
+  -- ทั้งสามอย่างวิ่งผ่าน attachments.document_id ถ้าไม่มี index จะกลายเป็นสแกนทั้งตาราง attachments
+  -- ต่อหนึ่งแถวในทะเบียน (ทะเบียนแสดง 50 แถวต่อหน้า)
+  CREATE INDEX IF NOT EXISTS idx_attachments_doc ON attachments(document_id);
 
   -- sequential workflow steps for a document
   CREATE TABLE IF NOT EXISTS workflow_steps (
