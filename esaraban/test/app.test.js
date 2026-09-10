@@ -34,7 +34,7 @@ const { planUserImport, MAX_IMPORT_ROWS } = await import('../src/services/userIm
 const { truncateFilename, MAX_HEADER_FILENAME_CHARS } = await import('../src/router.js');
 const { buildDocumentQuery, describeFilters, listRegisterYears } = await import('../src/services/documentQuery.js');
 const { asText, asTextOrNull } = await import('../src/services/validate.js');
-const { setSetting, getSetting } = await import('../src/services/settings.js');
+const { setSetting, getSetting, invalidateSettingsCache } = await import('../src/services/settings.js');
 const { schoolName, schoolShortName, schoolInitials } = await import('../src/render.js');
 const { createDelegation, cancelDelegation } = await import('../src/services/delegation.js');
 const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, planBackupCleanup, thaiDateParts } = await import('../src/services/dbBackup.js');
@@ -4108,6 +4108,20 @@ describe('ชื่อโรงเรียน: ตั้งค่าได้�
     assert.ok(home.body.includes(manifest.short_name),
       `คำแนะนำต้องบอกชื่อเมนู "${manifest.short_name}" ให้ตรงกับ manifest`);
     assert.ok(!home.body.includes('จพ.๑'), 'ต้องไม่เหลือชื่อแอปของโรงเรียนเดิมค้างอยู่');
+    restore();
+  });
+
+  // บนโฮสต์ฟรี ดิสก์ไม่ถาวร ฐานข้อมูลจึงถูกล้างทุกครั้งที่ deploy — ค่าที่แอดมินตั้งไว้หายไปด้วย
+  // ถ้าค่าตั้งต้นเป็นข้อความกลางๆ หัวหนังสือราชการจะขึ้นว่า "ยังไม่ได้ตั้งชื่อ" ทุกครั้งที่ deploy
+  // จนกว่าจะมีคนสังเกตเห็น ค่าตั้งต้นจึงต้องเป็นชื่อโรงเรียนที่ใช้งานอยู่จริง
+  test('ติดตั้งใหม่แล้วต้องได้ชื่อโรงเรียนจริงทันที ไม่ใช่ข้อความตัวยึด', () => {
+    db.prepare('DELETE FROM app_settings').run();
+    invalidateSettingsCache();
+    const fresh = schoolName();
+    assert.ok(fresh.startsWith('โรงเรียน'), `ต้องขึ้นต้นด้วย "โรงเรียน" เพราะระบบต่อท้ายคำอื่นตรงๆ — ได้ "${fresh}"`);
+    assert.ok(!/ยังไม่ได้ตั้ง|ตัวอย่าง|TODO|\(/.test(fresh), `ต้องไม่เป็นข้อความตัวยึด — ได้ "${fresh}"`);
+    assert.ok(schoolShortName().length > 0 && schoolInitials().length > 0,
+      'ชื่อย่อและอักษรย่อต้องสร้างได้จากค่าตั้งต้นด้วย');
     restore();
   });
 
