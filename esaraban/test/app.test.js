@@ -4095,6 +4095,22 @@ describe('ชื่อโรงเรียน: ตั้งค่าได้�
     restore();
   });
 
+  // ชื่อแอปโผล่สองที่ที่ห้ามไม่ตรงกัน: ตัว manifest ที่กำหนดชื่อจริงในเมนู "แชร์" ของ LINE และคำแนะนำ
+  // วิธีใช้บนหน้าแรกที่บอกครูว่า "ให้เลือกเมนูชื่อนี้" — เดิมคำแนะนำฝังชื่อโรงเรียนเดิมไว้ตายตัว
+  // โรงเรียนใหม่จึงถูกสั่งให้หาเมนูที่ไม่มีอยู่จริงบนเครื่องตัวเอง
+  test('คำแนะนำแชร์จาก LINE บนหน้าแรก ต้องบอกชื่อเมนูตรงกับชื่อแอปจริง', async () => {
+    setSetting({ key: 'school_name', value: 'โรงเรียนบ้านห้วยแก้ว', actorUser: admin() });
+    setSetting({ key: 'school_short_name', value: '', actorUser: admin() });
+
+    const manifest = JSON.parse((await dispatchGet(null, '/manifest.webmanifest')).body);
+    const home = await dispatchGet(loadUserForTest(seed.userIds.reg001), '/');
+    assert.match(home.body, /กดปุ่มแชร์/, 'หน้าแรกต้องยังมีคำแนะนำวิธีแชร์จาก LINE');
+    assert.ok(home.body.includes(manifest.short_name),
+      `คำแนะนำต้องบอกชื่อเมนู "${manifest.short_name}" ให้ตรงกับ manifest`);
+    assert.ok(!home.body.includes('จพ.๑'), 'ต้องไม่เหลือชื่อแอปของโรงเรียนเดิมค้างอยู่');
+    restore();
+  });
+
   test('ไม่มีชื่อโรงเรียนเดิมหลงเหลือในโค้ดที่รันจริง', async () => {
     const { readdirSync, readFileSync, statSync } = await import('node:fs');
     const walk = (dir) => readdirSync(dir).flatMap((f) => {

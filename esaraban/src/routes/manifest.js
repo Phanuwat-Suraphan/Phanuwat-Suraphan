@@ -6,14 +6,14 @@
 // เป็นหน้าสาธารณะโดยตั้งใจ (ไม่ต้องล็อกอิน) — เบราว์เซอร์ต้องโหลด manifest ได้ตั้งแต่หน้าเข้าสู่ระบบ
 // ถึงจะเสนอให้ "เพิ่มลงในหน้าจอโฮม" ได้ และไม่มีข้อมูลส่วนบุคคลอยู่ในไฟล์นี้
 import { router } from '../router.js';
-import { schoolName, schoolShortName } from '../services/settings.js';
+import { schoolName, appShortName } from '../services/settings.js';
 
 router.get('/manifest.webmanifest', (ctx) => {
   const name = schoolName();
   const manifest = {
     name: `ระบบสารบรรณอิเล็กทรอนิกส์ ${name}`,
-    // ชื่อใต้ไอคอนบนหน้าจอมือถือมีที่ให้แสดงสั้นมาก ถ้ายาวเกินระบบปฏิบัติการจะตัดทิ้งเอง
-    short_name: `สารบรรณ ${schoolShortName()}`.slice(0, 30),
+    // ชื่อนี้คือชื่อที่โผล่ในเมนู "แชร์" ของ LINE ด้วย — คำแนะนำวิธีใช้บนหน้าแรกอ้างค่าเดียวกันนี้
+    short_name: appShortName(),
     description: `รับ-ส่ง เสนอ และลงนามหนังสือราชการของ${name}`,
     lang: 'th',
     dir: 'ltr',

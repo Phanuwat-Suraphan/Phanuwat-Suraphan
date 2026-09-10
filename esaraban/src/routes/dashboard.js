@@ -4,6 +4,7 @@ import { requirePage } from '../middleware.js';
 import { db, todayInBangkok } from '../db.js';
 import { canUserSeeDocument, visibleDocumentsSqlFilter } from '../services/workflow.js';
 import { getBackupStatus } from '../services/dbBackup.js';
+import { appShortName } from '../services/settings.js';
 
 // รวมงานที่มอบหมายให้ตรงๆ + งานที่มีคนมอบหมายให้เรารักษาการแทน (ยัง active วันนี้) เข้าเป็นเงื่อนไขเดียว —
 // ใช้ซ้ำได้ทั้งตัวนับ KPI, การ์ด "งานของฉัน" ในแดชบอร์ด, และหน้า /tasks
@@ -145,7 +146,7 @@ router.get('/', requirePage((ctx) => {
       <div class="help-text">
         <strong>วิธีติดตั้ง (Android):</strong> เปิดเว็บนี้ใน Chrome → กดปุ่ม ⋮ มุมขวาบน → เลือก "ติดตั้งแอป"
         หรือ "เพิ่มลงในหน้าจอหลัก"<br/>
-        <strong>วิธีใช้หลังติดตั้ง:</strong> ใน LINE กดที่ไฟล์หนังสือ → กดปุ่มแชร์ → เลือก "สารบรรณ จพ.๑" →
+        <strong>วิธีใช้หลังติดตั้ง:</strong> ใน LINE กดที่ไฟล์หนังสือ → กดปุ่มแชร์ → เลือก "${esc(appShortName())}" →
         ระบบจะเปิดฟอร์มรับหนังสือพร้อมไฟล์ให้เลย แค่กรอกชื่อเรื่องแล้วบันทึก<br/>
         <strong>หมายเหตุสำหรับ iPhone/iPad:</strong> ระบบแชร์ไฟล์ตรงแบบนี้ iOS ยังไม่รองรับ (เป็นข้อจำกัดของ
         ตัว iOS เอง ไม่ใช่ของระบบเรา) — บน iPhone ยังต้องกดบันทึกไฟล์จาก LINE ลงแอป "ไฟล์" ก่อน แล้วค่อยแนบ
