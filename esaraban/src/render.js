@@ -1,4 +1,4 @@
-import { todayInBangkok } from './db.js';
+import { todayInBangkok, TEST_MODE_ON } from './db.js';
 
 export function esc(str) {
   if (str === null || str === undefined) return '';
@@ -263,6 +263,14 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
       </div>
     </header>
     <main class="content">
+      <!-- แถบนี้ต้องค้างอยู่ทุกหน้า ห้ามปิดได้ และต้องเห็นทุกคนไม่ใช่เฉพาะผู้ดูแล เพราะโหมดทดสอบแปลว่า
+           ทุกบัญชีใช้รหัสผ่านเดียวกัน ซึ่งเป็นเรื่องที่ทุกคนที่ใช้ระบบอยู่ควรรู้ว่ากำลังเกิดขึ้น
+           ความเสี่ยงจริงคือเปิดทิ้งไว้แล้วลืม — ถ้าเตือนแค่ตอนระบบ start ไม่มีใครเห็นมันอีกเลย -->
+      ${TEST_MODE_ON ? `<div class="alert alert-warning">
+        🧪 <strong>ระบบอยู่ในโหมดทดสอบ</strong> — ทุกบัญชีถูกตั้งรหัสผ่านและ PIN เหมือนกันหมด
+        ห้ามใช้เก็บข้อมูลจริงจนกว่าจะปิดโหมดนี้
+        <div style="font-size:.82rem;margin-top:.25rem">ปิดโดยลบตัวแปร <code>TEST_MODE_PASSWORD</code> ออกจากเซิร์ฟเวอร์แล้ว restart จากนั้นให้ทุกคนตั้งรหัสของตัวเอง</div>
+      </div>` : ''}
       ${flash ? `<div class="alert alert-${flash.type}">${esc(flash.message)}</div>` : ''}
       ${content}
     </main>

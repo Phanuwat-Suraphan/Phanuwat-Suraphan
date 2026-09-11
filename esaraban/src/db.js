@@ -865,9 +865,93 @@ function applyEmergencyAdminReset() {
   ].join('\n'));
 }
 
+/** โหมดทดสอบ: ตั้งรหัสผ่านและ PIN ของ "ทุกบัญชี" ให้เหมือนกันหมด เพื่อไล่ทดสอบระบบทีละบทบาท
+ *
+ * ต่างจาก ADMIN_RESET_PASSWORD ข้างบนตรงที่อันนั้นกู้บัญชีผู้ดูแลคืนมาหนึ่งบัญชีแล้วบังคับตั้งรหัสใหม่
+ * ทันที (เป็นทางเข้าฉุกเฉิน) ส่วนอันนี้คือ "เปิดบ้านทั้งหลัง" สำหรับช่วงทดสอบ — ข้ามด่านตั้งรหัสเอง
+ * ให้ด้วย เพราะการต้องตั้งรหัสใหม่ทุกครั้งที่สลับบทบาทคือสิ่งที่ทำให้ทดสอบไม่จบสักที
+ *
+ * ⚠️ ราคาของความสะดวกนี้คือ ทุกคนในโรงเรียนใช้รหัสผ่านเดียวกันและเป็นรหัสที่เดาได้ ระบบจึงขึ้นแถบ
+ * เตือนค้างไว้ในหน้าเว็บตลอดเวลาที่ยังตั้งค่านี้ไว้ (ดู TEST_MODE_ON ที่ส่งออกข้างล่าง) และจะตั้ง
+ * รหัสกลับให้ใหม่ทุกครั้งที่ระบบ restart จนกว่าจะลบตัวแปรออก — ห้ามค้างไว้ตอนใช้งานจริงเด็ดขาด
+ *
+ * บัญชีที่ถูกปิด (status != 'active') จะไม่ถูกแตะ เพราะการปิดบัญชีเป็นการตัดสินใจของโรงเรียน
+ * ไม่ใช่ผลข้างเคียงของรหัสผ่าน — การรีเซ็ตรหัสไม่ควรเปิดบัญชีที่ตั้งใจปิดไว้กลับมาเงียบๆ
+ */
+export const TEST_MODE_ON = Boolean((process.env.TEST_MODE_PASSWORD || '').trim());
+
+/** รหัสที่ใช้ในโหมดทดสอบ พร้อมรายชื่อบัญชีและบทบาท — เอาไปแสดงบนหน้า login ให้กดเข้าได้เลย
+ *
+ *  คืนค่า null เสมอเมื่อไม่ได้อยู่ในโหมดทดสอบ ไม่ใช่แค่ให้ผู้เรียกเช็คเอง — ถ้าวันหนึ่งมีใครเผลอ
+ *  เรียกฟังก์ชันนี้ในหน้าอื่นโดยไม่ได้ตรวจ TEST_MODE_ON ก่อน ระบบจริงก็ยังไม่หลุดรหัสอะไรออกไป
+ */
+export function testModeCredentials() {
+  if (!TEST_MODE_ON) return null;
+  const accounts = db.prepare(`
+    SELECT u.employee_code, u.prefix, u.first_name, u.last_name,
+           COALESCE(GROUP_CONCAT(r.name_th, ', '), '') AS roles
+    FROM users u
+    LEFT JOIN user_roles ur ON ur.user_id = u.id
+    LEFT JOIN roles r ON r.id = ur.role_id
+    WHERE u.deleted_at IS NULL AND u.status = 'active'
+    GROUP BY u.id ORDER BY u.employee_code
+  `).all();
+  return {
+    password: (process.env.TEST_MODE_PASSWORD || '').trim(),
+    pin: (process.env.TEST_MODE_PIN || '123456').trim(),
+    accounts,
+  };
+}
+
+function applyTestModeReset() {
+  const password = (process.env.TEST_MODE_PASSWORD || '').trim();
+  if (!password) return;
+  if (password.length < 8) {
+    console.warn('[test-mode] ข้าม TEST_MODE_PASSWORD เพราะสั้นกว่า 8 ตัวอักษร');
+    return;
+  }
+  const pin = (process.env.TEST_MODE_PIN || '123456').trim();
+  if (!/^\d{4,10}$/.test(pin)) {
+    console.warn('[test-mode] ข้าม TEST_MODE_PIN เพราะไม่ใช่ตัวเลข 4-10 หลัก');
+    return;
+  }
+  const users = db.prepare("SELECT id, employee_code FROM users WHERE deleted_at IS NULL AND status = 'active' ORDER BY employee_code").all();
+  if (!users.length) return;
+  const upd = db.prepare(`
+    UPDATE users SET password_hash = ?, pin_hash = ?, must_change_password = 0,
+      failed_login_count = 0, locked_until = NULL, updated_at = ? WHERE id = ?
+  `);
+  const now = nowIso();
+  // แฮชครั้งเดียวแล้วใช้ซ้ำทุกบัญชี — scrypt ตั้งใจให้ช้า ถ้าแฮชใหม่ทีละคนกับโรงเรียนที่มีครูหลายสิบคน
+  // จะกลายเป็นหน่วงตอนระบบ start ทุกครั้งที่ restart
+  const pwHash = hashSecret(password);
+  const pinHash = hashSecret(pin);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const u of users) upd.run(pwHash, pinHash, now, u.id);
+    db.exec('DELETE FROM sessions');
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  audit({ userId: null, action: 'test_mode_reset', tableName: 'users', recordId: null, detail: { accounts: users.length, via: 'TEST_MODE_PASSWORD' } });
+  console.warn([
+    '',
+    '='.repeat(78),
+    `  🧪 [โหมดทดสอบ] ตั้งรหัสผ่านและ PIN ให้ทุกบัญชีเหมือนกันหมดแล้ว (${users.length} บัญชี)`,
+    `     รหัสผ่าน: ${password}     PIN: ${pin}     (เข้าได้เลย ไม่ต้องตั้งรหัสใหม่)`,
+    `     ชื่อผู้ใช้: ${users.map((u) => u.employee_code).join(', ')}`,
+    '',
+    '  ⚠️  ตอนนี้ทุกคนใช้รหัสผ่านเดียวกัน ใครก็ตามที่เดารหัสนี้ได้จะเข้าเป็นใครก็ได้ในโรงเรียน',
+    '     พอทดสอบเสร็จให้ "ลบ" ตัวแปร TEST_MODE_PASSWORD ออกจากเซิร์ฟเวอร์แล้ว restart',
+    '     แล้วให้ทุกคนตั้งรหัสของตัวเอง (ผู้ดูแล → จัดการผู้ใช้ → ตั้งรหัสใหม่)',
+    '='.repeat(78),
+    '',
+  ].join('\n'));
+}
+
 migrate();
 seedIfEmpty();
 applyEmergencyAdminReset();
+applyTestModeReset();
 
 export function getUserByCode(code) {
   return db.prepare(`SELECT * FROM users WHERE employee_code = ? AND deleted_at IS NULL`).get(code);

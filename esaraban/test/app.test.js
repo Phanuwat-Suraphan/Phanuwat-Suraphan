@@ -6,6 +6,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 
 const tmpDb = path.join(os.tmpdir(), `esaraban-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
 process.env.DB_PATH = tmpDb;
@@ -3950,6 +3952,84 @@ describe('ด่านบังคับตั้งรหัสผ่านเ�
     assert.match(fn, /locked_until = NULL/, 'ต้องปลดล็อกให้ด้วย ไม่งั้นกู้คืนแล้วก็ยังเข้าไม่ได้');
     assert.match(fn, /DELETE FROM sessions/, 'ต้องเตะเซสชันที่ค้างอยู่ออก');
     assert.match(fn, /length < 8/, 'ต้องปฏิเสธรหัสกู้คืนที่สั้นเกินไป');
+  });
+
+  // โหมดทดสอบทำงานตอนระบบ start จาก environment variable จึงทดสอบด้วยการ boot db.js ใน process ลูกจริง
+  // กับฐานข้อมูลใช้แล้วทิ้ง ไม่ใช่แค่ grep ดูว่าโค้ดหน้าตาถูก — สิ่งที่ต้องพิสูจน์คือ "เข้าได้จริงทุกบัญชี"
+  describe('โหมดทดสอบ: เปิดให้เข้าง่ายชั่วคราว แล้วต้องปิดได้สนิท', () => {
+    const dbFile = path.join(os.tmpdir(), `esaraban-testmode-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const dbUrl = new URL('../src/db.js', import.meta.url).href;
+    const boot = (env) => execFileSync(process.execPath, ['--no-warnings', '-e', `await import(${JSON.stringify(dbUrl)})`],
+      { env: { ...process.env, DB_PATH: dbFile, TEST_MODE_PASSWORD: '', TEST_MODE_PIN: '', ...env }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const open = () => new DatabaseSync(dbFile);
+    const rows = (d) => d.prepare("SELECT employee_code, password_hash, pin_hash, must_change_password, status FROM users WHERE deleted_at IS NULL").all();
+
+    after(() => { for (const f of [dbFile, `${dbFile}-shm`, `${dbFile}-wal`]) { try { fs.unlinkSync(f); } catch { /* ไม่มีก็ไม่เป็นไร */ } } });
+
+    test('ตั้งรหัสให้ทุกบัญชีที่ยังใช้งานอยู่ และเข้าได้เลยโดยไม่ต้องตั้งรหัสใหม่', () => {
+      boot({}); // สร้างฐานข้อมูลตั้งต้นก่อน (ยังไม่เปิดโหมดทดสอบ)
+      let d = open();
+      // ปิดบัญชีหนึ่งไว้ เพื่อพิสูจน์ว่าโหมดทดสอบไม่ไปเปิดบัญชีที่โรงเรียนตั้งใจปิดกลับมา
+      d.prepare("UPDATE users SET status = 'closed' WHERE employee_code = 'teacher001'").run();
+      const closedBefore = d.prepare("SELECT password_hash FROM users WHERE employee_code = 'teacher001'").get().password_hash;
+      d.prepare("UPDATE users SET must_change_password = 1").run();
+      d.close();
+
+      boot({ TEST_MODE_PASSWORD: 'probe1234', TEST_MODE_PIN: '987654' });
+
+      d = open();
+      const all = rows(d);
+      const active = all.filter((u) => u.status === 'active');
+      assert.ok(active.length >= 5, `ต้องมีบัญชีที่ใช้งานอยู่หลายบัญชี แต่ได้ ${active.length}`);
+      for (const u of active) {
+        assert.ok(verifySecret('probe1234', u.password_hash), `${u.employee_code} เข้าด้วยรหัสโหมดทดสอบไม่ได้`);
+        assert.ok(verifySecret('987654', u.pin_hash), `${u.employee_code} ใช้ PIN โหมดทดสอบไม่ได้`);
+        assert.equal(u.must_change_password, 0, `${u.employee_code} ยังโดนบังคับตั้งรหัสใหม่ ทำให้สลับบทบาททดสอบไม่สะดวก`);
+      }
+      const closed = all.find((u) => u.employee_code === 'teacher001');
+      assert.equal(closed.status, 'closed', 'บัญชีที่ปิดไว้ต้องยังปิดอยู่');
+      assert.equal(closed.password_hash, closedBefore, 'บัญชีที่ปิดไว้ต้องไม่ถูกตั้งรหัสใหม่ให้');
+      assert.equal(d.prepare('SELECT COUNT(*) c FROM sessions').get().c, 0, 'ต้องเตะเซสชันเก่าออกทั้งหมด');
+      d.close();
+    });
+
+    test('รหัสที่สั้นเกินไปหรือ PIN ที่ไม่ใช่ตัวเลข ต้องถูกปฏิเสธ ไม่ใช่ตั้งให้ทั้งโรงเรียน', () => {
+      boot({ TEST_MODE_PASSWORD: 'probe1234', TEST_MODE_PIN: '987654' });
+      for (const env of [{ TEST_MODE_PASSWORD: 'sh0rt' }, { TEST_MODE_PASSWORD: 'probe9999', TEST_MODE_PIN: 'ไม่ใช่ตัวเลข' }]) {
+        boot(env);
+        const d = open();
+        const u = d.prepare("SELECT password_hash FROM users WHERE employee_code = 'admin'").get();
+        assert.ok(verifySecret('probe1234', u.password_hash),
+          `ค่าที่ไม่ผ่านเกณฑ์ (${JSON.stringify(env)}) ต้องถูกข้ามไปเฉยๆ ไม่ใช่ไปตั้งรหัสใหม่ทับ`);
+        d.close();
+      }
+    });
+
+    test('พอลบตัวแปรออก ระบบต้องไม่เหลือร่องรอยโหมดทดสอบให้เห็นอีก', async () => {
+      // process ของเทสต์เองไม่ได้ตั้ง TEST_MODE_PASSWORD ไว้ จึงเป็นตัวแทนของ "ระบบใช้งานจริง" ได้ตรงๆ
+      const { TEST_MODE_ON, testModeCredentials } = await import('../src/db.js');
+      assert.equal(TEST_MODE_ON, false);
+      assert.equal(testModeCredentials(), null, 'ปิดโหมดแล้วต้องไม่คายรหัสออกมาอีก');
+
+      const loginPage = await dispatchGet(null, '/login', {});
+      assert.doesNotMatch(loginPage.body, /โหมดทดสอบ/, 'หน้า login ต้องไม่มีกล่องบอกรหัสหลงเหลืออยู่');
+      assert.doesNotMatch(loginPage.body, /testmode-account/, 'ปุ่มกดเลือกบัญชีต้องหายไปด้วย');
+
+      const inside = await dispatchGet(loadUserForTest(seed.userIds.reg001), '/documents', { direction: 'incoming' });
+      assert.doesNotMatch(inside.body, /ระบบอยู่ในโหมดทดสอบ/, 'แถบเตือนต้องหายไปเมื่อปิดโหมด');
+    });
+
+    // ถ้าเปิดค้างไว้ตอนใช้งานจริง ทุกคนในโรงเรียนใช้รหัสเดียวกัน — การเตือนแค่ใน log ตอน start
+    // ไม่มีใครเห็นอีกเลยหลังจากนั้น แถบเตือนบนหน้าเว็บจึงเป็นสิ่งที่กันไม่ให้ "เปิดทิ้งไว้แล้วลืม"
+    test('ตอนเปิดโหมดอยู่ ต้องมีแถบเตือนค้างอยู่ในหน้าเว็บ ไม่ใช่เตือนแค่ใน log', () => {
+      const render = fs.readFileSync(new URL('../src/render.js', import.meta.url), 'utf8');
+      assert.match(render, /TEST_MODE_ON \?/, 'layout ต้องมีแถบเตือนที่ผูกกับสถานะโหมดทดสอบ');
+      assert.match(render, /ระบบอยู่ในโหมดทดสอบ/);
+      const src = fs.readFileSync(new URL('../src/db.js', import.meta.url), 'utf8');
+      const fn = src.slice(src.indexOf('function applyTestModeReset'), src.indexOf('migrate();'));
+      assert.match(fn, /status = 'active'/, 'ต้องไม่แตะบัญชีที่ถูกปิดไว้');
+      assert.match(fn, /DELETE FROM sessions/, 'ต้องเตะเซสชันเก่าออก');
+    });
   });
 
   test('isWeakPin จับ PIN ที่เดาง่ายได้ครบ', () => {

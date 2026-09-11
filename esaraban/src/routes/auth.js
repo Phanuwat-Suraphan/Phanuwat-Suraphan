@@ -1,7 +1,41 @@
 import { router, html, redirect, json } from '../router.js';
 import { layout, esc, illustration, schoolName, schoolInitials } from '../render.js';
 import { login, logout, sessionCookieHeader, revokeOtherSessions } from '../auth.js';
-import { db, audit, nowIso, hashSecret, verifySecret, isWeakPin } from '../db.js';
+import { db, audit, nowIso, hashSecret, verifySecret, isWeakPin, testModeCredentials } from '../db.js';
+
+/** กล่อง "โหมดทดสอบ" บนหน้า login — บอกรหัสตรงนั้นเลยและกดเลือกบัญชีได้ทันที
+ *
+ *  ที่ต้องมีปุ่มกดเลือก ไม่ใช่แค่พิมพ์รหัสบอกไว้ เพราะการทดสอบจริงคือสลับบทบาทไปมาหลายสิบรอบ
+ *  (ธุรการลงทะเบียน → หัวหน้าฝ่ายเกษียณ → ผอ. ลงนาม → ครูรับทราบ) การพิมพ์ชื่อผู้ใช้ใหม่ทุกรอบ
+ *  คือจุดที่ทำให้เลิกทดสอบกลางคัน
+ *
+ *  กล่องนี้จะหายไปเองเมื่อลบ TEST_MODE_PASSWORD ออก ไม่ต้องแก้โค้ดอะไรตอนขึ้นใช้งานจริง
+ */
+function testModePanel() {
+  const cred = testModeCredentials();
+  if (!cred) return '';
+  const rows = cred.accounts.map((a) => {
+    const name = `${a.prefix || ''}${a.first_name} ${a.last_name}`.trim();
+    return `<button type="button" class="testmode-account" onclick="fillTestLogin('${esc(a.employee_code)}')">
+      <strong>${esc(a.employee_code)}</strong>
+      <span>${esc(a.roles || 'ไม่ได้กำหนดบทบาท')}${name ? ` · ${esc(name)}` : ''}</span>
+    </button>`;
+  }).join('');
+  return `<div class="testmode-box">
+    <div class="testmode-head">🧪 โหมดทดสอบ — กดเลือกบัญชีแล้วกด "เข้าสู่ระบบ" ได้เลย</div>
+    <div class="testmode-cred">รหัสผ่าน <code>${esc(cred.password)}</code> · PIN <code>${esc(cred.pin)}</code> (ทุกบัญชีใช้ชุดเดียวกัน)</div>
+    <div class="testmode-accounts">${rows}</div>
+    <div class="testmode-warn">⚠️ ห้ามเปิดโหมดนี้ทิ้งไว้ตอนใช้งานจริง — ลบตัวแปร <code>TEST_MODE_PASSWORD</code> บนเซิร์ฟเวอร์แล้ว restart</div>
+  </div>
+  <script>
+    function fillTestLogin(code) {
+      document.querySelector('[name=employeeCode]').value = code;
+      document.getElementById('loginPassword').value = ${JSON.stringify(cred.password)};
+      document.querySelectorAll('.testmode-account').forEach(function (b) { b.classList.remove('is-picked'); });
+      event.currentTarget.classList.add('is-picked');
+    }
+  </script>`;
+}
 
 function loginPage({ error } = {}) {
   return `<div class="login-wrap">
@@ -31,6 +65,7 @@ function loginPage({ error } = {}) {
           </div>
           <button class="btn btn-primary btn-block" type="submit">เข้าสู่ระบบ</button>
         </form>
+        ${testModePanel()}
         <div class="login-hint">
           ยังไม่มีรหัสผ่าน หรือลืมรหัสผ่าน? ติดต่อเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบของโรงเรียน
           เพื่อขอรหัสผ่านชั่วคราว แล้วระบบจะให้ตั้งรหัสผ่านของตัวเองตอนเข้าใช้งานครั้งแรก
