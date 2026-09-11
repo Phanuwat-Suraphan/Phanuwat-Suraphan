@@ -420,7 +420,11 @@ export function migrate() {
     stamped_storage_provider TEXT, -- local | google_drive | NULL (ยังไม่เคยประทับตรา)
     stamped_filepath TEXT,
     stamped_drive_file_id TEXT,
-    stamped_at TEXT
+    stamped_at TEXT,
+    -- ไฟล์ถูกทำลายตามมติคณะกรรมการแล้ว: ตัวไฟล์หายไปจากดิสก์/Drive จริง แต่ยังเก็บ "แถว" ไว้เป็นหลักฐาน
+    -- ว่าหนังสือฉบับนั้นเคยมีไฟล์ชื่ออะไร ขนาดเท่าไร ค่าแฮชอะไร ซึ่งเป็นข้อมูลที่บัญชีทำลายหนังสือต้องใช้
+    -- ตรวจย้อนหลังได้ (ถ้าลบแถวทิ้งไปเลยจะไม่เหลือหลักฐานว่าทำลายอะไรไปบ้าง)
+    destroyed_at TEXT
   );
   -- ทะเบียนหนังสือค้นด้วยชื่อไฟล์แนบ กรอง "เฉพาะที่มีไฟล์แนบ" และนับจำนวนไฟล์มาแสดงทุกแถว
   -- ทั้งสามอย่างวิ่งผ่าน attachments.document_id ถ้าไม่มี index จะกลายเป็นสแกนทั้งตาราง attachments
@@ -605,6 +609,16 @@ export function migrate() {
     db.exec('ALTER TABLE attachments ADD COLUMN stamped_filepath TEXT');
     db.exec('ALTER TABLE attachments ADD COLUMN stamped_drive_file_id TEXT');
     db.exec('ALTER TABLE attachments ADD COLUMN stamped_at TEXT');
+  }
+  if (!attachmentCols.includes('destroyed_at')) {
+    db.exec('ALTER TABLE attachments ADD COLUMN destroyed_at TEXT');
+    // ฐานข้อมูลที่ใช้งานอยู่ก่อนหน้านี้เคยทำลายหนังสือไปแล้วโดยไม่ได้ทำเครื่องหมายที่ตัวไฟล์แนบ
+    // ไล่เติมย้อนหลังให้ตรงกับความจริง (ไฟล์ถูกลบไปพร้อมกับตอนที่หนังสือถูกทำลาย)
+    db.exec(`UPDATE attachments SET destroyed_at = (
+      SELECT d.destroyed_at FROM documents d WHERE d.id = attachments.document_id AND d.status = 'destroyed'
+    ) WHERE destroyed_at IS NULL AND EXISTS (
+      SELECT 1 FROM documents d WHERE d.id = attachments.document_id AND d.status = 'destroyed'
+    )`);
   }
   // ขั้นตอน workflow ของหนังสือมีปัญหาเดียวกับใบลา — เดิมไทม์ไลน์ join เอาลายเซ็นจาก users มาแสดงสดๆ
   // พอเจ้าตัวเปลี่ยน/ลบลายเซ็นในโปรไฟล์ ลายเซ็นบนหนังสือที่ลงนามไปแล้วทุกฉบับก็เปลี่ยน/หายย้อนหลังตามไปด้วย

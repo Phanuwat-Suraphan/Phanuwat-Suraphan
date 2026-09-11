@@ -78,7 +78,9 @@ export function buildDocumentQuery(user, query = {}) {
   // ไม่งั้น "ถึงวันที่ 31 ส.ค." จะไม่รวมเอกสารที่ลงทะเบียนตอนบ่ายของวันที่ 31 เอง
   if (f.from) { where.push('substr(d.created_at, 1, 10) >= :from'); params.from = f.from; }
   if (f.to) { where.push('substr(d.created_at, 1, 10) <= :to'); params.to = f.to; }
-  if (f.hasFile) where.push('EXISTS (SELECT 1 FROM attachments ax WHERE ax.document_id = d.id)');
+  // ไม่นับไฟล์ที่ถูกทำลายตามระเบียบไปแล้ว — ตัวไฟล์ไม่มีอยู่จริงแล้ว ถ้ายังนับอยู่ ตัวกรอง "เฉพาะที่มีไฟล์แนบ"
+  // จะพาไปเจอหนังสือที่เปิดไฟล์ไม่ได้ ซึ่งตรงข้ามกับที่ตัวกรองนี้มีไว้เพื่ออะไร
+  if (f.hasFile) where.push('EXISTS (SELECT 1 FROM attachments ax WHERE ax.document_id = d.id AND ax.destroyed_at IS NULL)');
   if (f.overdue) {
     // "เลยกำหนด" ต้องนับจากวันนี้ตามเวลาไทย และนับเฉพาะเรื่องที่ยังไม่ปิด
     where.push(`d.due_date IS NOT NULL AND d.due_date < :today
@@ -98,7 +100,8 @@ export function buildDocumentQuery(user, query = {}) {
 const SELECT_COLUMNS = `
   d.*, dt.name as type_name, dep.name as dept_name,
   -- นับไฟล์แนบมาด้วยเลย เพื่อให้รายการทะเบียนบอกได้ว่าฉบับไหน "มีไฟล์แล้ว" โดยไม่ต้องเปิดทีละฉบับ
-  (SELECT COUNT(*) FROM attachments ac WHERE ac.document_id = d.id) AS attachment_count
+  -- ไม่นับไฟล์ที่ถูกทำลายตามระเบียบ ไม่งั้นทะเบียนจะขึ้น 📎 ให้หนังสือที่ไฟล์ถูกลบทิ้งไปแล้ว
+  (SELECT COUNT(*) FROM attachments ac WHERE ac.document_id = d.id AND ac.destroyed_at IS NULL) AS attachment_count
   FROM documents d
   JOIN document_types dt ON dt.id = d.doc_type_id
   JOIN departments dep ON dep.id = d.department_id`;

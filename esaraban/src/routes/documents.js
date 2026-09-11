@@ -447,6 +447,22 @@ router.get('/documents/new', requirePage((ctx) => {
 // ฉบับนั้นไม่มีไฟล์สแกนก็ตอนต้องหยิบมาใช้ ซึ่งอาจเป็นเดือนถัดไป
 const EMPTY_UPLOAD_MESSAGE = 'ไฟล์ที่แนบมาไม่มีข้อมูล (0 ไบต์) — อาจสแกนไม่สำเร็จหรือไฟล์เสียหาย กรุณาตรวจสอบไฟล์แล้วแนบใหม่อีกครั้ง';
 
+// หนังสือที่ "จบชีวิตไปแล้ว" ต้องแนบไฟล์เพิ่มไม่ได้อีก
+//
+// ทำลายแล้ว = คณะกรรมการทำลายหนังสือมีมติและผู้บริหารอนุมัติ ไฟล์ถูกลบถาวรไปแล้ว การแนบไฟล์ใหม่เข้าไป
+// ทำให้บัญชีทำลายหนังสือกลายเป็นหลักฐานเท็จ (บอกว่าทำลายแล้ว แต่ในระบบมีไฟล์อยู่)
+// ยกเลิกแล้ว = หนังสือถูกยกเลิกทั้งฉบับ ไม่ควรมีเนื้อหาใหม่งอกเพิ่มเช่นกัน
+//
+// เดิมไม่มีการตรวจตรงนี้เลย ทดสอบยิงเข้าไปตรงๆ แล้วแนบไฟล์เข้าเอกสารที่ทำลายแล้วได้จริง (HTTP 200)
+// และหน้าเว็บก็ยังโชว์ฟอร์ม "แนบไฟล์เพิ่ม" ให้กดอยู่ด้วย
+const NO_ATTACH_STATUSES = { destroyed: 'ถูกทำลายตามมติคณะกรรมการทำลายหนังสือแล้ว', voided: 'ถูกยกเลิกแล้ว' };
+function canAttachTo(doc) { return !(doc.status in NO_ATTACH_STATUSES); }
+function assertCanAttach(doc) {
+  if (!canAttachTo(doc)) {
+    throw httpError(409, `หนังสือฉบับนี้${NO_ATTACH_STATUSES[doc.status]} จึงแนบไฟล์เพิ่มไม่ได้ — หากต้องใช้งานเอกสารนี้อีก กรุณาลงทะเบียนหนังสือฉบับใหม่`);
+  }
+}
+
 // "เลือกไฟล์มาแล้วแต่ไฟล์ว่าง" ต่างจาก "ไม่ได้เลือกไฟล์" — หน้าเว็บส่ง fileName/fileType/fileDataBase64
 // มาพร้อมกันทั้งชุดเฉพาะตอนที่ผู้ใช้เลือกไฟล์จริงเท่านั้น จึงใช้ตรงนี้แยกสองกรณีออกจากกันได้
 function isEmptyUpload(b) {
@@ -983,6 +999,7 @@ router.get('/documents/register', requirePage((ctx) => {
 router.post('/documents/:id/attachments', requireApi(async (ctx) => {
   const doc = getDocument(ctx.params.id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
+  assertCanAttach(doc);
   // ที่นี่ยังไม่ได้บันทึกอะไรเลย ปฏิเสธไปตรงๆ ได้ ไม่มีอะไรเสียหาย
   if (isEmptyUpload(ctx.body)) throw httpError(400, EMPTY_UPLOAD_MESSAGE);
   const att = await saveAttachment({ documentId: doc.id, fileName: ctx.body.fileName, fileType: ctx.body.fileType, fileDataBase64: ctx.body.fileDataBase64, uploader: ctx.user });
@@ -1094,6 +1111,9 @@ router.get('/documents/:id', requirePage((ctx) => {
   }
 
   const attachments = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at').all(doc.id);
+  // ไฟล์ที่ยังเปิดได้จริง — ปุ่มทุกปุ่มที่พาไปเปิดไฟล์ต้องดูจากรายการนี้ ไม่ใช่ attachments ทั้งหมด
+  // เพราะไฟล์ที่ถูกทำลายตามระเบียบยังมีแถวอยู่ (เก็บไว้เป็นหลักฐาน) แต่ตัวไฟล์ไม่มีแล้ว
+  const liveAttachments = attachments.filter((a) => !a.destroyed_at);
   const steps = getWorkflowSteps(doc.id);
   const step = currentStep(doc.id);
   const comments = db.prepare(`
@@ -1444,8 +1464,8 @@ router.get('/documents/:id', requirePage((ctx) => {
         }${dueSummaryChip}</div>
       </div>
       <div class="chip-row">
-        <a class="btn btn-outline btn-sm" href="${attachments.length ? `/files/${attachments[0].id}` : `/documents/${doc.id}/print`}" target="_blank" rel="noopener">🖨️ พิมพ์เอกสาร${attachments.length ? ' (PDF ที่บันทึกไว้)' : ''}</a>
-        ${attachments.length ? `<a class="btn btn-outline btn-sm" href="/documents/${doc.id}/print" target="_blank" rel="noopener">📝 บันทึกข้อความ/สรุปลายเซ็น</a>` : ''}
+        <a class="btn btn-outline btn-sm" href="${liveAttachments.length ? `/files/${liveAttachments[0].id}` : `/documents/${doc.id}/print`}" target="_blank" rel="noopener">🖨️ พิมพ์เอกสาร${liveAttachments.length ? ' (PDF ที่บันทึกไว้)' : ''}</a>
+        ${liveAttachments.length ? `<a class="btn btn-outline btn-sm" href="/documents/${doc.id}/print" target="_blank" rel="noopener">📝 บันทึกข้อความ/สรุปลายเซ็น</a>` : ''}
         ${canVoid ? `<button class="btn btn-outline btn-sm" onclick="actionWithReason(this, '/documents/${doc.id}/void', 'ระบุเหตุผลที่ยกเลิกเอกสาร (เลขที่จะยังคงอยู่ในลำดับ ไม่ถูกนำไปใช้ซ้ำ)')">ยกเลิกเอกสาร</button>` : ''}
         ${canArchive ? `<button class="btn btn-outline btn-sm" onclick="fetch('/documents/${doc.id}/archive',{method:'POST'}).then(()=>location.reload())">📦 จัดเก็บเข้าแฟ้ม</button>` : ''}
         ${canForceDelete ? `<a class="btn btn-outline btn-sm" href="/admin/audit?document=${esc(doc.id)}">🧾 ประวัติการดำเนินการ (audit)</a>` : ''}
@@ -1488,7 +1508,18 @@ router.get('/documents/:id', requirePage((ctx) => {
 
         <div class="card">
           <div class="card-header"><h3 class="mt-0">ไฟล์แนบ (${attachments.length})</h3></div>
-          ${attachments.length ? attachments.map((a, i) => `
+          ${attachments.length ? attachments.map((a, i) => (a.destroyed_at ? `
+            <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
+              <!-- ไฟล์ถูกทำลายตามระเบียบแล้ว: คงชื่อไว้เป็นหลักฐานว่าเคยมีอะไร แต่ห้ามมีปุ่มให้กดเปิด
+                   เพราะไฟล์ไม่มีอยู่จริงแล้ว กดไปก็ได้แต่หน้าที่บอกว่าหาไม่เจอ -->
+              <div class="text-muted">🗄️ <s>${esc(a.filename)}</s>
+                <span style="font-size:.78rem">(${Math.round(a.filesize / 1024)} KB)</span>
+                <span class="badge badge-danger" style="margin-left:.4rem">ทำลายแล้ว</span>
+              </div>
+              <div class="text-muted" style="font-size:.78rem;margin-top:.2rem">
+                ไฟล์ถูกลบออกจากระบบถาวรเมื่อ ${fmtDate(a.destroyed_at)} ตามมติคณะกรรมการทำลายหนังสือ — คงรายการชื่อไฟล์ไว้เป็นหลักฐานประกอบบัญชีทำลาย
+              </div>
+            </div>` : `
             <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
               <div class="flex items-center justify-between flex-wrap gap-2">
                 <div>📄 ${esc(a.filename)} <span class="text-muted" style="font-size:.78rem">(${Math.round(a.filesize / 1024)} KB)</span>
@@ -1502,7 +1533,7 @@ router.get('/documents/:id', requirePage((ctx) => {
                 </div>
               </div>
               <div id="preview-${a.id}" style="display:none;margin-top:.6rem"></div>
-            </div>`).join('') : emptyState('📎', 'ยังไม่มีไฟล์แนบ')}
+            </div>`)).join('') : emptyState('📎', 'ยังไม่มีไฟล์แนบ')}
           <script>
             // ตราประทับ "ลงรับ" ซ้อนบนตัวอย่าง PDF ของไฟล์แรกเท่านั้น (แนวทางเดียวกับที่โปรแกรมสารบรรณ
             // ทั่วไปทำ — ปั๊มตราบนเอกสารต้นฉบับ) เฉพาะหนังสือรับเท่านั้น ลากวางตำแหน่งได้ (บันทึกอัตโนมัติ
@@ -1659,7 +1690,7 @@ router.get('/documents/:id', requirePage((ctx) => {
               }
             };
           </script>
-          <form id="addAttachForm" style="margin-top:.9rem">
+          ${canAttachTo(doc) ? `<form id="addAttachForm" style="margin-top:.9rem">
             <input type="file" id="addAttachInput" accept="application/pdf" onchange="attachFilePreview(this,'addAttachPreview')" />
             <div id="addAttachPreview" class="help-text"></div>
             <button class="btn btn-outline btn-sm" style="margin-top:.5rem" type="submit">แนบไฟล์เพิ่ม</button>
@@ -1669,7 +1700,9 @@ router.get('/documents/:id', requirePage((ctx) => {
               e.preventDefault();
               submitWithFile(this, 'addAttachInput', '/documents/${doc.id}/attachments', {});
             });
-          </script>
+          </script>` : `<p class="text-muted" style="margin-top:.9rem;font-size:.84rem">
+            หนังสือฉบับนี้${esc(NO_ATTACH_STATUSES[doc.status])} จึงแนบไฟล์เพิ่มไม่ได้อีก
+          </p>`}
         </div>
 
         <div class="card">
@@ -2191,6 +2224,8 @@ router.get('/files/:attachmentId/preview.png', requirePage(async (ctx) => {
   if (!att) throw httpError(404, 'ไม่พบไฟล์แนบ');
   const doc = getDocument(att.document_id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(403, 'คุณไม่มีสิทธิ์เปิดไฟล์นี้');
+  // ปฏิเสธตั้งแต่ต้นทาง ไม่ปล่อยให้ readAttachmentBytes ไปล้มเองกลางทางแล้วได้ error ที่ไม่ได้อธิบายอะไร
+  if (att.destroyed_at) throw httpError(410, 'ไฟล์นี้ถูกทำลายตามมติคณะกรรมการทำลายหนังสือแล้ว จึงดูตัวอย่างไม่ได้');
   const buf = await readAttachmentBytes(att, { preferStamped: ctx.query.original !== '1' });
   const png = await renderPdfFirstPageImage(buf);
   ctx.res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'private, no-store' });
@@ -2204,6 +2239,25 @@ router.get('/files/:attachmentId', requirePage(async (ctx) => {
   const doc = getDocument(att.document_id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) {
     return html(ctx, 403, '<h1>403</h1><p>คุณไม่มีสิทธิ์เปิดไฟล์นี้</p>');
+  }
+
+  // ไฟล์ที่ถูกทำลายตามระเบียบต้องบอกให้ชัดว่า "ถูกทำลาย" ไม่ใช่ "ไม่พบไฟล์" — สองอย่างนี้ต่างกันมาก
+  // สำหรับเอกสารราชการ อันแรกคือทำถูกต้องตามขั้นตอน อันหลังแปลว่าระบบทำของหาย ซึ่งต้องสืบหาสาเหตุ
+  // เดิมได้หน้าขาวเปล่าๆ ว่า "ไม่พบไฟล์" เหมือนกันทั้งสองกรณี ไม่มีทั้งเมนู ไม่มีทางกลับ
+  if (att.destroyed_at) {
+    return html(ctx, 410, layout({
+      user: ctx.user, title: 'ไฟล์ถูกทำลายแล้ว', path: '/documents',
+      content: `<div class="card">
+        <h2 class="mt-0">🗄️ ไฟล์นี้ถูกทำลายตามระเบียบแล้ว</h2>
+        <p>ไฟล์ <strong>${esc(att.filename)}</strong> ของหนังสือ
+          <a href="/documents/${doc.id}">${esc(doc.doc_number_display)} — ${esc(doc.title)}</a>
+          ถูกลบออกจากระบบถาวรเมื่อ ${fmtDate(att.destroyed_at)}
+          ตามมติคณะกรรมการทำลายหนังสือ จึงเปิดดูไม่ได้อีก</p>
+        <p class="text-muted">รายการทะเบียนและเลขที่หนังสือยังคงอยู่เป็นหลักฐานว่าเคยมีหนังสือฉบับนี้และถูกทำลายเมื่อใด
+          ดูรายละเอียดการทำลายได้ที่หน้า <a href="/retention">อายุการเก็บ/ทำลาย</a></p>
+        <a class="btn btn-outline" href="/documents/${doc.id}">← กลับไปหน้าหนังสือ</a>
+      </div>`,
+    }));
   }
 
   const useStamped = ctx.query.original !== '1' && att.stamped_storage_provider;

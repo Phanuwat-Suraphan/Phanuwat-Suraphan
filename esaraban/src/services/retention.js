@@ -190,6 +190,17 @@ export async function approveDestructionBatch({ batchId, actorUser, note }) {
         if (att.stamped_storage_provider === 'google_drive' && att.stamped_drive_file_id) driveFilesToDelete.push(att.stamped_drive_file_id);
         else if (att.stamped_filepath) localFilesToDelete.push(att.stamped_filepath);
       }
+      // ทำเครื่องหมายที่ตัวไฟล์แนบด้วย ไม่ใช่แค่ที่ตัวหนังสือ — เดิมแถวไฟล์แนบยังหน้าตาเหมือนไฟล์ปกติทุกอย่าง
+      // ผลคือทะเบียนยังขึ้น 📎 ว่า "มีไฟล์" หน้าหนังสือยังมีปุ่มให้กดเปิด/ประทับตรา และกดแล้วได้หน้าขาวว่า
+      // "ไม่พบไฟล์" ซึ่งแยกไม่ออกเลยว่าไฟล์ถูกทำลายตามระเบียบ หรือระบบทำไฟล์หาย
+      //
+      // ล้างตัวชี้ไฟล์ทิ้งด้วย เพราะมันชี้ไปยังไฟล์ที่กำลังจะถูกลบจริงในอีกไม่กี่บรรทัดข้างล่าง เก็บไว้มีแต่
+      // จะพาไปเปิดของที่ไม่มีอยู่ — แต่คงชื่อไฟล์/ขนาด/ค่าแฮชไว้ เพราะเป็นหลักฐานว่าทำลายอะไรไปบ้าง
+      db.prepare(`
+        UPDATE attachments SET destroyed_at = ?, filepath = NULL, drive_file_id = NULL,
+          stamped_storage_provider = NULL, stamped_filepath = NULL, stamped_drive_file_id = NULL
+        WHERE document_id = ?
+      `).run(now, doc.id);
     }
     db.prepare(`UPDATE destruction_batches SET status = 'approved', decided_by = ?, decision_note = ?, decided_at = ? WHERE id = ?`)
       .run(actorUser.id, note?.trim() || null, now, batchId);

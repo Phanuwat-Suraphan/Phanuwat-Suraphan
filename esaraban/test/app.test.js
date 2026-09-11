@@ -34,7 +34,7 @@ const {
 const { SCHOOL_POSITIONS } = await import('../src/services/positions.js');
 const { planUserImport, MAX_IMPORT_ROWS } = await import('../src/services/userImport.js');
 const { truncateFilename, MAX_HEADER_FILENAME_CHARS } = await import('../src/router.js');
-const { buildDocumentQuery, describeFilters, listRegisterYears } = await import('../src/services/documentQuery.js');
+const { buildDocumentQuery, describeFilters, listRegisterYears, listDocuments } = await import('../src/services/documentQuery.js');
 const { asText, asTextOrNull } = await import('../src/services/validate.js');
 const { setSetting, getSetting, invalidateSettingsCache } = await import('../src/services/settings.js');
 const { schoolName, schoolShortName, schoolInitials } = await import('../src/render.js');
@@ -934,6 +934,97 @@ describe('ทำลายหนังสือ: ผู้เสนอกับ�
     assert.equal(doc.status, 'destroyed');
     // เลขทะเบียนต้องยังอยู่เป็นหลักฐานว่าเคยมีหนังสือฉบับนี้ ไม่ใช่ลบทิ้งทั้งแถว
     assert.ok(doc.doc_number_display, 'เลขทะเบียนต้องคงอยู่หลังทำลาย');
+  });
+
+  // หลังทำลาย ตัวไฟล์ไม่มีอยู่จริงแล้ว แต่เดิมแถวไฟล์แนบยังหน้าตาเหมือนไฟล์ปกติทุกอย่าง ผลคือระบบ
+  // "โกหก" ผู้ใช้หลายที่พร้อมกัน และที่สำคัญกว่านั้นคือแยกไม่ออกระหว่าง "ทำลายตามระเบียบ" กับ
+  // "ระบบทำไฟล์หาย" ซึ่งสำหรับเอกสารราชการเป็นคนละเรื่องกันโดยสิ้นเชิง
+  describe('หลังทำลายแล้ว ระบบต้องบอกความจริงเรื่องไฟล์', () => {
+    async function destroyedDocWithFile() {
+      const doc = makeDoc({ title: 'เอกสารที่มีไฟล์แล้วถูกทำลาย' });
+      const up = await dispatchPost(registrarUser, `/documents/${doc.id}/attachments`, {
+        fileName: 'สแกนก่อนทำลาย.pdf', fileType: 'application/pdf',
+        fileDataBase64: Buffer.from(`%PDF-1.4\n% ${Math.random()}\ntrailer<</Root 1 0 R>>\n%%EOF\n`).toString('base64'),
+      });
+      assert.equal(up.status, 200, 'ต้องแนบไฟล์ได้ก่อน ไม่งั้นเทสต์นี้ไม่ได้ตรวจอะไร');
+      const oldYearBe = beYear() - 20;
+      db.prepare("UPDATE documents SET status = 'completed', year_be = ?, retention_until = ? WHERE id = ?")
+        .run(oldYearBe, computeRetentionUntil(oldYearBe, 'normal_10y'), doc.id);
+      const batchId = createDestructionBatch({
+        documentIds: [doc.id], committeeNames: 'กรรมการ ก\nกรรมการ ข\nกรรมการ ค',
+        reason: 'ครบอายุการเก็บ', actorUser: registrarUser,
+      });
+      await approveDestructionBatch({ batchId, actorUser: directorUser, note: 'เห็นชอบให้ทำลาย' });
+      return doc;
+    }
+
+    test('คงแถวไฟล์แนบไว้เป็นหลักฐาน แต่ทำเครื่องหมายว่าทำลายแล้วและล้างตัวชี้ไฟล์ทิ้ง', async () => {
+      const doc = await destroyedDocWithFile();
+      const att = db.prepare('SELECT * FROM attachments WHERE document_id = ?').get(doc.id);
+      assert.ok(att, 'ต้องคงแถวไว้ ไม่งั้นไม่เหลือหลักฐานว่าทำลายไฟล์อะไรไปบ้าง');
+      assert.ok(att.destroyed_at, 'ต้องทำเครื่องหมายว่าถูกทำลายแล้ว');
+      assert.equal(att.filepath, null, 'ตัวชี้ไฟล์ต้องถูกล้าง เพราะชี้ไปยังไฟล์ที่ถูกลบไปแล้ว');
+      assert.equal(att.drive_file_id, null);
+      assert.ok(att.filename && att.filesize, 'ชื่อไฟล์/ขนาดต้องคงไว้เป็นหลักฐานประกอบบัญชีทำลาย');
+    });
+
+    test('ทะเบียนต้องไม่ขึ้น 📎 ว่ายังมีไฟล์ และตัวกรอง "มีไฟล์แนบ" ต้องไม่พาไปเจอ', async () => {
+      const doc = await destroyedDocWithFile();
+      const rows = listDocuments(buildDocumentQuery(registrarUser, { direction: 'incoming' }));
+      const row = rows.find((r) => r.id === doc.id);
+      assert.ok(row, 'ทะเบียนต้องยังมีรายการอยู่ (ระเบียบกำหนดให้คงหลักฐานไว้)');
+      assert.equal(row.attachment_count, 0, 'ต้องไม่นับไฟล์ที่ถูกทำลายไปแล้วว่ายังมีอยู่');
+
+      const filtered = listDocuments(buildDocumentQuery(registrarUser, { direction: 'incoming', hasFile: '1' }));
+      assert.ok(!filtered.some((r) => r.id === doc.id),
+        'ตัวกรอง "เฉพาะที่มีไฟล์แนบ" ต้องไม่พาไปเจอหนังสือที่เปิดไฟล์ไม่ได้แล้ว');
+    });
+
+    test('เปิดไฟล์ที่ถูกทำลายต้องบอกว่า "ทำลายแล้ว" ไม่ใช่ "ไม่พบไฟล์"', async () => {
+      const doc = await destroyedDocWithFile();
+      const att = db.prepare('SELECT id FROM attachments WHERE document_id = ?').get(doc.id);
+      const res = await dispatchGet(registrarUser, `/files/${att.id}`, {});
+      assert.equal(res.status, 410, 'ต้องเป็น 410 Gone ไม่ใช่ 404 — ของนี้เคยมีอยู่และถูกทำลายอย่างตั้งใจ');
+      assert.match(res.body, /ทำลาย/, 'ต้องอธิบายว่าถูกทำลายตามระเบียบ ไม่ใช่หน้าขาวว่าหาไม่เจอ');
+    });
+
+    test('หน้าหนังสือต้องไม่มีปุ่มพาไปเปิดไฟล์ที่ถูกทำลายแล้ว', async () => {
+      const doc = await destroyedDocWithFile();
+      const att = db.prepare('SELECT id FROM attachments WHERE document_id = ?').get(doc.id);
+      const res = await dispatchGet(registrarUser, `/documents/${doc.id}`, {});
+      assert.equal(res.status, 200);
+      assert.ok(!res.body.includes(`/files/${att.id}`),
+        'ยังมีลิงก์พาไปเปิดไฟล์ที่ไม่มีอยู่แล้ว — กดไปก็ได้แต่หน้าที่บอกว่าเปิดไม่ได้');
+      assert.match(res.body, /ทำลายแล้ว/, 'ต้องยังแสดงชื่อไฟล์พร้อมบอกว่าถูกทำลายแล้ว');
+    });
+
+    // ทำลายแล้ว = คณะกรรมการมีมติและผู้บริหารอนุมัติ ไฟล์ถูกลบถาวร การแนบไฟล์ใหม่เข้าไปทำให้บัญชี
+    // ทำลายหนังสือกลายเป็นหลักฐานเท็จ — เดิมยิงเข้าไปตรงๆ แล้วแนบได้จริง (HTTP 200) และหน้าเว็บ
+    // ก็ยังโชว์ฟอร์ม "แนบไฟล์เพิ่ม" ให้กดอยู่ด้วย
+    test('แนบไฟล์เพิ่มเข้าหนังสือที่ถูกทำลายแล้วไม่ได้', async () => {
+      const doc = await destroyedDocWithFile();
+      const before = db.prepare('SELECT COUNT(*) c FROM attachments WHERE document_id = ?').get(doc.id).c;
+      const res = await dispatchPost(registrarUser, `/documents/${doc.id}/attachments`, {
+        fileName: 'แนบเข้าเอกสารที่ทำลายแล้ว.pdf', fileType: 'application/pdf',
+        fileDataBase64: Buffer.from('%PDF-1.4\n%%EOF\n').toString('base64'),
+      });
+      assert.equal(res.status, 409, `ต้องถูกปฏิเสธ แต่ได้ ${res.status}`);
+      assert.equal(db.prepare('SELECT COUNT(*) c FROM attachments WHERE document_id = ?').get(doc.id).c, before,
+        'ต้องไม่มีไฟล์ใหม่งอกเข้าไปในหนังสือที่ทำลายแล้ว');
+
+      const page = await dispatchGet(registrarUser, `/documents/${doc.id}`, {});
+      assert.ok(!page.body.includes('addAttachForm'), 'ต้องไม่โชว์ฟอร์มแนบไฟล์บนหนังสือที่ทำลายแล้ว');
+    });
+
+    test('หนังสือที่ยกเลิกแล้วก็แนบไฟล์เพิ่มไม่ได้เช่นกัน', async () => {
+      const doc = makeDoc({ title: 'เอกสารที่ถูกยกเลิก' });
+      db.prepare("UPDATE documents SET status = 'voided', void_reason = 'ยกเลิกเพื่อทดสอบ' WHERE id = ?").run(doc.id);
+      const res = await dispatchPost(registrarUser, `/documents/${doc.id}/attachments`, {
+        fileName: 'แนบเข้าเอกสารที่ยกเลิก.pdf', fileType: 'application/pdf',
+        fileDataBase64: Buffer.from('%PDF-1.4\n%%EOF\n').toString('base64'),
+      });
+      assert.equal(res.status, 409, `ต้องถูกปฏิเสธ แต่ได้ ${res.status}`);
+    });
   });
 
   // การอนุมัติคือจุดที่ย้อนกลับไม่ได้ — ไฟล์แนบถูกลบถาวร แต่เดิมตรวจเงื่อนไขแค่ตอน "ตั้งบัญชี" เท่านั้น
