@@ -266,6 +266,27 @@ describe('document lifecycle: assign -> approve -> acknowledge', () => {
     assert.equal(getDocument(doc.id).status, 'completed');
   });
 
+  // "การเกษียณหนังสือ" คือคำสั่งการจริงของเรื่องนั้น ระบบเก็บไว้ครบและโชว์ใน Timeline บนหน้าจอ
+  // แต่หน้าพิมพ์เดิมทิ้งไปหมด เหลือแต่ "ใครเซ็น" ไม่มี "สั่งว่าอะไร" — ฉบับที่พิมพ์เก็บเข้าแฟ้มจึงใช้
+  // อ้างอิงย้อนหลังไม่ได้จริง ทั้งที่ข้อมูลมีอยู่แล้วในระบบ
+  test('เอกสารที่พิมพ์ต้องมีข้อความเกษียณของผู้ลงนามแต่ละคน ไม่ใช่แค่ชื่อกับลายเซ็น', async () => {
+    const doc = makeDoc({ title: 'หนังสือที่มีการเกษียณ' });
+    assignStep({ documentId: doc.id, assigneeId: teacherUser.id, instruction: 'โปรดพิจารณา', actorUser: registrarUser });
+    const step1 = currentStep(doc.id);
+    approveAndForward({ stepId: step1.id, nextAssigneeId: adminUser.id, comment: 'มอบงานวิชาการดำเนินการและรายงานผล', actorUser: teacherUser });
+    const step2 = currentStep(doc.id);
+    acknowledgeAndComplete({ stepId: step2.id, comment: 'รับทราบ จะดำเนินการภายในสัปดาห์นี้', actorUser: adminUser });
+
+    const res = await dispatchGet(loadUserForTest(seed.userIds.reg001), `/documents/${doc.id}/print`, {});
+    assert.equal(res.status, 200);
+    for (const note of ['มอบงานวิชาการดำเนินการและรายงานผล', 'รับทราบ จะดำเนินการภายในสัปดาห์นี้']) {
+      assert.ok(res.body.includes(note), `เอกสารที่พิมพ์ต้องมีข้อความเกษียณ "${note}"`);
+    }
+    // ต้องยังมีชื่อผู้ลงนามครบเหมือนเดิม ไม่ใช่เอาข้อความมาแทนที่บล็อกลายเซ็น
+    assert.match(res.body, /sig-block/, 'ต้องยังมีบล็อกลายเซ็นอยู่');
+    assert.match(res.body, /sig-note/, 'ต้องมีบล็อกข้อความเกษียณด้วย');
+  });
+
   test('reject sets a distinct rejected status', () => {
     const doc = makeDoc({ title: 'ทดสอบปฏิเสธ' });
     assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });

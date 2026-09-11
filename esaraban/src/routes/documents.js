@@ -1039,16 +1039,24 @@ router.get('/documents/:id/print', requirePage((ctx) => {
     ? `<p>อ้างถึง หนังสือจาก ${esc(doc.correspondent_name)}${doc.external_doc_number ? ` ที่ ${esc(doc.external_doc_number)}` : ''}${doc.external_doc_date ? ` ลงวันที่ ${fmtThaiDateLong(doc.external_doc_date)}` : ''}</p>`
     : '';
 
+  // ข้อความที่ผู้ลงนามเขียนกำกับไว้ (การ "เกษียณหนังสือ") ต้องพิมพ์ออกมาด้วย ไม่ใช่แค่ชื่อกับลายเซ็น
+  //
+  // เกษียณหนังสือคือคำสั่งการจริงๆ ของเรื่องนั้น ("มอบงานวิชาการดำเนินการและรายงานผลภายในวันที่...")
+  // ระบบเก็บไว้ครบและแสดงอยู่ใน Timeline บนหน้าจอ แต่เดิมหน้าพิมพ์ทิ้งไปทั้งหมด เหลือแต่ว่า "ใครเซ็น"
+  // ไม่มี "สั่งว่าอะไร" — ฉบับที่พิมพ์เก็บเข้าแฟ้มจึงใช้อ้างอิงย้อนหลังไม่ได้จริง ทั้งที่ข้อมูลมีอยู่แล้ว
   const signatureBlocksHtml = signedSteps.length ? signedSteps.map((s) => {
     const who = signerIdentity(s);
     return `
-    <div class="sig-block">
-      ${s.signature_image
-        ? `<img src="${esc(s.signature_image)}" alt="ลายเซ็น ${esc(who.name)}" />`
-        : '<div class="sig-space"></div>'}
-      <div class="sig-line">(${esc(who.name)})</div>
-      ${who.position ? `<div class="sig-line">${esc(who.position)}</div>` : ''}
-      <div class="sig-line">${fmtThaiDateLong(s.decided_at)}</div>
+    <div class="sig-row">
+      ${s.instruction ? `<div class="sig-note">${esc(s.instruction).replace(/\n/g, '<br/>')}</div>` : ''}
+      <div class="sig-block">
+        ${s.signature_image
+          ? `<img src="${esc(s.signature_image)}" alt="ลายเซ็น ${esc(who.name)}" />`
+          : '<div class="sig-space"></div>'}
+        <div class="sig-line">(${esc(who.name)})</div>
+        ${who.position ? `<div class="sig-line">${esc(who.position)}</div>` : ''}
+        <div class="sig-line">${fmtThaiDateLong(s.decided_at)}</div>
+      </div>
     </div>`;
   }).join('') : '<p class="text-muted" style="text-align:center;padding:1rem 0">ยังไม่มีผู้ลงนามในขั้นตอนใดเลย</p>';
 
@@ -1065,7 +1073,10 @@ router.get('/documents/:id/print', requirePage((ctx) => {
   .field-label { font-weight: 700; }
   p { margin: .3rem 0; }
   .body-text { margin: 1.2rem 0; text-indent: 2.5em; white-space: pre-wrap; }
-  .sig-block { text-align: center; margin: 0 0 0 auto; width: 220px; margin-top: 2.5rem; }
+  /* ข้อความเกษียณอยู่เหนือบล็อกลายเซ็นของคนที่เขียน และห้ามถูกตัดคนละหน้ากับลายเซ็นเจ้าของข้อความ */
+  .sig-row { page-break-inside: avoid; margin-top: 2.2rem; }
+  .sig-note { white-space: pre-wrap; font-size: 15pt; border-left: 3px solid #bbb; padding: .1rem 0 .1rem .7rem; margin: 0 0 .2rem; }
+  .sig-block { text-align: center; margin: 0 0 0 auto; width: 220px; margin-top: .6rem; }
   .sig-block img { max-height: 70px; max-width: 200px; }
   /* ผู้ลงนามที่ไม่ได้เก็บรูปลายเซ็นไว้ในโปรไฟล์ — เว้นช่องสูงเท่ารูปไว้ให้เซ็นด้วยปากกาบนกระดาษที่พิมพ์ออกมา */
   .sig-block .sig-space { height: 70px; }
