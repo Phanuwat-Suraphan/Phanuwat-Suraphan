@@ -148,18 +148,36 @@ async function snapshotBuffer() {
 const status = { lastOkAt: null, lastError: null, lastAttemptAt: null };
 
 /**
+ * เดาว่าเซิร์ฟเวอร์นี้ใช้ดิสก์แบบ "ล้างทุกครั้งที่ deploy" หรือเปล่า
+ *
+ * เรื่องนี้เปลี่ยนความหมายของคำว่า "ยังไม่ได้สำรองข้อมูล" ไปคนละเรื่องเลย: บนเครื่องของโรงเรียนที่มี
+ * ดิสก์จริง การไม่สำรองคือความเสี่ยง (ดิสก์เสีย/ไฟล์โดนลบ) แต่บนโฮสต์ฟรีอย่าง Render การไม่สำรอง
+ * แปลว่า "ข้อมูลจะหายแน่นอน 100% ในการ deploy ครั้งถัดไป" ซึ่งต้องเตือนคนละระดับกัน
+ *
+ * Render ตั้ง RENDER=true ให้ทุก service อัตโนมัติ — แต่ถ้าเดาผิด (โฮสต์อื่น หรือ Render ที่ต่อ
+ * persistent disk ไว้) ก็ยังเตือนอยู่ดี เพียงแต่เป็นแถบเหลืองที่ปิดได้ ไม่ใช่แถบแดงที่ปิดไม่ได้
+ * ตั้ง EPHEMERAL_DISK=1 หรือ 0 เพื่อบอกตรงๆ ได้ถ้าการเดาไม่ตรงกับความจริง
+ */
+export function looksEphemeral() {
+  const explicit = (process.env.EPHEMERAL_DISK || '').trim();
+  if (explicit === '1') return true;
+  if (explicit === '0') return false;
+  return process.env.RENDER === 'true' || Boolean(process.env.RENDER_SERVICE_ID);
+}
+
+/**
  * สถานะการสำรองข้อมูลสำหรับแสดงในหน้าเว็บ
  * ok = ปกติ, warn = เปิดใช้แล้วแต่ยังสำรองไม่สำเร็จสักครั้ง/ล่าสุดล้มเหลว, off = ยังไม่ได้เปิดใช้
  */
 export function getBackupStatus() {
-  if (!isBackupEnabled()) return { state: 'off', ...status };
+  if (!isBackupEnabled()) return { state: 'off', ephemeral: looksEphemeral(), ...status };
   // ให้เวลาตั้งตัวหนึ่งรอบหลังเพิ่งเปิดเซิร์ฟเวอร์ ยังไม่ต้องเตือนทันที
   const staleAfterMs = BACKUP_INTERVAL_MS * 3;
   if (status.lastError && (!status.lastOkAt || status.lastError.at > status.lastOkAt)) {
-    return { state: 'warn', ...status };
+    return { state: 'warn', ephemeral: looksEphemeral(), ...status };
   }
-  if (status.lastOkAt && Date.now() - status.lastOkAt > staleAfterMs) return { state: 'warn', ...status };
-  return { state: status.lastOkAt ? 'ok' : 'pending', ...status };
+  if (status.lastOkAt && Date.now() - status.lastOkAt > staleAfterMs) return { state: 'warn', ephemeral: looksEphemeral(), ...status };
+  return { state: status.lastOkAt ? 'ok' : 'pending', ephemeral: looksEphemeral(), ...status };
 }
 
 let backingUp = false;

@@ -36,6 +36,71 @@ function timeGreeting() {
   return { text: 'ทำงานดึกแล้วนะครับ พักผ่อนด้วยนะครับ', emoji: '🌙' };
 }
 
+/**
+ * แถบเตือนเรื่องการสำรองข้อมูลขึ้น Google Drive
+ *
+ * บนโฮสต์ที่ดิสก์ถูกล้างทุกครั้งที่ deploy การสำรองคือสิ่งเดียวที่กันทะเบียนหนังสือทั้งเล่มหาย
+ * เดิมเตือนเฉพาะตอน "เคยต่อไว้แล้วแต่พัง" (state = warn) ส่วนกรณี **ยังไม่เคยต่อเลย** (state = off)
+ * กลับเงียบสนิททั้งระบบ มีแค่บรรทัดเดียวใน log ตอนเปิดเซิร์ฟเวอร์ที่ไม่มีใครเปิดดู — ซึ่งเป็นสภาพ
+ * ที่ทำให้ข้อมูลหายจริงมาแล้ว เพราะไม่มีอะไรบอกเลยว่ากำลังใช้ระบบอยู่บนทรายและกำลังจะเสียของ
+ *
+ * แยกความแรงของคำเตือนตามชนิดของดิสก์: บนโฮสต์ที่ล้างดิสก์ ข้อมูลจะหาย "แน่นอน" จึงเป็นแถบแดง
+ * ปิดไม่ได้ ส่วนบนเครื่องที่มีดิสก์จริงเป็นแค่ความเสี่ยง จึงเป็นแถบเหลืองที่ปิดเก็บไว้ได้ เพื่อไม่ให้
+ * กลายเป็นเสียงรบกวนที่ทุกคนเรียนรู้ที่จะมองข้าม (แล้วพลอยมองข้ามตอนที่มันสำคัญจริงๆ ด้วย)
+ */
+function backupWarningHtml(backup) {
+  if (backup.state === 'ok' || backup.state === 'pending') return '';
+
+  if (backup.state === 'off') {
+    if (!backup.ephemeral) {
+      return `<div class="alert alert-warning" id="backupOffNote" hidden>
+        <strong>💾 ยังไม่ได้ตั้งค่าสำรองข้อมูลขึ้น Google Drive</strong>
+        — ถ้าดิสก์ของเครื่องนี้เสียหาย ทะเบียนหนังสือทั้งเล่มจะไม่มีสำเนาให้กู้คืน
+        <div style="margin-top:.5rem">
+          <a class="btn btn-outline btn-sm" href="/admin/google-drive">ตั้งค่าการสำรองข้อมูล</a>
+          <button class="btn btn-outline btn-sm" onclick="dismissBackupNote()">รับทราบแล้ว ไม่ต้องเตือนอีก</button>
+        </div>
+      </div>
+      <script>
+        // เครื่องที่มีดิสก์จริงและโรงเรียนรับความเสี่ยงนี้แล้ว ไม่ควรโดนเตือนซ้ำทุกวันจนชิน
+        (function () {
+          var el = document.getElementById('backupOffNote');
+          if (el && localStorage.getItem('esaraban_backup_note_dismissed') !== '1') el.hidden = false;
+        })();
+        function dismissBackupNote() {
+          try { localStorage.setItem('esaraban_backup_note_dismissed', '1'); } catch (e) { /* โหมดส่วนตัว */ }
+          var el = document.getElementById('backupOffNote');
+          if (el) el.hidden = true;
+        }
+      </script>`;
+    }
+    return `<div class="alert alert-danger">
+      <strong>🚨 ยังไม่ได้เชื่อมต่อ Google Drive — ข้อมูลทั้งหมดจะหายในการ deploy ครั้งถัดไป</strong>
+      <div style="margin-top:.35rem">
+        เซิร์ฟเวอร์นี้ใช้ดิสก์แบบชั่วคราว ทุกครั้งที่มีการ deploy ใหม่หรือเซิร์ฟเวอร์ถูกรีสตาร์ท
+        ทะเบียนหนังสือ ไฟล์แนบ ใบลา และรหัสผ่านที่ทุกคนตั้งไว้ <strong>จะถูกล้างทิ้งทั้งหมด</strong>
+        การเชื่อม Google Drive เป็นวิธีเดียวที่ทำให้ข้อมูลอยู่รอด
+      </div>
+      <div style="margin-top:.5rem">
+        <a class="btn btn-primary btn-sm" href="/admin/google-drive">เชื่อมต่อ Google Drive เดี๋ยวนี้</a>
+      </div>
+    </div>`;
+  }
+
+  // state = warn: เคยเชื่อมต่อไว้แล้ว แต่การสำรองล่าสุดล้มเหลวหรือเงียบไปนานผิดปกติ
+  return `<div class="alert alert-danger">
+    <strong>⚠️ ข้อมูลกำลังไม่ถูกสำรองขึ้น Google Drive</strong><br/>
+    ${backup.lastOkAt
+      ? `สำรองสำเร็จครั้งล่าสุดเมื่อ ${esc(fmtDate(new Date(backup.lastOkAt).toISOString()))}`
+      : 'ยังสำรองไม่สำเร็จเลยสักครั้งตั้งแต่เปิดระบบ'}
+    ${backup.lastError ? `<br/><span class="text-muted">สาเหตุ: ${esc(backup.lastError.message)}</span>` : ''}
+    <div style="margin-top:.5rem">
+      ${backup.ephemeral ? 'ถ้าเซิร์ฟเวอร์ถูก deploy ใหม่ตอนนี้ <strong>ข้อมูลที่บันทึกไว้จะหายทั้งหมด</strong> — ' : ''}
+      กรุณาไปที่ <a href="/admin/google-drive">เชื่อมต่อ Google Drive</a> เพื่อเชื่อมต่อบัญชีใหม่
+    </div>
+  </div>`;
+}
+
 router.get('/', requirePage((ctx) => {
   const user = ctx.user;
   const scope = { me: user.id, today: todayInBangkok() };
@@ -111,24 +176,11 @@ router.get('/', requirePage((ctx) => {
     </div>`;
   }
 
-  // แถบเตือนเมื่อการสำรองข้อมูลขึ้น Google Drive มีปัญหา — บนโฮสต์ที่ดิสก์ถูกล้างทุกครั้งที่ deploy
-  // การสำรองคือสิ่งเดียวที่กันทะเบียนหนังสือทั้งเล่มหาย ถ้ามันพังต้องรู้ทันที ไม่ใช่ไปรู้ตอนข้อมูลหายแล้ว
-  // (เคสจริงที่ต้องกัน: token ของ Google หมดอายุ แล้วการสำรองหยุดเงียบๆ โดยมีแค่บรรทัดใน log)
-  // แสดงเฉพาะแอดมิน/ธุรการ เพราะเป็นกลุ่มที่แก้ไขได้จริง — ครูทั่วไปเห็นแล้วทำอะไรไม่ได้ มีแต่ตกใจเปล่า
+  // แถบเตือนเรื่องการสำรองข้อมูล — แสดงเฉพาะแอดมิน/ธุรการ เพราะเป็นกลุ่มที่แก้ไขได้จริง
+  // ครูทั่วไปเห็นแล้วทำอะไรไม่ได้ มีแต่ตกใจเปล่า
   const canFixBackup = user.roleCodes.some((r) => ['admin', 'registrar'].includes(r));
   const backup = canFixBackup ? getBackupStatus() : null;
-  const backupAlert = backup && backup.state === 'warn' ? `
-    <div class="alert alert-danger">
-      <strong>⚠️ ข้อมูลกำลังไม่ถูกสำรองขึ้น Google Drive</strong><br/>
-      ${backup.lastOkAt
-        ? `สำรองสำเร็จครั้งล่าสุดเมื่อ ${esc(fmtDate(new Date(backup.lastOkAt).toISOString()))}`
-        : 'ยังสำรองไม่สำเร็จเลยสักครั้งตั้งแต่เปิดระบบ'}
-      ${backup.lastError ? `<br/><span class="text-muted">สาเหตุ: ${esc(backup.lastError.message)}</span>` : ''}
-      <div style="margin-top:.5rem">
-        ถ้าเซิร์ฟเวอร์ถูก deploy ใหม่ตอนนี้ <strong>ข้อมูลที่บันทึกไว้จะหายทั้งหมด</strong> —
-        กรุณาไปที่ <a href="/admin/google-drive">เชื่อมต่อ Google Drive</a> เพื่อเชื่อมต่อบัญชีใหม่
-      </div>
-    </div>` : '';
+  const backupAlert = !backup ? '' : backupWarningHtml(backup);
 
   const greeting = timeGreeting();
   const content = `

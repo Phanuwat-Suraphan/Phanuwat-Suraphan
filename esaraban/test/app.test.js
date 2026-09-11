@@ -4752,6 +4752,84 @@ describe('ตราประทับ: สามช่องแถบล่า�
 // โฮสต์ฟรีทุกเจ้าใช้ดิสก์ชั่วคราว ฐานข้อมูลจึงหายทุกครั้งที่ deploy — ระบบสำรองขึ้น Google Drive
 // คือสิ่งเดียวที่กันทะเบียนหนังสือทั้งเล่มหาย ถ้าสำเนาที่สร้างขึ้นมาใช้กู้คืนไม่ได้จริง จะไม่มีใครรู้
 // จนถึงวันที่ต้องใช้มันจริงๆ
+// เดิมระบบเตือนเฉพาะตอน "เคยต่อ Drive ไว้แล้วแต่พัง" ส่วนกรณี **ยังไม่เคยต่อเลย** เงียบสนิททั้งระบบ
+// มีแค่บรรทัดเดียวใน log ตอนเปิดเซิร์ฟเวอร์ — ซึ่งเป็นสภาพที่ทำให้ข้อมูลหายจริงมาแล้ว
+describe('เตือนเรื่องสำรองข้อมูล: ต้องรู้ก่อนข้อมูลหาย ไม่ใช่หลังจากนั้น', () => {
+  const dash = (user) => dispatchGet(user, '/', {});
+  const admin = () => loadUserForTest(seed.userIds.admin);
+  const teacher = () => loadUserForTest(seed.userIds.teacher001);
+
+  // process ของเทสต์ไม่ได้ตั้ง GOOGLE_* ไว้ การสำรองจึงอยู่ในสถานะ "ยังไม่ได้เชื่อมต่อ" ตามธรรมชาติ
+  test('ยังไม่ได้เชื่อมต่อ Drive ต้องมีคำเตือน ไม่ใช่เงียบสนิท', async () => {
+    const { getBackupStatus } = await import('../src/services/dbBackup.js');
+    assert.equal(getBackupStatus().state, 'off', 'เทสต์นี้ต้องรันในสถานะยังไม่ได้เชื่อมต่อ');
+    const res = await dash(admin());
+    assert.equal(res.status, 200);
+    // ต้องเจาะจงข้อความของ "แถบเตือน" จริงๆ ห้ามจับแค่คำว่า "สำรองข้อมูล" ลอยๆ เพราะเมนูข้าง
+    // มีรายการ "สำเนาสำรองข้อมูล" อยู่แล้วทุกหน้า เทสต์จะผ่านทั้งที่ไม่มีคำเตือนสักตัว (เจอมาแล้ว)
+    assert.match(res.body, /ยังไม่ได้ตั้งค่าสำรองข้อมูล|ยังไม่ได้เชื่อมต่อ Google Drive/,
+      'แดชบอร์ดของผู้ดูแลต้องมีแถบเตือน ไม่ใช่ปล่อยให้ใช้ไปโดยไม่รู้ว่าไม่มีสำเนาเลยสักชุด');
+  });
+
+  test('ครูทั่วไปต้องไม่เห็นคำเตือนที่ตัวเองแก้ไม่ได้', async () => {
+    const res = await dash(teacher());
+    assert.equal(res.status, 200);
+    assert.doesNotMatch(res.body, /ยังไม่ได้ตั้งค่าสำรองข้อมูล|จะหายในการ deploy/,
+      'ครูเห็นแล้วทำอะไรไม่ได้ มีแต่ตกใจเปล่า');
+  });
+
+  // ความแรงของคำเตือนต้องตรงกับความจริงของเครื่องนั้น ถ้าขู่ว่า "ข้อมูลจะหายแน่นอน" บนเครื่องที่มี
+  // ดิสก์จริง คำเตือนจะกลายเป็นเสียงรบกวนที่ทุกคนเรียนรู้ที่จะมองข้าม แล้วพลอยมองข้ามตอนสำคัญจริงด้วย
+  test('แยกความแรงตามชนิดดิสก์ และเคารพค่าที่ตั้งมาเองเสมอ', async () => {
+    const { looksEphemeral } = await import('../src/services/dbBackup.js');
+    const saved = { render: process.env.RENDER, id: process.env.RENDER_SERVICE_ID, ex: process.env.EPHEMERAL_DISK };
+    const restore = () => {
+      for (const [k, v] of [['RENDER', saved.render], ['RENDER_SERVICE_ID', saved.id], ['EPHEMERAL_DISK', saved.ex]]) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+    };
+    try {
+      delete process.env.RENDER; delete process.env.RENDER_SERVICE_ID; delete process.env.EPHEMERAL_DISK;
+      assert.equal(looksEphemeral(), false, 'เครื่องทั่วไปต้องไม่ถูกเดาว่าดิสก์ถูกล้าง');
+
+      process.env.RENDER = 'true';
+      assert.equal(looksEphemeral(), true, 'บน Render ต้องรู้ว่าดิสก์ถูกล้างทุกครั้งที่ deploy');
+
+      // ค่าที่ตั้งมาเองต้องชนะการเดาเสมอ ทั้งสองทิศทาง — เผื่อการเดาไม่ตรงกับความจริงของโฮสต์นั้น
+      process.env.EPHEMERAL_DISK = '0';
+      assert.equal(looksEphemeral(), false, 'ตั้ง EPHEMERAL_DISK=0 แล้วต้องเชื่อค่าที่ตั้ง');
+      delete process.env.RENDER;
+      process.env.EPHEMERAL_DISK = '1';
+      assert.equal(looksEphemeral(), true, 'ตั้ง EPHEMERAL_DISK=1 แล้วต้องเชื่อค่าที่ตั้ง');
+    } finally { restore(); }
+  });
+
+  test('บนดิสก์ที่ถูกล้าง ต้องบอกตรงๆ ว่าข้อมูลจะหาย และปิดแถบเตือนไม่ได้', async () => {
+    const saved = process.env.RENDER;
+    process.env.RENDER = 'true';
+    try {
+      const res = await dash(admin());
+      assert.match(res.body, /จะหายในการ deploy ครั้งถัดไป/,
+        'ต้องบอกผลที่จะเกิดขึ้นจริงๆ ไม่ใช่แค่ "ยังไม่ได้ตั้งค่า" ซึ่งฟังดูไม่เร่งด่วน');
+      const warnBlock = res.body.slice(res.body.indexOf('จะหายในการ deploy') - 800, res.body.indexOf('จะหายในการ deploy') + 800);
+      assert.ok(!warnBlock.includes('ไม่ต้องเตือนอีก'), 'กรณีนี้ต้องปิดแถบเตือนไม่ได้');
+      assert.match(res.body, /\/admin\/google-drive/, 'ต้องมีทางไปแก้ได้จากแถบเตือนเลย');
+    } finally { if (saved === undefined) delete process.env.RENDER; else process.env.RENDER = saved; }
+  });
+
+  test('บนเครื่องที่มีดิสก์จริง ต้องเตือนเบากว่าและปิดเก็บได้', async () => {
+    const saved = process.env.EPHEMERAL_DISK;
+    process.env.EPHEMERAL_DISK = '0';
+    try {
+      const res = await dash(admin());
+      assert.match(res.body, /ยังไม่ได้ตั้งค่าสำรองข้อมูล/);
+      assert.doesNotMatch(res.body, /จะหายในการ deploy ครั้งถัดไป/,
+        'ขู่เกินจริงบนเครื่องที่ดิสก์ไม่ได้ถูกล้าง');
+      assert.match(res.body, /ไม่ต้องเตือนอีก/, 'ต้องปิดเก็บได้ ไม่งั้นกลายเป็นเสียงรบกวนถาวร');
+    } finally { if (saved === undefined) delete process.env.EPHEMERAL_DISK; else process.env.EPHEMERAL_DISK = saved; }
+  });
+});
+
 describe('สำรองฐานข้อมูล: สำเนาต้องกู้คืนได้จริงและครบถ้วน', () => {
   test('VACUUM INTO ได้ไฟล์ฐานข้อมูลที่เปิดอ่านได้และข้อมูลครบ แม้เปิดโหมด WAL อยู่', () => {
     // ห้ามคัดลอกไฟล์ .db ตรงๆ เพราะโหมด WAL เก็บข้อมูลที่เพิ่งเขียนไว้ในไฟล์ -wal แยกต่างหาก
