@@ -263,7 +263,12 @@ router.get('/leave/:id', requirePage((ctx) => {
         if (action === 'reject' && !note.trim()) { toast('กรุณาระบุเหตุผล', 'warning'); return; }
         fetch('/leave/${req.id}/' + action, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({note})})
           .then(r => r.json().then(d => ({ok:r.ok,d})))
-          .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
+          .then(({ok,d}) => {
+            if(!ok) throw new Error(d.error);
+            // อนุมัติสำเร็จแล้วแต่ตั้งผู้รักษาการแทนไม่ได้ — ต้องให้ผู้อนุมัติเห็นก่อนหน้าจะรีเฟรชหนีไป
+            if (d.delegationWarning) { alert(d.delegationWarning); }
+            location.reload();
+          })
           .catch(e => toast(e.message, 'danger'));
       }
       function cancelRequest() {
@@ -434,8 +439,8 @@ router.post('/leave', requireApi(async (ctx) => {
 }));
 
 router.post('/leave/:id/approve', requireApi(async (ctx) => {
-  approveLeaveRequest({ id: ctx.params.id, note: ctx.body.note, actorUser: ctx.user });
-  json(ctx, 200, { ok: true });
+  const result = approveLeaveRequest({ id: ctx.params.id, note: ctx.body.note, actorUser: ctx.user });
+  json(ctx, 200, { ok: true, ...result });
 }));
 
 router.post('/leave/:id/reject', requireApi(async (ctx) => {

@@ -295,15 +295,43 @@ export function approveLeaveRequest({ id, note, actorUser }) {
 
   // ถ้าผู้ขอระบุผู้รักษาการแทนไว้ตอนยื่นคำขอ ให้สร้างการมอบหมายอัตโนมัติทันทีที่อนุมัติ — ผูกช่วงวันที่
   // เดียวกับวันลา ไม่ต้องให้ผู้ขอไปตั้งค่าซ้ำอีกรอบที่หน้า /delegations เอง
+  //
+  // ขั้นตอนนี้ต้อง "ล้มแล้วไม่ลากใบลาล้มตาม" เด็ดขาด เพราะใบลาถูกบันทึกว่าอนุมัติ แจ้งเตือนผู้ขอ และ
+  // ลงลายมือชื่อไปแล้วตั้งแต่ด้านบน ถ้าปล่อย error ทะลุออกไป ผู้อนุมัติจะเห็นหน้า error ทั้งที่กดสำเร็จ
+  // แล้วกดซ้ำก็จะเจอ "ตัดสินไปแล้ว" (409) ซึ่งงงหนักกว่าเดิม
+  //
+  // กรณีชนกับการมอบหมายเดิมแก้ด้วย supersedeOverlapping แต่ยังมีทางล้มอื่นที่ไม่ได้ครอบไว้ และเกิดขึ้น
+  // จริงได้: ผู้รักษาการแทนที่ระบุไว้ตอนยื่น ลาออก/ถูกปิดบัญชี ก่อนที่ ผอ. จะกดอนุมัติ (ทดสอบยืนยันแล้ว
+  // ว่าใบลากลายเป็น approved ในฐานข้อมูล แต่ผู้อนุมัติได้ HTTP 400 และไม่มีผู้รักษาการแทนถูกตั้งเลย)
+  //
+  // จึงจับไว้แล้วรายงานกลับไปแทน: การอนุมัติยังสำเร็จ ส่วนเรื่องผู้รักษาการแทนกลายเป็นงานค้างที่ "มีคนรู้"
+  // ไม่ใช่ช่องโหว่เงียบๆ ที่ไม่มีใครคุมงานแทนแล้วไม่มีใครทราบ
   if (req.delegate_id) {
-    createDelegation({
-      delegatorId: req.requester_id, delegateId: req.delegate_id, startDate: req.start_date, endDate: req.end_date,
-      reason: `${LEAVE_TYPE_LABEL[req.leave_type]}: ${req.reason}`, leaveRequestId: id, createdBy: actorUser.id,
-      // ใบลาถูกบันทึกว่าอนุมัติไปแล้วด้านบน ถ้าชนกับการมอบหมายเดิมแล้วโยน error ออกไป ใบลาจะค้างครึ่งๆ
-      // และผู้อนุมัติเห็นแต่หน้า error ทั้งที่กดสำเร็จ — ให้แทนที่รายการเดิมแทน (ดูเหตุผลใน delegation.js)
-      supersedeOverlapping: true,
-    });
+    try {
+      createDelegation({
+        delegatorId: req.requester_id, delegateId: req.delegate_id, startDate: req.start_date, endDate: req.end_date,
+        reason: `${LEAVE_TYPE_LABEL[req.leave_type]}: ${req.reason}`, leaveRequestId: id, createdBy: actorUser.id,
+        supersedeOverlapping: true,
+      });
+    } catch (err) {
+      const reason = err?.message || 'ไม่ทราบสาเหตุ';
+      audit({
+        userId: actorUser.id, action: 'leave_delegation_failed', tableName: 'leave_requests', recordId: id,
+        detail: { delegateId: req.delegate_id, reason },
+      });
+      const warning = `อนุมัติคำขอเรียบร้อยแล้ว แต่ตั้งผู้รักษาการแทนให้อัตโนมัติไม่สำเร็จ (${reason}) — กรุณามอบหมายผู้รักษาการแทนเองที่เมนู "มอบหมายรักษาการแทน"`;
+      // แจ้งทั้งผู้อนุมัติและผู้ขอ เพราะข้อความตอบกลับบนหน้าจอหายไปทันทีที่ปิดหน้า แต่ "ไม่มีคนคุมงานแทน"
+      // เป็นเรื่องที่ต้องตามเก็บจริง และผู้ขอคือคนที่เดือดร้อนถ้าไม่มีใครรักษาการแทนให้
+      for (const uid of new Set([actorUser.id, req.requester_id])) {
+        notifyUser({
+          userId: uid, linkUrl: `/leave/${id}`, priority: 'warning',
+          title: 'ยังไม่มีผู้รักษาการแทนสำหรับการลานี้', message: warning,
+        });
+      }
+      return { delegationWarning: warning };
+    }
   }
+  return {};
 }
 
 export function rejectLeaveRequest({ id, note, actorUser }) {

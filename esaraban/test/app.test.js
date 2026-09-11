@@ -1369,6 +1369,56 @@ describe('ลา/ไปราชการ: สิทธิ์ต้องบั�
     });
   }
 
+  // การอนุมัติถูกบันทึก แจ้งเตือนผู้ขอ และลงลายมือชื่อไปแล้ว "ก่อน" ที่จะไปสร้างการมอบหมายรักษาการแทน
+  // ถ้าขั้นตอนหลังล้มแล้วปล่อย error ทะลุออกไป ใบลาจะค้างครึ่งๆ: ในฐานข้อมูลอนุมัติแล้ว แต่ผู้อนุมัติ
+  // เห็นหน้า error และถ้ากดซ้ำจะเจอ "ตัดสินไปแล้ว" ซึ่งงงหนักกว่าเดิม
+  describe('ขั้นตอนตั้งผู้รักษาการแทนล้ม ต้องไม่ลากการอนุมัติล้มตาม', () => {
+    // สร้างครูขึ้นมาใหม่ทุกครั้ง เพื่อไม่ให้การปิดบัญชีในเทสต์นี้ไปกระทบบัญชีที่เทสต์ข้ออื่นใช้อยู่
+    let n = 0;
+    const newDelegate = () => {
+      const id = `deleg-${Date.now()}-${n++}`;
+      db.prepare(`
+        INSERT INTO users (id, employee_code, first_name, last_name, department_id, password_hash, pin_hash,
+          status, must_change_password, created_at, updated_at)
+        VALUES (?, ?, 'ครูรักษาการ', 'แทน', ?, ?, ?, 'active', 0, ?, ?)
+      `).run(id, id, deptId, hashSecret('TempPass1234'), hashSecret('482913'), nowIso(), nowIso());
+      db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)').run(id, seed.roleIds.teacher);
+      return { id };
+    };
+
+    // เกิดขึ้นจริงได้: ผู้รักษาการแทนที่ระบุไว้ตอนยื่น ลาออก/ถูกปิดบัญชี ก่อนที่ ผอ. จะกดอนุมัติ
+    test('ผู้รักษาการแทนถูกปิดบัญชีระหว่างรออนุมัติ — ใบลาต้องอนุมัติสำเร็จพร้อมคำเตือน', () => {
+      const delegate = newDelegate();
+      const { id } = newLeave({ delegateId: delegate.id });
+      db.prepare("UPDATE users SET status = 'closed' WHERE id = ?").run(delegate.id);
+
+      let result;
+      assert.doesNotThrow(() => { result = approveLeaveRequest({ id, note: 'อนุญาต', actorUser: directorUser }); },
+        'การตั้งผู้รักษาการแทนล้ม ต้องไม่ทำให้การอนุมัติทั้งใบล้มตาม');
+      assert.equal(getLeaveRequest(id).status, 'approved', 'ใบลาต้องอนุมัติสำเร็จจริง');
+      assert.match(result?.delegationWarning || '', /ผู้รักษาการแทน/,
+        'ต้องรายงานกลับไปว่าตั้งผู้รักษาการแทนไม่สำเร็จ ไม่ใช่เงียบไปเฉยๆ');
+
+      // ต้องแจ้งเตือนทั้งผู้อนุมัติและผู้ขอ เพราะ "ไม่มีคนคุมงานแทน" เป็นงานค้างที่ต้องมีคนตามเก็บ
+      for (const [who, uid] of [['ผู้อนุมัติ', directorUser.id], ['ผู้ขอ', teacherUser.id]]) {
+        const n = db.prepare("SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND link_url = ? AND title LIKE '%รักษาการแทน%'").get(uid, `/leave/${id}`).c;
+        assert.ok(n > 0, `${who} ต้องได้รับแจ้งเตือนว่ายังไม่มีผู้รักษาการแทน`);
+      }
+      assert.ok(db.prepare("SELECT COUNT(*) c FROM audit_logs WHERE action = 'leave_delegation_failed' AND record_id = ?").get(id).c > 0,
+        'ต้องบันทึกไว้ในบันทึกการใช้งานด้วย');
+    });
+
+    test('กรณีปกติยังต้องตั้งผู้รักษาการแทนให้อัตโนมัติเหมือนเดิม', () => {
+      const delegate = newDelegate();
+      const { id } = newLeave({ delegateId: delegate.id });
+      const result = approveLeaveRequest({ id, note: 'อนุญาต', actorUser: directorUser });
+      assert.equal(result?.delegationWarning, undefined, 'กรณีปกติต้องไม่มีคำเตือน');
+      const made = db.prepare('SELECT delegate_id FROM user_delegations WHERE leave_request_id = ? AND cancelled_at IS NULL').get(id);
+      assert.ok(made, 'ต้องสร้างการมอบหมายรักษาการแทนให้อัตโนมัติ');
+      assert.equal(made.delegate_id, delegate.id);
+    });
+  });
+
   // หน้าเว็บตัดตัวเองออกจากรายการผู้อนุมัติอยู่แล้ว แต่ก่อนหน้านี้เซิร์ฟเวอร์ไม่ได้ตรวจซ้ำ — ยิงคำขอตรง
   // เข้ามาโดยใส่ id ตัวเองเป็นผู้อนุมัติ แล้วกดอนุมัติใบลาตัวเองได้จริง (ทดสอบกับระบบที่รันอยู่แล้วผ่าน)
   test('ตั้งตัวเองเป็นผู้อนุมัติไม่ได้', () => {
