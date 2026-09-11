@@ -809,9 +809,15 @@ function seedIfEmpty() {
     insType.run(id, t);
   }
 
+  // must_change_password = 0 เพราะรหัสชุดนี้จะถูกแสดงบนหน้าเข้าสู่ระบบให้กดเลือกบัญชีได้เลย (ดู
+  // starterCredentials ข้างล่าง) ถ้ายังบังคับตั้งรหัสใหม่ทุกครั้งที่สลับบทบาท การไล่ทดสอบระบบทั้ง 6
+  // บทบาทจะกลายเป็นการตั้งรหัสใหม่ 6 ชุดแล้วต้องจำเองทั้งหมด ซึ่งเป็นเหตุผลที่คนเลิกทดสอบกลางคัน
+  //
+  // ความปลอดภัยมาจาก "โหมดเริ่มต้นนี้ปิดตัวเองเมื่อเริ่มใช้งานจริง" แทน — พอมีหนังสือฉบับแรกเข้าระบบ
+  // รหัสชุดนี้จะถูกลบทิ้งและไม่แสดงอีก (ดู starterCredentials)
   const insUser = db.prepare(`
     INSERT INTO users (id, employee_code, prefix, first_name, last_name, email, position, department_id, password_hash, pin_hash, status, must_change_password, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?)
   `);
   const insUserRole = db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)');
 
@@ -833,16 +839,29 @@ function seedIfEmpty() {
     // เดิมเป็นรหัสตายตัวที่พิมพ์โชว์อยู่บนหน้าเข้าสู่ระบบด้วย ใครเปิดเว็บเจอก็เข้าเป็นผู้อำนวยการได้ทันที
     const pass = randomPassword();
     const pin = randomPin();
-    passwords[u.code] = { password: pass, pin };
-    insUser.run(id, u.code, u.prefix, u.first, u.last, u.email, u.pos, deptIds[u.dept], hashSecret(pass), hashSecret(pin), nowIso(), nowIso());
+    // จด updated_at ตอนสร้างไว้ด้วย ใช้เป็นตัวบอกว่า "บัญชีนี้ยังไม่ถูกแตะเลยตั้งแต่ติดตั้ง"
+    // ซึ่งทำให้รู้ได้แบบถูกๆ ว่ารหัสตั้งต้นของบัญชีนั้นยังใช้ได้อยู่ไหม (ดู starterCredentials)
+    const seededAt = nowIso();
+    passwords[u.code] = { password: pass, pin, position: u.pos, name: `${u.prefix}${u.first} ${u.last}`, seededAt };
+    insUser.run(id, u.code, u.prefix, u.first, u.last, u.email, u.pos, deptIds[u.dept], hashSecret(pass), hashSecret(pin), seededAt, seededAt);
     insUserRole.run(id, roleIds[u.role]);
   }
+
+  // เก็บรหัสชุดนี้ไว้แสดงบนหน้าเข้าสู่ระบบ จนกว่าจะเริ่มใช้งานจริง
+  //
+  // เดิมรหัสตั้งต้นถูกพิมพ์ลง log ของเซิร์ฟเวอร์ครั้งเดียวแล้วหายไป ซึ่งบนโฮสต์ฟรีที่ดิสก์ไม่ถาวร
+  // (ฐานข้อมูลถูกล้างทุกครั้งที่ deploy) แปลว่าเจ้าของระบบต้องไปไล่หา log ใหม่ทุกครั้งที่ deploy
+  // ไม่งั้นเข้าระบบตัวเองไม่ได้เลย — ซึ่งเกิดขึ้นจริงแล้ว
+  db.prepare(`INSERT INTO app_settings (key, value, updated_by, updated_at) VALUES (?, ?, NULL, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
+    .run(STARTER_CREDENTIALS_KEY, JSON.stringify(passwords), nowIso());
 
   console.warn([
     '',
     '='.repeat(78),
-    '  สร้างฐานข้อมูลใหม่พร้อมบัญชีตั้งต้นแล้ว — รหัสผ่านชุดนี้แสดงเพียงครั้งเดียวเท่านั้น',
-    '  ทุกบัญชีจะถูกบังคับให้ตั้งรหัสผ่านและ PIN ใหม่ด้วยตัวเองตอนเข้าใช้งานครั้งแรก',
+    '  สร้างฐานข้อมูลใหม่พร้อมบัญชีตั้งต้นแล้ว',
+    '  รหัสชุดนี้แสดงอยู่บนหน้าเข้าสู่ระบบด้วย (กดเลือกบัญชีได้เลย) จนกว่าจะมีหนังสือฉบับแรก',
+    '  เข้าระบบ แล้วจะหายไปเอง — หรือกด "ปิดโหมดเริ่มต้น" ในหน้าจัดการผู้ใช้ได้ทันที',
     '='.repeat(78),
     ...seedUsers.map((u) => `  ${u.code.padEnd(12)} รหัสผ่าน ${passwords[u.code].password}   PIN ${passwords[u.code].pin}   (${u.pos})`),
     '='.repeat(78),
@@ -911,6 +930,66 @@ function applyEmergencyAdminReset() {
  * ไม่ใช่ผลข้างเคียงของรหัสผ่าน — การรีเซ็ตรหัสไม่ควรเปิดบัญชีที่ตั้งใจปิดไว้กลับมาเงียบๆ
  */
 export const TEST_MODE_ON = Boolean((process.env.TEST_MODE_PASSWORD || '').trim());
+
+export const STARTER_CREDENTIALS_KEY = 'starter_credentials';
+
+/**
+ * รหัสตั้งต้นของระบบที่เพิ่งติดตั้งใหม่ — แสดงบนหน้าเข้าสู่ระบบเพื่อให้เข้าได้โดยไม่ต้องตั้งค่าอะไรเลย
+ *
+ * ทำไมต้องมี: บนโฮสต์ฟรี (Render free tier) ดิสก์ไม่ถาวร ฐานข้อมูลถูกล้างทุกครั้งที่ deploy พร้อมกับ
+ * รหัสที่ทุกคนตั้งไว้ เดิมรหัสตั้งต้นชุดใหม่ถูกพิมพ์ลง log ของเซิร์ฟเวอร์ครั้งเดียวแล้วหายไป เจ้าของระบบ
+ * จึงต้องไปไล่หา log ทุกครั้งที่ deploy ไม่งั้นเข้าระบบตัวเองไม่ได้เลย — ซึ่งเกิดขึ้นจริงแล้ว
+ *
+ * ทำไมถึงยอมให้แสดงรหัสบนหน้าเว็บสาธารณะ: ตราบใดที่ยังไม่มีหนังสือสักฉบับในระบบ ก็ยังไม่มีอะไรให้
+ * ปกป้อง มีแค่บัญชีตัวอย่างกับฐานข้อมูลเปล่า และโหมดนี้ **ปิดตัวเองทันทีที่มีหนังสือฉบับแรก** เข้าระบบ
+ * ซึ่งเป็นนิยามที่ตรงที่สุดของคำว่า "เริ่มใช้งานจริงแล้ว" สำหรับระบบสารบรรณ
+ *
+ * คืน null พร้อม "ลบทิ้งเอง" เมื่อหมดเงื่อนไข ไม่ใช่แค่ให้ผู้เรียกเช็คเอง — เพื่อไม่ให้มีทางที่รหัสชุดนี้
+ * ค้างอยู่ในฐานข้อมูลหลังระบบเริ่มมีข้อมูลจริงแล้ว
+ */
+export function starterCredentials() {
+  const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(STARTER_CREDENTIALS_KEY);
+  if (!row?.value) return null;
+  if (db.prepare('SELECT COUNT(*) c FROM documents').get().c > 0) {
+    clearStarterCredentials({ reason: 'first_document' });
+    return null;
+  }
+  let parsed;
+  try { parsed = JSON.parse(row.value); } catch { clearStarterCredentials({ reason: 'unreadable' }); return null; }
+
+  // แสดงเฉพาะบัญชีที่ยังใช้รหัสชุดนี้อยู่ — ใครเปลี่ยนรหัสของตัวเองแล้ว หรือถูกผู้ดูแลรีเซ็ตรหัสให้ใหม่
+  // ต้องหายจากรายการ ไม่งั้นหน้า login จะโชว์รหัสที่ใช้ไม่ได้แล้วให้กด กดแล้วเข้าไม่ได้ งงกว่าเดิม
+  //
+  // เทียบจาก updated_at ไม่ใช่ลองถอดรหัสผ่านดู เพราะ scrypt ตั้งใจให้ช้า (~50 ms ต่อครั้ง) การตรวจ
+  // 6 บัญชีจะกินเวลาเกินครึ่งวินาทีทุกครั้งที่มีคนเปิดหน้า login ซึ่งเป็นหน้าที่โดนเปิดบ่อยที่สุด
+  // ทุกการแก้ไขผู้ใช้ทำให้ updated_at ขยับ จึงอาจซ่อนบัญชีที่รหัสยังใช้ได้อยู่บ้าง — ยอมพลาดไปทาง
+  // "ซ่อนเกิน" ดีกว่าโชว์รหัสที่ใช้ไม่ได้ หรือโชว์รหัสของบัญชีที่เจ้าตัวตั้งรหัสส่วนตัวไปแล้ว
+  const accounts = [];
+  for (const [code, info] of Object.entries(parsed)) {
+    const u = db.prepare("SELECT updated_at FROM users WHERE employee_code = ? AND deleted_at IS NULL AND status = 'active'").get(code);
+    if (!u || !info.seededAt || u.updated_at !== info.seededAt) continue;
+    accounts.push({ code, ...info });
+  }
+  if (!accounts.length) { clearStarterCredentials({ reason: 'all_changed' }); return null; }
+  return { accounts };
+}
+
+/** เช็คแบบเบาๆ ว่ายังอยู่ในโหมดเริ่มต้นไหม — ใช้กับแถบเตือนที่ต้องคิดใหม่ทุกหน้า
+ *  พอโหมดจบแล้วแถว app_settings ถูกลบทิ้ง การเช็คจึงเหลือแค่การอ่าน primary key ที่ไม่เจอ */
+export function starterModeActive() {
+  if (!db.prepare('SELECT 1 x FROM app_settings WHERE key = ?').get(STARTER_CREDENTIALS_KEY)) return false;
+  return db.prepare('SELECT COUNT(*) c FROM documents').get().c === 0;
+}
+
+export function clearStarterCredentials({ actorUser, reason } = {}) {
+  if (!db.prepare('SELECT 1 x FROM app_settings WHERE key = ?').get(STARTER_CREDENTIALS_KEY)) return false;
+  db.prepare('DELETE FROM app_settings WHERE key = ?').run(STARTER_CREDENTIALS_KEY);
+  audit({
+    userId: actorUser?.id || null, action: 'starter_credentials_cleared',
+    tableName: 'app_settings', recordId: STARTER_CREDENTIALS_KEY, detail: { reason: reason || 'manual' },
+  });
+  return true;
+}
 
 /** รหัสที่ใช้ในโหมดทดสอบ พร้อมรายชื่อบัญชีและบทบาท — เอาไปแสดงบนหน้า login ให้กดเข้าได้เลย
  *

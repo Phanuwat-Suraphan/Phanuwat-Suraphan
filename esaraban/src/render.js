@@ -1,4 +1,4 @@
-import { todayInBangkok, TEST_MODE_ON } from './db.js';
+import { todayInBangkok, TEST_MODE_ON, starterModeActive } from './db.js';
 
 export function esc(str) {
   if (str === null || str === undefined) return '';
@@ -270,7 +270,14 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
         🧪 <strong>ระบบอยู่ในโหมดทดสอบ</strong> — ทุกบัญชีถูกตั้งรหัสผ่านและ PIN เหมือนกันหมด
         ห้ามใช้เก็บข้อมูลจริงจนกว่าจะปิดโหมดนี้
         <div style="font-size:.82rem;margin-top:.25rem">ปิดโดยลบตัวแปร <code>TEST_MODE_PASSWORD</code> ออกจากเซิร์ฟเวอร์แล้ว restart จากนั้นให้ทุกคนตั้งรหัสของตัวเอง</div>
-      </div>` : ''}
+      </div>` : (starterModeActive() ? `<div class="alert alert-warning">
+        👋 <strong>ระบบเพิ่งติดตั้งใหม่</strong> — รหัสตั้งต้นของทุกบัญชียังแสดงอยู่บนหน้าเข้าสู่ระบบ
+        ใครเปิดลิงก์นี้เจอก็เข้าระบบได้
+        <div style="font-size:.82rem;margin-top:.25rem">
+          จะหายไปเองทันทีที่ลงทะเบียนหนังสือฉบับแรก — หรือให้ทุกคนตั้งรหัสของตัวเองที่
+          <a href="/profile">โปรไฟล์ของฉัน</a> ก่อนเริ่มใช้งานจริง
+        </div>
+      </div>` : '')}
       ${flash ? `<div class="alert alert-${flash.type}">${esc(flash.message)}</div>` : ''}
       ${content}
     </main>

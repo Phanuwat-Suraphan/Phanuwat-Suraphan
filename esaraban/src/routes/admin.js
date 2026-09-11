@@ -1,7 +1,7 @@
 import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
 import { layout, esc, fmtDate, emptyState, schoolName, schoolShortName, schoolInitials } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
-import { db, uuid, nowIso, hashSecret, audit } from '../db.js';
+import { db, uuid, nowIso, hashSecret, audit, starterModeActive, clearStarterCredentials } from '../db.js';
 import { readTable, planUserImport, applyUserImport, templateCsv, generatePassword, generatePin } from '../services/userImport.js';
 import { httpError } from '../services/workflow.js';
 import { positionInput } from '../services/positions.js';
@@ -123,6 +123,19 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
 
   const content = `
     <h2>⚙️ จัดการผู้ใช้งาน</h2>
+    ${starterModeActive() ? `<div class="alert alert-warning">
+      👋 <strong>ระบบยังอยู่ในโหมดเริ่มต้น</strong> — รหัสตั้งต้นของทุกบัญชีแสดงอยู่บนหน้าเข้าสู่ระบบ
+      ใครเปิดลิงก์นี้เจอก็เข้าระบบได้ (โหมดนี้จะปิดตัวเองเมื่อลงทะเบียนหนังสือฉบับแรก)
+      <div style="margin-top:.5rem">
+        <button class="btn btn-outline btn-sm" onclick="closeStarterMode()">🔒 ปิดโหมดเริ่มต้นเดี๋ยวนี้</button>
+      </div>
+    </div>
+    <script>
+      function closeStarterMode() {
+        if (!confirm('ปิดโหมดเริ่มต้น? รหัสตั้งต้นจะไม่แสดงบนหน้าเข้าสู่ระบบอีก\\n\\nรหัสของแต่ละคนยังใช้ได้เหมือนเดิม แต่จะไม่มีที่ให้ดูอีกแล้ว — ถ้ายังจำไม่ได้ ให้ใช้ปุ่ม "รีเซ็ตรหัส" ออกรหัสใหม่ให้แทน')) return;
+        fetch('/admin/starter-credentials/clear', { method: 'POST' }).then(function () { location.reload(); });
+      }
+    </script>` : ''}
     <div class="grid-2">
       <div class="card">
         <h3 class="mt-0">รายชื่อผู้ใช้ (${users.length})</h3>
@@ -344,6 +357,17 @@ router.post('/admin/users/:id/reset-password', requireApi(async (ctx) => {
     ok: true, employeeCode: target.employee_code, password, pin,
     wasLocked: Boolean(target.locked_until),
     message: `ออกรหัสชั่วคราวให้ ${target.employee_code} แล้ว${target.locked_until ? ' และปลดล็อกบัญชีให้ด้วย' : ''} — เจ้าตัวจะต้องตั้งรหัสผ่านและ PIN ของตัวเองทันทีที่เข้าใช้งาน`,
+  });
+}));
+
+// ปิดโหมดเริ่มต้นด้วยมือ สำหรับกรณีที่ต้องเปิดระบบให้คนนอกเห็นก่อนจะเริ่มลงทะเบียนหนังสือจริง
+// (โหมดนี้ปิดตัวเองเมื่อมีหนังสือฉบับแรกอยู่แล้ว อันนี้คือทางลัดให้ปิดได้ทันทีโดยไม่ต้องรอ)
+router.post('/admin/starter-credentials/clear', requireApi((ctx) => {
+  if (!ctx.user.roleCodes.includes('admin')) return json(ctx, 403, { error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
+  const cleared = clearStarterCredentials({ actorUser: ctx.user, reason: 'manual' });
+  json(ctx, 200, {
+    ok: true, cleared,
+    message: cleared ? 'ปิดโหมดเริ่มต้นแล้ว รหัสตั้งต้นจะไม่แสดงบนหน้าเข้าสู่ระบบอีก' : 'โหมดเริ่มต้นปิดอยู่แล้ว',
   });
 }));
 

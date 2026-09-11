@@ -1,7 +1,7 @@
 import { router, html, redirect, json } from '../router.js';
 import { layout, esc, illustration, schoolName, schoolInitials } from '../render.js';
 import { login, logout, sessionCookieHeader, revokeOtherSessions } from '../auth.js';
-import { db, audit, nowIso, hashSecret, verifySecret, isWeakPin, testModeCredentials } from '../db.js';
+import { db, audit, nowIso, hashSecret, verifySecret, isWeakPin, testModeCredentials, starterCredentials } from '../db.js';
 
 /** กล่อง "โหมดทดสอบ" บนหน้า login — บอกรหัสตรงนั้นเลยและกดเลือกบัญชีได้ทันที
  *
@@ -12,27 +12,52 @@ import { db, audit, nowIso, hashSecret, verifySecret, isWeakPin, testModeCredent
  *  กล่องนี้จะหายไปเองเมื่อลบ TEST_MODE_PASSWORD ออก ไม่ต้องแก้โค้ดอะไรตอนขึ้นใช้งานจริง
  */
 function testModePanel() {
-  const cred = testModeCredentials();
-  if (!cred) return '';
-  const rows = cred.accounts.map((a) => {
-    const name = `${a.prefix || ''}${a.first_name} ${a.last_name}`.trim();
-    return `<button type="button" class="testmode-account" onclick="fillTestLogin('${esc(a.employee_code)}')">
-      <strong>${esc(a.employee_code)}</strong>
-      <span>${esc(a.roles || 'ไม่ได้กำหนดบทบาท')}${name ? ` · ${esc(name)}` : ''}</span>
-    </button>`;
-  }).join('');
+  const test = testModeCredentials();
+  // โหมดทดสอบ (ตั้ง env เอง) ใช้รหัสเดียวกันทุกบัญชี ส่วนโหมดเริ่มต้น (ระบบเพิ่งติดตั้ง) แต่ละบัญชีมี
+  // รหัสสุ่มของตัวเอง จึงเก็บรหัสไว้กับตัวปุ่มแต่ละอัน แล้วให้ปุ่มเป็นตัวเติมรหัสของบัญชีนั้นเอง
+  const starter = test ? null : starterCredentials();
+  if (!test && !starter) return '';
+
+  const items = test
+    ? test.accounts.map((a) => ({
+      code: a.employee_code, password: test.password,
+      detail: `${a.roles || 'ไม่ได้กำหนดบทบาท'}${`${a.prefix || ''}${a.first_name} ${a.last_name}`.trim() ? ` · ${`${a.prefix || ''}${a.first_name} ${a.last_name}`.trim()}` : ''}`,
+    }))
+    // โชว์ PIN ด้วย เพราะ PIN คือสิ่งที่ใช้ลงนาม/กด "ทราบ" ซึ่งเป็นหัวใจของระบบ ถ้าไม่บอก ก็ทดลอง
+    // เส้นทางเดินหนังสือไม่ได้เลยสักขั้น — และในโหมดนี้ยังไม่มีข้อมูลอะไรให้ปกป้องอยู่แล้ว
+    : starter.accounts.map((a) => ({
+      code: a.code, password: a.password,
+      detail: `${a.position || ''}${a.name ? ` · ${a.name}` : ''} · PIN ${a.pin}`,
+    }));
+
+  const rows = items.map((a) => `<button type="button" class="testmode-account"
+      data-code="${esc(a.code)}" data-password="${esc(a.password)}" onclick="fillTestLogin(this)">
+      <strong>${esc(a.code)}</strong>
+      <span>${esc(a.detail)}</span>
+    </button>`).join('');
+
+  const head = test
+    ? '🧪 โหมดทดสอบ — กดเลือกบัญชีแล้วกด "เข้าสู่ระบบ" ได้เลย'
+    : '👋 ระบบเพิ่งติดตั้งใหม่ — กดเลือกบัญชีแล้วกด "เข้าสู่ระบบ" ได้เลย';
+  const cred = test
+    ? `รหัสผ่าน <code>${esc(test.password)}</code> · PIN <code>${esc(test.pin)}</code> (ทุกบัญชีใช้ชุดเดียวกัน)`
+    : 'กดปุ่มแล้วระบบเติมรหัสผ่านให้เอง · PIN คือเลข 6 หลักท้ายแต่ละบรรทัด (ใช้ตอนลงนาม/กดทราบ)';
+  const warn = test
+    ? '⚠️ ห้ามเปิดโหมดนี้ทิ้งไว้ตอนใช้งานจริง — ลบตัวแปร <code>TEST_MODE_PASSWORD</code> บนเซิร์ฟเวอร์แล้ว restart'
+    : '⚠️ กล่องนี้จะหายไปเองทันทีที่มีหนังสือฉบับแรกเข้าระบบ — ก่อนใช้งานจริง ให้ทุกคนตั้งรหัสของตัวเองที่ "โปรไฟล์ของฉัน"';
+
   return `<div class="testmode-box">
-    <div class="testmode-head">🧪 โหมดทดสอบ — กดเลือกบัญชีแล้วกด "เข้าสู่ระบบ" ได้เลย</div>
-    <div class="testmode-cred">รหัสผ่าน <code>${esc(cred.password)}</code> · PIN <code>${esc(cred.pin)}</code> (ทุกบัญชีใช้ชุดเดียวกัน)</div>
+    <div class="testmode-head">${head}</div>
+    <div class="testmode-cred">${cred}</div>
     <div class="testmode-accounts">${rows}</div>
-    <div class="testmode-warn">⚠️ ห้ามเปิดโหมดนี้ทิ้งไว้ตอนใช้งานจริง — ลบตัวแปร <code>TEST_MODE_PASSWORD</code> บนเซิร์ฟเวอร์แล้ว restart</div>
+    <div class="testmode-warn">${warn}</div>
   </div>
   <script>
-    function fillTestLogin(code) {
-      document.querySelector('[name=employeeCode]').value = code;
-      document.getElementById('loginPassword').value = ${JSON.stringify(cred.password)};
+    function fillTestLogin(btn) {
+      document.querySelector('[name=employeeCode]').value = btn.dataset.code;
+      document.getElementById('loginPassword').value = btn.dataset.password;
       document.querySelectorAll('.testmode-account').forEach(function (b) { b.classList.remove('is-picked'); });
-      event.currentTarget.classList.add('is-picked');
+      btn.classList.add('is-picked');
     }
   </script>`;
 }

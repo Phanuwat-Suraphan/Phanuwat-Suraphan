@@ -4068,6 +4068,114 @@ describe('ด่านบังคับตั้งรหัสผ่านเ�
     assert.match(fn, /length < 8/, 'ต้องปฏิเสธรหัสกู้คืนที่สั้นเกินไป');
   });
 
+  // ระบบที่เพิ่ง deploy ต้อง "เปิดเว็บแล้วเข้าได้เลย" โดยไม่ต้องตั้งอะไรบนเซิร์ฟเวอร์
+  //
+  // บนโฮสต์ฟรีดิสก์ไม่ถาวร ฐานข้อมูลถูกล้างทุกครั้งที่ deploy พร้อมรหัสที่ทุกคนตั้งไว้ เดิมรหัสตั้งต้น
+  // ชุดใหม่พิมพ์ลง log ครั้งเดียวแล้วหายไป เจ้าของระบบจึงต้องไปไล่หา log ทุกครั้ง ไม่งั้นเข้าระบบตัวเอง
+  // ไม่ได้ — เกิดขึ้นจริงแล้วและทำให้ใช้งานไม่ได้อยู่หลายวัน
+  describe('โหมดเริ่มต้น: ระบบที่ยังไม่มีข้อมูลต้องเข้าได้โดยไม่ต้องตั้งค่าอะไร', () => {
+    const dbFile = path.join(os.tmpdir(), `esaraban-starter-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const dbUrl = new URL('../src/db.js', import.meta.url).href;
+    // boot ใน process ลูกเพื่อให้ได้ฐานข้อมูลที่ "เพิ่งติดตั้งใหม่" จริงๆ แยกจากฐานข้อมูลของเทสต์อื่น
+    const boot = (script = '') => execFileSync(process.execPath,
+      ['--no-warnings', '-e', `const m = await import(${JSON.stringify(dbUrl)});${script}`],
+      { env: { ...process.env, DB_PATH: dbFile, TEST_MODE_PASSWORD: '' }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+    after(() => { for (const f of [dbFile, `${dbFile}-shm`, `${dbFile}-wal`]) { try { fs.unlinkSync(f); } catch { /* ไม่มีก็ไม่เป็นไร */ } } });
+
+    test('ติดตั้งใหม่แล้วมีรหัสตั้งต้นให้หยิบไปใช้ได้ทันที ครบทุกบัญชี และเข้าได้จริง', () => {
+      const out = boot(`
+        const cred = m.starterCredentials();
+        const checks = cred.accounts.map((a) => {
+          const u = m.db.prepare('SELECT password_hash, pin_hash, must_change_password FROM users WHERE employee_code = ?').get(a.code);
+          return { code: a.code, pwOk: m.verifySecret(a.password, u.password_hash), pinOk: m.verifySecret(a.pin, u.pin_hash), gate: u.must_change_password };
+        });
+        console.log('RESULT' + JSON.stringify({ active: m.starterModeActive(), checks }));
+      `);
+      const res = JSON.parse(out.slice(out.indexOf('RESULT') + 6).split('\n')[0]);
+      assert.equal(res.active, true, 'ระบบที่ยังไม่มีหนังสือต้องอยู่ในโหมดเริ่มต้น');
+      assert.ok(res.checks.length >= 6, `ต้องมีบัญชีตั้งต้นครบ แต่ได้ ${res.checks.length}`);
+      for (const c of res.checks) {
+        assert.ok(c.pwOk, `รหัสผ่านที่แสดงของ ${c.code} ใช้เข้าจริงไม่ได้ — แสดงรหัสผิดยิ่งแย่กว่าไม่แสดง`);
+        assert.ok(c.pinOk, `PIN ที่แสดงของ ${c.code} ใช้ไม่ได้ — ลงนามอะไรไม่ได้เลย`);
+        assert.equal(c.gate, 0, `${c.code} ยังโดนด่านบังคับตั้งรหัสใหม่ ทำให้สลับบทบาททดสอบไม่สะดวก`);
+      }
+      // รหัสต้องเป็นของใครของมัน ไม่ใช่ชุดเดียวใช้ทุกบัญชี
+      const out2 = boot(`console.log('R' + JSON.stringify(m.starterCredentials().accounts.map((a) => a.password)))`);
+      const pws = JSON.parse(out2.slice(out2.indexOf('R') + 1).split('\n')[0]);
+      assert.equal(new Set(pws).size, pws.length, 'แต่ละบัญชีต้องมีรหัสของตัวเอง');
+    });
+
+    test('พอมีหนังสือฉบับแรก ต้องปิดตัวเองและลบรหัสทิ้งจากฐานข้อมูล', () => {
+      const out = boot(`
+        const before = m.starterModeActive();
+        const u = m.db.prepare("SELECT id FROM users WHERE employee_code = 'reg001'").get();
+        const t = m.db.prepare('SELECT id FROM document_types LIMIT 1').get();
+        const d = m.db.prepare('SELECT id FROM departments LIMIT 1').get();
+        m.db.prepare(\`INSERT INTO documents (id, doc_number_display, running_number, year_be, direction, doc_type_id, department_id, title, status, priority, secret_level, retention_class, created_by, created_at, updated_at)
+          VALUES (?,?,?,?,'incoming',?,?,?,'registered','normal','normal','normal_10y',?,?,?)\`)
+          .run(m.uuid(), '0001/2569', 1, m.beYear(), t.id, d.id, 'หนังสือฉบับแรก', u.id, m.nowIso(), m.nowIso());
+        const cred = m.starterCredentials();
+        const leftover = m.db.prepare("SELECT COUNT(*) c FROM app_settings WHERE key = ?").get(m.STARTER_CREDENTIALS_KEY).c;
+        console.log('RESULT' + JSON.stringify({ before, after: m.starterModeActive(), cred, leftover }));
+      `);
+      const res = JSON.parse(out.slice(out.indexOf('RESULT') + 6).split('\n')[0]);
+      assert.equal(res.before, true, 'ก่อนหน้านี้ต้องยังอยู่ในโหมดเริ่มต้น');
+      assert.equal(res.after, false, 'พอมีหนังสือแล้วต้องออกจากโหมดเริ่มต้น');
+      assert.equal(res.cred, null, 'ต้องไม่คายรหัสออกมาอีก');
+      assert.equal(res.leftover, 0, 'ต้องลบรหัสออกจากฐานข้อมูลจริง ไม่ใช่แค่ไม่แสดง');
+    });
+
+    test('ปิดด้วยมือได้ และรหัสของแต่ละคนต้องยังใช้เข้าได้เหมือนเดิม', () => {
+      const fresh = path.join(os.tmpdir(), `esaraban-starter2-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+      const out = execFileSync(process.execPath, ['--no-warnings', '-e', `
+        const m = await import(${JSON.stringify(dbUrl)});
+        const pw = m.starterCredentials().accounts.find((a) => a.code === 'reg001').password;
+        m.clearStarterCredentials({ reason: 'manual' });
+        const u = m.db.prepare("SELECT password_hash FROM users WHERE employee_code = 'reg001'").get();
+        console.log('RESULT' + JSON.stringify({
+          active: m.starterModeActive(), cred: m.starterCredentials(), stillWorks: m.verifySecret(pw, u.password_hash),
+        }));
+      `], { env: { ...process.env, DB_PATH: fresh, TEST_MODE_PASSWORD: '' }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      for (const f of [fresh, `${fresh}-shm`, `${fresh}-wal`]) { try { fs.unlinkSync(f); } catch { /* ไม่มีก็ไม่เป็นไร */ } }
+      const res = JSON.parse(out.slice(out.indexOf('RESULT') + 6).split('\n')[0]);
+      assert.equal(res.active, false, 'ปิดแล้วต้องไม่อยู่ในโหมดเริ่มต้นอีก');
+      assert.equal(res.cred, null);
+      assert.equal(res.stillWorks, true, 'การซ่อนรหัสต้องไม่ไปเปลี่ยนรหัสของใคร แค่เลิกแสดงเท่านั้น');
+    });
+
+    test('บัญชีที่ถูกรีเซ็ตรหัสไปแล้ว ต้องไม่ถูกแสดงรหัสเก่าที่ใช้ไม่ได้', () => {
+      const fresh = path.join(os.tmpdir(), `esaraban-starter3-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+      const out = execFileSync(process.execPath, ['--no-warnings', '-e', `
+        const m = await import(${JSON.stringify(dbUrl)});
+        const before = m.starterCredentials().accounts.length;
+        // จำลองว่าเจ้าตัวตั้งรหัสของตัวเองแล้ว (updated_at ขยับ)
+        m.db.prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE employee_code = 'reg001'")
+          .run(m.hashSecret('MyOwnPassword123'), new Date(Date.now() + 1000).toISOString());
+        const after = m.starterCredentials();
+        console.log('RESULT' + JSON.stringify({ before, codes: after ? after.accounts.map((a) => a.code) : null }));
+      `], { env: { ...process.env, DB_PATH: fresh, TEST_MODE_PASSWORD: '' }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      for (const f of [fresh, `${fresh}-shm`, `${fresh}-wal`]) { try { fs.unlinkSync(f); } catch { /* ไม่มีก็ไม่เป็นไร */ } }
+      const res = JSON.parse(out.slice(out.indexOf('RESULT') + 6).split('\n')[0]);
+      assert.ok(res.before >= 6);
+      assert.ok(!res.codes.includes('reg001'),
+        'บัญชีที่เปลี่ยนรหัสไปแล้วต้องหายจากรายการ ไม่งั้นหน้า login โชว์รหัสที่กดแล้วเข้าไม่ได้');
+      assert.ok(res.codes.length === res.before - 1, 'บัญชีอื่นต้องยังแสดงอยู่ตามปกติ');
+    });
+
+    test('ระบบที่ใช้งานอยู่แล้วต้องไม่มีร่องรอยโหมดเริ่มต้นหลงเหลือ', async () => {
+      const { starterModeActive, starterCredentials } = await import('../src/db.js');
+      // ต้องมีหนังสืออยู่จริงก่อน ไม่ใช่อาศัยว่าเทสต์ข้ออื่นสร้างไว้ให้ — เวลารันเจาะจงเฉพาะข้อนี้
+      // ฐานข้อมูลจะเพิ่ง seed เสร็จและยังไม่มีหนังสือเลย ซึ่งทำให้ข้อนี้ "พัง" ทั้งที่ระบบทำงานถูกต้อง
+      makeDoc({ title: 'หนังสือที่ทำให้ระบบนี้ถือว่าเริ่มใช้งานจริงแล้ว' });
+      assert.equal(starterModeActive(), false);
+      assert.equal(starterCredentials(), null);
+      const loginPage = await dispatchGet(null, '/login', {});
+      assert.doesNotMatch(loginPage.body, /ระบบเพิ่งติดตั้งใหม่/, 'หน้า login ต้องไม่มีกล่องรหัสตั้งต้น');
+      assert.doesNotMatch(loginPage.body, /data-password=/, 'ต้องไม่มีรหัสฝังอยู่ในหน้าเว็บเลย');
+    });
+  });
+
   // โหมดทดสอบทำงานตอนระบบ start จาก environment variable จึงทดสอบด้วยการ boot db.js ใน process ลูกจริง
   // กับฐานข้อมูลใช้แล้วทิ้ง ไม่ใช่แค่ grep ดูว่าโค้ดหน้าตาถูก — สิ่งที่ต้องพิสูจน์คือ "เข้าได้จริงทุกบัญชี"
   describe('โหมดทดสอบ: เปิดให้เข้าง่ายชั่วคราว แล้วต้องปิดได้สนิท', () => {
