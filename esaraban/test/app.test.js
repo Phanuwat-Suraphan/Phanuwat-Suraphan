@@ -3735,6 +3735,77 @@ describe('วันที่ของใบลาและการมอบห�
     ...nextDelegationWindow(5), reason: 'ทดสอบ', createdBy: seed.userIds.director01, ...over,
   });
 
+  // เดิมมีเทสต์คุมแค่ "ค่าวันที่ต้องถูกต้อง" แต่ไม่มีข้อไหนตรวจว่า *อำนาจลงนามจริง* ผูกกับช่วงวันนั้น
+  // หรือเปล่า ซึ่งเป็นสิ่งที่การมอบหมายมีไว้เพื่อการนั้นโดยตรง — ถ้าวันหนึ่งเงื่อนไขวันที่หลุดออกจาก
+  // ตัวตรวจสิทธิ์ ผู้รักษาการแทนจะลงนามแทนผู้อำนวยการได้ตลอดไปโดยไม่มีอะไรจับได้เลย
+  describe('อำนาจลงนามแทนต้องมีผลเฉพาะในช่วงที่มอบหมายไว้', () => {
+    const director = () => loadUserForTest(seed.userIds.director01);
+    const deputy = () => loadUserForTest(seed.userIds.vicedir01);
+    const at = (n) => new Date(Date.parse(`${todayInBangkok()}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+
+    // หนังสือที่ค้างรอผู้อำนวยการตัดสินใจอยู่
+    function docWaitingOnDirector() {
+      const doc = makeDoc({ title: 'หนังสือที่ค้างอยู่ที่ ผอ.' });
+      assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, instruction: 'เสนอ ผอ.', actorUser: registrarUser });
+      return { doc, step: currentStep(doc.id) };
+    }
+    // คุมช่วงวันได้แม่นยำกว่า createDelegation (ซึ่งกันย้อนหลัง/ซ้อนทับ) เพราะต้องจำลอง "ช่วงที่ผ่านไปแล้ว"
+    function delegateWindow(startDate, endDate) {
+      db.prepare("UPDATE user_delegations SET cancelled_at = ? WHERE delegator_id = ? AND cancelled_at IS NULL")
+        .run(nowIso(), seed.userIds.director01);
+      db.prepare(`INSERT INTO user_delegations (id, delegator_id, delegate_id, start_date, end_date, reason, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, 'ผอ. ไปราชการ', ?, ?)`)
+        .run(uuid(), seed.userIds.director01, seed.userIds.vicedir01, startDate, endDate, seed.userIds.director01, nowIso());
+    }
+    const clearDelegations = () => db.prepare("UPDATE user_delegations SET cancelled_at = ? WHERE delegator_id = ? AND cancelled_at IS NULL")
+      .run(nowIso(), seed.userIds.director01);
+
+    after(clearDelegations);
+
+    test('ในช่วงที่มอบหมายไว้ ลงนามแทนได้จริง และบันทึกเป็นชื่อผู้รักษาการแทน ไม่ใช่สวมชื่อ ผอ.', () => {
+      const { doc, step } = docWaitingOnDirector();
+      delegateWindow(at(-1), at(1));
+      assert.doesNotThrow(() => acknowledgeAndComplete({ stepId: step.id, comment: 'รับทราบแทน ผอ.', actorUser: deputy() }));
+      assert.equal(getDocument(doc.id).status, 'completed');
+      const signed = db.prepare('SELECT signer_name FROM workflow_steps WHERE id = ?').get(step.id);
+      const directorName = db.prepare("SELECT first_name FROM users WHERE id = ?").get(seed.userIds.director01).first_name;
+      assert.ok(signed.signer_name, 'ต้องบันทึกชื่อผู้ลงนามไว้');
+      assert.ok(!signed.signer_name.includes(directorName),
+        `ต้องบันทึกชื่อผู้รักษาการแทน ไม่ใช่ชื่อ ผอ. — ได้: ${signed.signer_name}`);
+    });
+
+    for (const [label, range] of [
+      ['ช่วงที่ผ่านไปแล้ว', [-10, -2]],
+      ['ช่วงที่ยังมาไม่ถึง', [5, 9]],
+    ]) {
+      test(`${label} ต้องลงนามแทนไม่ได้`, () => {
+        const { doc, step } = docWaitingOnDirector();
+        delegateWindow(at(range[0]), at(range[1]));
+        assert.throws(() => acknowledgeAndComplete({ stepId: step.id, comment: 'ลงนามนอกช่วง', actorUser: deputy() }),
+          undefined, `${label} ไม่ควรลงนามแทนได้`);
+        assert.notEqual(getDocument(doc.id).status, 'completed', 'หนังสือต้องไม่ถูกปิดเรื่อง');
+      });
+    }
+
+    test('ยกเลิกการมอบหมายแล้ว ต้องหมดอำนาจทันที', () => {
+      const { doc, step } = docWaitingOnDirector();
+      delegateWindow(at(-1), at(1));
+      clearDelegations();
+      assert.throws(() => acknowledgeAndComplete({ stepId: step.id, comment: 'ลงนามหลังยกเลิก', actorUser: deputy() }));
+      assert.notEqual(getDocument(doc.id).status, 'completed');
+    });
+
+    test('คนที่ไม่เคยได้รับมอบหมาย ลงนามแทน ผอ. ไม่ได้', () => {
+      const { doc, step } = docWaitingOnDirector();
+      clearDelegations();
+      assert.throws(() => acknowledgeAndComplete({ stepId: step.id, comment: 'ครูกดแทน', actorUser: teacherUser }));
+      assert.notEqual(getDocument(doc.id).status, 'completed');
+      // เจ้าของขั้นตอนตัวจริงต้องยังทำได้ตามปกติ ไม่ใช่ล็อกไปหมดทุกคน
+      assert.doesNotThrow(() => acknowledgeAndComplete({ stepId: step.id, comment: 'ผอ. รับทราบเอง', actorUser: director() }));
+      assert.equal(getDocument(doc.id).status, 'completed');
+    });
+  });
+
   test('ค่าที่ไม่ใช่วันที่ต้องถูกปฏิเสธ ไม่ใช่บันทึกแล้วมีผลตลอดไป', () => {
     for (const [label, over] of [
       ['วันสิ้นสุดเป็นข้อความไทย', { endDate: 'ไม่ใช่วันที่' }],
