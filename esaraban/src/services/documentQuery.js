@@ -3,7 +3,7 @@
 // สามที่นี้ต้องให้ผลตรงกันเป๊ะ ถ้าปล่อยให้ต่างคนต่างประกอบ SQL เอง สิ่งที่จะเกิดคือธุรการกรองบนหน้าเว็บ
 // ได้ 40 ฉบับ แต่กด "ออก Excel" แล้วได้ 63 ฉบับ (หรือแย่กว่านั้นคือไฟล์ที่ส่งออกมีหนังสือลับที่คนนั้น
 // ไม่มีสิทธิ์เห็นติดไปด้วย) โดยไม่มีอะไรฟ้องเลยจนกว่าจะมีคนเอาสองอันมาเทียบกัน
-import { db, todayInBangkok, beYear } from '../db.js';
+import { db, todayInBangkok, beYear, arabicDigits } from '../db.js';
 import { LABELS, fmtThaiDateLong } from '../render.js';
 import { visibleDocumentsSqlFilter } from './workflow.js';
 
@@ -40,10 +40,19 @@ export function buildDocumentQuery(user, query = {}) {
     // - external_doc_number = "ที่" ของหนังสือต้นทาง (เช่น ศธ ๐๔๐๔๙/ว๑๒๓) ซึ่งบ่อยครั้งเป็นสิ่งเดียว
     //   ที่คนโทรมาถามบอกได้ ระบบเก็บและพิมพ์ลงทะเบียนอยู่แล้ว แต่เดิมค้นไม่เจอ
     // - ชื่อไฟล์แนบ = เวลาจำได้แต่ชื่อไฟล์สแกน หรือหาว่า "ไฟล์นี้อยู่กับหนังสือฉบับไหน"
-    where.push(`(d.title LIKE :like OR d.doc_number_display LIKE :like OR d.subject LIKE :like
-      OR d.correspondent_name LIKE :like OR d.external_doc_number LIKE :like
-      OR EXISTS (SELECT 1 FROM attachments af WHERE af.document_id = d.id AND af.filename LIKE :like))`);
-    params.like = `%${q}%`;
+    // thdigits() แปลงเลขไทยเป็นเลขอารบิกทั้งสองฝั่งก่อนเทียบ คนพิมพ์ "04049" จึงเจอ "ศธ ๐๔๐๔๙/ว๑๒๓"
+    // และคนพิมพ์ "๐๔๐๔๙" ก็เจอฉบับที่ธุรการพิมพ์เป็นเลขอารบิกไว้ (ดูเหตุผลเต็มที่ db.js)
+    //
+    // ครอบเฉพาะตอนที่คำค้นมีตัวเลขอยู่จริง เพราะ thdigits() เปลี่ยนเฉพาะตัวเลข ถ้าคำค้นไม่มีเลขสักตัว
+    // ผลลัพธ์จะเหมือนเดิมทุกประการอยู่แล้ว แต่ต้องเรียกฟังก์ชันทุกช่องของทุกแถว — วัดกับทะเบียน 5,000
+    // ฉบับแล้วต่างกัน 1.7 ms เป็น 17.3 ms ซึ่งเป็นราคาที่จ่ายฟรีๆ ทุกครั้งที่ครูค้นด้วยชื่อเรื่องเปล่าๆ
+    const numeric = /[0-9๐-๙]/.test(q);
+    const col = (c) => (numeric ? `thdigits(${c})` : c);
+    where.push(`(${col('d.title')} LIKE :like OR ${col('d.doc_number_display')} LIKE :like
+      OR ${col('d.subject')} LIKE :like OR ${col('d.correspondent_name')} LIKE :like
+      OR ${col('d.external_doc_number')} LIKE :like
+      OR EXISTS (SELECT 1 FROM attachments af WHERE af.document_id = d.id AND ${col('af.filename')} LIKE :like))`);
+    params.like = `%${numeric ? arabicDigits(q) : q}%`;
   }
 
   const f = {

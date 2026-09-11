@@ -1938,6 +1938,29 @@ describe('ทะเบียนหนังสือ: ตามหาไฟล�
     assert.match(print.body, /ไฟล์แนบ/, 'หน้าพิมพ์ทะเบียนต้องมีช่องไฟล์แนบ');
   });
 
+  // หนังสือราชการไทยเขียนเลขที่เป็นเลขไทย แต่คนพิมพ์ค้นบนมือถือพิมพ์เลขอารบิก ถ้าไม่แปลงให้ตรงกัน
+  // จะไม่เจออะไรเลยและหน้าจอขึ้นว่า "ไม่พบหนังสือ" เหมือนตอนที่หนังสือไม่มีอยู่จริง แยกไม่ออก
+  test('เลขไทยกับเลขอารบิกต้องค้นเจอกันทั้งสองทาง', async () => {
+    const n = String(Date.now()).slice(-6);
+    const thai = n.replace(/\d/g, (d) => '๐๑๒๓๔๕๖๗๘๙'[Number(d)]);
+    const docThai = makeDoc({ title: 'ฉบับที่เลขต้นทางเป็นเลขไทย', externalDocNumber: `ศธ ๐๔๐๔๙/ว${thai}` });
+    const docArabic = makeDoc({ title: `ฉบับที่ชื่อเรื่องมีเลขอารบิก ครั้งที่ ${n}` });
+
+    const find = async (q) => rowIds((await dispatchGet(reg(), '/documents', { direction: 'incoming', q })).body);
+
+    assert.ok((await find(n)).includes(docThai.id),
+      `พิมพ์เลขอารบิก "${n}" ต้องเจอฉบับที่เก็บเป็นเลขไทย "${thai}"`);
+    assert.ok((await find(thai)).includes(docThai.id),
+      'พิมพ์เลขไทยต้องเจอฉบับที่เก็บเป็นเลขไทยด้วย (ของเดิมต้องไม่พัง)');
+    assert.ok((await find(thai)).includes(docArabic.id),
+      `พิมพ์เลขไทย "${thai}" ต้องเจอฉบับที่เก็บเป็นเลขอารบิกด้วย`);
+    assert.ok((await find(n)).includes(docArabic.id), 'พิมพ์เลขอารบิกต้องเจอฉบับเลขอารบิก');
+
+    // ต้องไม่กวาดมาทุกฉบับเพราะแปลงพลาดจนเงื่อนไขกลายเป็นจริงเสมอ
+    const none = await find('เลขที่ไม่มีอยู่จริง999888777');
+    assert.equal(none.length, 0, 'คำค้นที่ไม่มีอยู่จริงต้องไม่คืนอะไรเลย');
+  });
+
   // การนับไฟล์และการค้นชื่อไฟล์วิ่งผ่าน attachments.document_id ทุกแถวในทะเบียน
   // ถ้าไม่มี index จะกลายเป็นสแกนทั้งตาราง attachments ต่อหนึ่งแถวในทะเบียน
   //
