@@ -3255,6 +3255,40 @@ describe('รายงานสรุป: แยกตามปีงบปร�
     assert.ok(db.prepare('SELECT COUNT(*) c FROM documents').get().c > 0, 'ตาราง documents ต้องยังอยู่');
   });
 
+  // ตัวเลขชุดเดียวกันถูกแยกนับสามแบบ (ตามสถานะ / ตามทิศทาง / ตามฝ่าย) จากคำสั่งคนละคำสั่งกัน
+  // ถ้าวันหนึ่งมีคนเติมเงื่อนไขให้คำสั่งใดคำสั่งหนึ่งแล้วลืมอีกสองคำสั่ง ตัวเลขในหน้าเดียวกันจะขัดกันเอง
+  // โดยไม่มีอะไรฟ้อง แล้วโรงเรียนจะส่งตัวเลขที่บวกไม่ลงตัวไปให้ สพป.
+  test('ยอดแยกตามสถานะ/ทิศทาง/ฝ่าย ต้องบวกกันได้เท่ากับยอดรวมเสมอ', async () => {
+    const { visibleDocumentsSqlFilter } = await import('../src/services/workflow.js');
+    // สร้างเอง ไม่อาศัยว่าเทสต์ข้ออื่นสร้างไว้ให้ — เวลารันเจาะจงเฉพาะข้อนี้ ฐานข้อมูลจะยังว่างเปล่า
+    // แล้วเทสต์จะ "ผ่าน" แบบไม่ได้ตรวจอะไรเลย (หรือฟ้องผิดจุด)
+    makeDoc({ title: 'หนังสือสำหรับตรวจยอดรวมในรายงาน' });
+    for (const code of ['admin', 'reg001', 'teacher001']) {
+      const user = loadUserForTest(seed.userIds[code]);
+      const v = visibleDocumentsSqlFilter(user);
+      const q = (sql) => db.prepare(sql.replace('{{v}}', v.sql)).all(v.params);
+      const total = q('SELECT COUNT(*) c FROM documents d WHERE d.deleted_at IS NULL AND {{v}}')[0].c;
+      const sum = (rows) => rows.reduce((a, r) => a + r.c, 0);
+      const breakdowns = {
+        'ตามสถานะ': sum(q('SELECT COUNT(*) c FROM documents d WHERE d.deleted_at IS NULL AND {{v}} GROUP BY d.status')),
+        'ตามทิศทาง': sum(q('SELECT COUNT(*) c FROM documents d WHERE d.deleted_at IS NULL AND {{v}} GROUP BY d.direction')),
+        'ตามฝ่าย': sum(q(`SELECT COUNT(*) c FROM documents d JOIN departments dep ON dep.id = d.department_id
+          WHERE d.deleted_at IS NULL AND {{v}} GROUP BY dep.name`)),
+      };
+      for (const [label, n] of Object.entries(breakdowns)) {
+        assert.equal(n, total, `${code}: ยอดรวม ${total} แต่แยก${label}ได้ ${n}`);
+      }
+      assert.ok(total > 0, `${code}: ต้องมีหนังสือให้นับ ไม่งั้นเทสต์ผ่านแบบไม่ได้ตรวจอะไร`);
+    }
+  });
+
+  // ทุกฉบับต้องสังกัดฝ่ายเสมอ ไม่งั้นยอด "แยกตามฝ่าย" จะน้อยกว่ายอดรวมอย่างเงียบๆ เพราะ JOIN ทิ้งแถวนั้นไป
+  test('ไม่มีหนังสือที่ไม่สังกัดฝ่ายใดเลย (ซึ่งจะหายไปจากยอดแยกตามฝ่าย)', () => {
+    const orphan = db.prepare(`SELECT COUNT(*) c FROM documents d
+      WHERE d.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM departments dep WHERE dep.id = d.department_id)`).get().c;
+    assert.equal(orphan, 0, `มีหนังสือ ${orphan} ฉบับที่ชี้ไปยังฝ่ายที่ไม่มีอยู่จริง`);
+  });
+
   test('ไฟล์ CSV ต้องครอบคลุมช่วงเดียวกับที่เห็นบนหน้าจอ', async () => {
     const fy = fiscalYearRange(todayInBangkok());
     const page = totalOf((await dispatchGet(admin(), '/reports', { fy: String(fy.yearBe) })).body);
