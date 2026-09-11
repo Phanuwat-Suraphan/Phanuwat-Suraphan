@@ -2029,6 +2029,57 @@ describe('ทะเบียนหนังสือ: ตามหาไฟล�
     assert.match(print.body, /ไฟล์แนบ/, 'หน้าพิมพ์ทะเบียนต้องมีช่องไฟล์แนบ');
   });
 
+  // ธุรการพิมพ์เลขทะเบียนลงช่องค้นหาเพื่อ "เปิดฉบับนั้น" ไม่ใช่เพื่อดูว่ามีใครพูดถึงเลขนั้นบ้าง
+  // ถ้าฉบับที่เลขตรงเป๊ะไปอยู่ล่างสุด และผลลัพธ์เกินหนึ่งหน้า (หน้าละ 50) ก็ตกไปอยู่หน้าถัดไปเลย
+  test('ฉบับที่เลขทะเบียนตรงกับที่พิมพ์ ต้องมาก่อนฉบับที่แค่เอ่ยถึงเลขนั้นในเนื้อหา', async () => {
+    const num = String(700 + (Date.now() % 200)).padStart(4, '0');
+    const target = makeDoc({ title: `หนังสือที่มีเลขทะเบียน ${num} จริง` });
+    db.prepare('UPDATE documents SET doc_number_display = ?, created_at = ? WHERE id = ?')
+      .run(`${num}/2569`, '2020-01-01T00:00:00.000Z', target.id); // เก่ากว่าทุกฉบับ เพื่อให้แพ้ถ้าเรียงตามวันที่อย่างเดียว
+    const noise = [1, 2, 3].map((i) => makeDoc({ title: `รายงานผลการอบรม รหัสหลักสูตร ${num} รุ่นที่ ${i}` }));
+
+    const rows = listDocuments(buildDocumentQuery(reg(), { direction: 'incoming', q: num }));
+    const ids = rows.map((r) => r.id);
+    assert.ok(ids.includes(target.id), 'ต้องเจอฉบับที่เลขตรงเป๊ะ');
+    assert.ok(noise.every((n) => ids.includes(n.id)), 'ฉบับที่เอ่ยถึงเลขนั้นก็ต้องยังเจอ ไม่ใช่หายไป');
+    assert.equal(ids[0], target.id,
+      `ฉบับที่เลขทะเบียนตรงเป๊ะต้องมาเป็นอันดับแรก แต่ได้ลำดับที่ ${ids.indexOf(target.id) + 1} จาก ${ids.length}`);
+
+    // พิมพ์เต็มทั้งเลขและปีก็ต้องได้ฉบับนั้นเป็นอันดับแรกเหมือนกัน
+    const full = listDocuments(buildDocumentQuery(reg(), { direction: 'incoming', q: `${num}/2569` }));
+    assert.equal(full[0]?.id, target.id, 'พิมพ์เลขเต็มแล้วต้องได้ฉบับนั้นก่อน');
+  });
+
+  // หนังสือที่ลงทะเบียนรวดเดียวกันหลายฉบับมี created_at ตรงกันถึงมิลลิวินาที ถ้าไม่มีตัวตัดสินสำรอง
+  // ลำดับจะสลับไปมาระหว่างการเปิดแต่ละครั้ง เลื่อนหน้าแล้วเห็นฉบับเดิมซ้ำหรือข้ามฉบับไปเลย
+  test('ลำดับผลลัพธ์ต้องคงที่ แม้หลายฉบับลงทะเบียนในมิลลิวินาทีเดียวกัน', async () => {
+    const tag = `ชุดเดียวกัน-${Date.now()}`;
+    const made = [1, 2, 3, 4, 5].map((i) => makeDoc({ title: `${tag} ฉบับที่ ${i}` }));
+    const sameTime = '2021-05-05T05:05:05.000Z';
+    for (const m of made) db.prepare('UPDATE documents SET created_at = ? WHERE id = ?').run(sameTime, m.id);
+
+    const order = () => listDocuments(buildDocumentQuery(reg(), { direction: 'incoming', q: tag })).map((r) => r.id).join(',');
+    const first = order();
+    assert.equal(first.split(',').length, made.length, 'ต้องเจอครบทุกฉบับ');
+    for (let i = 0; i < 4; i++) assert.equal(order(), first, 'ลำดับต้องเหมือนเดิมทุกครั้งที่ค้น');
+
+    // การรันซ้ำแล้วได้ลำดับเดิมไม่ได้พิสูจน์อะไร — SQLite มักคืนลำดับเดิมอยู่แล้วโดยบังเอิญเมื่อข้อมูล
+    // ไม่เปลี่ยน (ลองถอดตัวตัดสินสำรองออกแล้วเทสต์ก็ยังผ่าน) สิ่งที่รับประกันได้จริงคือคำสั่งเรียงต้องจบ
+    // ด้วยคอลัมน์ที่ไม่ซ้ำกันเลย จึงตรวจที่ตัวคำสั่งตรงๆ
+    for (const built of [buildDocumentQuery(reg(), { direction: 'incoming', q: tag }), buildDocumentQuery(reg(), { direction: 'incoming' })]) {
+      assert.match(built.orderSql, /d\.rowid (ASC|DESC)\s*$/,
+        `คำสั่งเรียงต้องจบด้วยคอลัมน์ที่ไม่ซ้ำกัน ไม่งั้นแถวที่ created_at เท่ากันจะสลับลำดับได้ — ได้: ${built.orderSql}`);
+    }
+
+    // และการแบ่งหน้าต้องไม่ทำให้ฉบับใดหายหรือซ้ำ
+    const q = buildDocumentQuery(reg(), { direction: 'incoming', q: tag });
+    const page1 = listDocuments(q, { limit: 2, offset: 0 }).map((r) => r.id);
+    const page2 = listDocuments(q, { limit: 2, offset: 2 }).map((r) => r.id);
+    const page3 = listDocuments(q, { limit: 2, offset: 4 }).map((r) => r.id);
+    const paged = [...page1, ...page2, ...page3];
+    assert.equal(new Set(paged).size, made.length, `เลื่อนหน้าแล้วได้ฉบับซ้ำหรือตกหล่น: ${paged.join(',')}`);
+  });
+
   // หนังสือราชการไทยเขียนเลขที่เป็นเลขไทย แต่คนพิมพ์ค้นบนมือถือพิมพ์เลขอารบิก ถ้าไม่แปลงให้ตรงกัน
   // จะไม่เจออะไรเลยและหน้าจอขึ้นว่า "ไม่พบหนังสือ" เหมือนตอนที่หนังสือไม่มีอยู่จริง แยกไม่ออก
   test('เลขไทยกับเลขอารบิกต้องค้นเจอกันทั้งสองทาง', async () => {

@@ -89,11 +89,43 @@ export function buildDocumentQuery(user, query = {}) {
   }
 
   const activeFilters = Object.values(f).filter(Boolean).length;
+  const order = orderForQuery(q);
   return {
     direction, q, statusFilter, f, params,
     whereSql: where.join(' AND '),
+    orderSql: order.sql,
+    orderParams: order.params,
     activeFilters,
     filtering: activeFilters > 0 || Boolean(q) || Boolean(statusFilter),
+  };
+}
+
+/**
+ * ลำดับผลการค้นหา — ฉบับที่ "เลขทะเบียนตรงกับที่พิมพ์" ต้องมาก่อนฉบับที่แค่เอ่ยถึงเลขนั้นในเนื้อหา
+ *
+ * เดิมเรียงตามวันที่ลงทะเบียนล่าสุดอย่างเดียว ผลคือธุรการพิมพ์ "0777" เพื่อหาทะเบียนรับที่ 0777
+ * แล้วได้หนังสือที่บังเอิญมีเลข 0777 อยู่ในชื่อเรื่อง (เช่น "รหัสหลักสูตร 0777") ขึ้นก่อนทั้งหมด
+ * ส่วนฉบับที่ต้องการอยู่ล่างสุด — ทดสอบจริงแล้วได้ลำดับที่ 5 จาก 5 และถ้าผลลัพธ์เกินหนึ่งหน้า
+ * (หน้าละ 50 แถว) ฉบับที่ต้องการจะตกไปอยู่หน้าถัดไปทั้งที่พิมพ์เลขมาตรงเป๊ะ
+ *
+ * ต่อท้ายด้วย d.rowid เสมอเพื่อให้ลำดับคงที่ — หนังสือที่ลงทะเบียนรวดเดียวกันหลายฉบับ (ลงหลายฉบับ
+ * รวดเดียว) มี created_at ตรงกันถึงมิลลิวินาที ถ้าไม่มีตัวตัดสินสำรอง SQLite จะคืนลำดับสลับไปมา
+ * ระหว่างการเปิดแต่ละครั้ง ทำให้เลื่อนหน้าแล้วเห็นฉบับเดิมซ้ำหรือข้ามฉบับไปเลย
+ */
+function orderForQuery(q) {
+  if (!q) return { sql: 'd.created_at DESC, d.rowid DESC', params: {} };
+  const norm = arabicDigits(q);
+  // เก็บพารามิเตอร์ของการ "เรียง" แยกจากของการ "กรอง" — countDocuments ใช้แต่เงื่อนไขกรองและไม่มี
+  // ORDER BY ถ้ายัดรวมกันไว้ SQLite จะปฏิเสธทั้งคำสั่งว่า "Unknown named parameter" เพราะคำสั่งนั้น
+  // ไม่ได้ใช้พารามิเตอร์ที่ส่งไป (เจอมาแล้ว — หน้าค้นหาพังทั้งหน้า)
+  return {
+    params: { qnorm: norm, qprefix: `${norm}%` },
+    sql: `CASE
+      WHEN thdigits(d.doc_number_display) = :qnorm THEN 0
+      WHEN thdigits(d.doc_number_display) LIKE :qprefix THEN 1
+      WHEN thdigits(d.external_doc_number) = :qnorm THEN 2
+      ELSE 3
+    END, d.created_at DESC, d.rowid DESC`,
   };
 }
 
@@ -124,9 +156,12 @@ export function countDocuments({ whereSql, params }) {
 }
 
 /** @param {{limit?: number, offset?: number}} page เว้นว่าง = เอาทั้งหมด (ใช้ตอนส่งออกไฟล์) */
-export function listDocuments({ whereSql, params }, page = {}) {
+export function listDocuments({ whereSql, params, orderSql, orderParams }, page = {}) {
   const limit = Number.isInteger(page.limit) ? ` LIMIT ${page.limit} OFFSET ${Number(page.offset) || 0}` : '';
-  return db.prepare(`SELECT ${SELECT_COLUMNS} WHERE ${whereSql} ORDER BY d.created_at DESC${limit}`).all(params);
+  // ผู้เรียกเก่าที่ยังส่งมาแต่ whereSql/params ต้องได้ลำดับเดิม ไม่ใช่ SQL พัง
+  const order = orderSql || 'd.created_at DESC, d.rowid DESC';
+  return db.prepare(`SELECT ${SELECT_COLUMNS} WHERE ${whereSql} ORDER BY ${order}${limit}`)
+    .all({ ...params, ...(orderParams || {}) });
 }
 
 /** บรรยายเงื่อนไขที่ใช้กรองเป็นข้อความไทย — พิมพ์กำกับหัวทะเบียนไว้ว่าไฟล์นี้คือหนังสือชุดไหน */
