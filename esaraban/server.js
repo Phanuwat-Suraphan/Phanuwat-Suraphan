@@ -109,6 +109,7 @@ const server = http.createServer(async (req, res) => {
     if (user) user.unreadCount = unreadNotificationCount(user.id);
 
     let body = {};
+    let rawBody = null;
     if (req.method === 'POST' || req.method === 'PUT') {
       const raw = await readBody(req);
       const ct = req.headers['content-type'] || '';
@@ -117,9 +118,12 @@ const server = http.createServer(async (req, res) => {
       } else if (ct.includes('application/x-www-form-urlencoded')) {
         body = Object.fromEntries(new URLSearchParams(raw.toString('utf8')));
       }
+      // เก็บไบต์ดิบไว้ด้วย — การตรวจลายเซ็นของ webhook จาก LINE ต้องคิดจากไบต์ที่ส่งมาจริงเป๊ะๆ
+      // ถ้าเอา JSON ที่ parse แล้วมา stringify ใหม่ ลำดับคีย์/ช่องว่างเปลี่ยน ลายเซ็นจะไม่มีวันตรง
+      rawBody = raw;
     }
 
-    const ctx = { req, res, url, query: Object.fromEntries(url.searchParams), user, body, ip };
+    const ctx = { req, res, url, query: Object.fromEntries(url.searchParams), user, body, rawBody, ip };
     const handled = await router.dispatch(req.method, pathname, ctx);
     if (!handled) {
       res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -140,7 +144,10 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', async () => {
   console.log(`e-Saraban prototype listening on http://0.0.0.0:${PORT}`);
   startAutoBackup();
+  // ตัวส่งแจ้งเตือนเข้าไลน์ — เงียบไปเองถ้ายังไม่ได้ตั้งค่า LINE (ดู src/services/lineNotify.js)
+  const { startLineOutboxFlusher } = await import('./src/services/lineNotify.js');
+  if (startLineOutboxFlusher()) console.log('[line] เปิดการแจ้งเตือนเข้าไลน์แล้ว');
 });

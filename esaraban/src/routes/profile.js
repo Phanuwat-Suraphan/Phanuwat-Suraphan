@@ -5,9 +5,56 @@ import { db, nowIso, hashSecret, verifySecret, audit, isWeakPin } from '../db.js
 import { revokeOtherSessions } from '../auth.js';
 import { positionInput } from '../services/positions.js';
 import { asText } from '../services/validate.js';
+import { lineLinkStatus, LINK_KEYWORD } from '../services/lineNotify.js';
 
 // อวตารอิโมจิให้เลือก (UX Bible Part 21 §8) — คัดเฉพาะที่เหมาะกับบุคลากรโรงเรียน
 const AVATAR_EMOJIS = ['👩‍🏫', '👨‍🏫', '🧑‍🏫', '👩‍💼', '👨‍💼', '🧑‍💼', '🎓', '📚', '🦉', '🐱', '🐶', '🦊', '🐰', '🐢', '🐼', '🌿', '⭐', '😊'];
+
+/**
+ * "แจ้งเตือนเข้าไลน์" — ให้ครูเชื่อมบัญชีไลน์ของตัวเองด้วยตัวเอง
+ *
+ * ต้องเป็นแต่ละคนกดเอง ไม่ใช่ผู้ดูแลกรอกไอดีไลน์ให้ เพราะการแจ้งเตือนมีชื่อเรื่องหนังสือที่คนอื่น
+ * ไม่ควรเห็น ถ้าผูกผิดคนแล้วไม่มีใครรู้ เรื่องจะรั่วไปเรื่อยๆ จนกว่าจะบังเอิญมีคนทัก
+ */
+function lineSection(ctx) {
+  const st = lineLinkStatus(ctx.user.id);
+  if (!st.configured) {
+    return `
+      <h3 style="margin-top:1.2rem">💬 แจ้งเตือนเข้าไลน์</h3>
+      <p class="text-muted" style="font-size:.85rem">
+        ระบบยังไม่ได้เชื่อมกับบัญชีทางการของ LINE ของโรงเรียน
+        ${ctx.user.roleCodes.includes('admin') ? 'ตั้งค่าได้ที่หน้า <a href="/admin/line">แจ้งเตือนเข้าไลน์</a>' : 'แจ้งผู้ดูแลระบบให้เปิดใช้งานได้'}
+      </p>`;
+  }
+  if (st.linked) {
+    return `
+      <h3 style="margin-top:1.2rem">💬 แจ้งเตือนเข้าไลน์</h3>
+      <p style="font-size:.9rem"><span class="badge badge-success">เชื่อมบัญชีแล้ว</span>
+        <span class="text-muted">ตั้งแต่ ${esc(fmtDate(st.linkedAt))}</span></p>
+      <label style="display:flex;align-items:center;gap:.5rem;font-size:.9rem;margin:.6rem 0">
+        <input type="checkbox" id="lineNotifyToggle" ${st.enabled ? 'checked' : ''} onchange="toggleLineNotify(this)" />
+        ส่งการแจ้งเตือนเข้าไลน์ให้ฉัน
+      </label>
+      <button type="button" class="btn btn-outline btn-sm" onclick="unlinkLine(this)">ยกเลิกการเชื่อมบัญชีไลน์</button>
+      <div class="help-text">หนังสือชั้นความลับจะไม่ส่งเลขที่และชื่อเรื่องเข้าไลน์ ส่งแค่ว่ามีเรื่องรออยู่พร้อมลิงก์ให้เข้ามาอ่านในระบบ</div>`;
+  }
+  return `
+    <h3 style="margin-top:1.2rem">💬 แจ้งเตือนเข้าไลน์</h3>
+    <p class="text-muted" style="font-size:.85rem">
+      เชื่อมบัญชีไลน์ของคุณไว้ แล้วหนังสือที่ต้องดำเนินการ ผลการอนุมัติ และประกาศจะเด้งเข้าไลน์ให้ทันที
+      ไม่ต้องเปิดเว็บค้างไว้
+    </p>
+    <button type="button" class="btn btn-primary btn-sm" onclick="askLineCode(this)">ขอรหัสเชื่อมบัญชี</button>
+    <div id="lineCodeBox" style="display:none;margin-top:.8rem;padding:.8rem;border:1px solid var(--border);border-radius:8px">
+      <div>รหัสของคุณ: <strong id="lineCodeValue" style="font-size:1.3rem;letter-spacing:.15em"></strong></div>
+      <div class="text-muted" style="font-size:.8rem;margin:.3rem 0 .6rem">ใช้ได้ครั้งเดียว หมดอายุใน 30 นาที</div>
+      <div class="chip-row">
+        <a id="lineAddFriend" class="btn btn-outline btn-sm" href="#" target="_blank" rel="noopener" style="display:none">1️⃣ เพิ่มเพื่อนบัญชีโรงเรียน</a>
+        <a id="lineSendCode" class="btn btn-primary btn-sm" href="#" target="_blank" rel="noopener" style="display:none">2️⃣ ส่งรหัสเข้าไลน์</a>
+      </div>
+      <div class="help-text" id="lineManualHint"></div>
+    </div>`;
+}
 
 router.get('/profile', requirePage((ctx) => {
   const dept = db.prepare('SELECT * FROM departments WHERE id = ?').get(ctx.user.department_id);
@@ -66,6 +113,8 @@ router.get('/profile', requirePage((ctx) => {
           <div class="field"><label>PIN ใหม่ (6 หลัก)</label><input type="text" id="newPin" inputmode="numeric" maxlength="6" required /></div>
           <button class="btn btn-primary" type="submit">บันทึก PIN ใหม่</button>
         </form>
+
+        ${lineSection(ctx)}
 
         <h3 style="margin-top:1.2rem">ลายเซ็น (ของฉันเท่านั้น)</h3>
         <p class="text-muted" style="font-size:.8rem">ใช้แสดงประกอบเมื่อคุณอนุมัติ/รับทราบเอกสาร — ตามธรรมเนียมราชการนิยมใช้<strong>สีน้ำเงิน</strong>เพื่อแยกต้นฉบับจากสำเนาถ่ายเอกสาร</p>
@@ -206,6 +255,42 @@ router.get('/profile', requirePage((ctx) => {
               .then(r => r.json().then(d => ({ok:r.ok,d})))
               .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
               .catch(e => toast(e.message, 'danger'));
+          };
+
+          // เชื่อมบัญชีไลน์ — ขอรหัสแล้วแสดงปุ่มที่พาไปเพิ่มเพื่อนและส่งรหัสให้เสร็จในสองคลิก
+          // ยังพิมพ์รหัสเองได้ด้วย เผื่อลิงก์เปิดไม่ได้บนเครื่องที่ไม่ได้ติดตั้งแอป LINE
+          window.askLineCode = function(btn){
+            btn.disabled = true;
+            fetch('/profile/line/code', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})
+              .then(r => r.json().then(d => ({ok:r.ok,d})))
+              .then(({ok,d}) => {
+                if(!ok) throw new Error(d.error);
+                document.getElementById('lineCodeValue').textContent = d.code;
+                document.getElementById('lineCodeBox').style.display = '';
+                var add = document.getElementById('lineAddFriend');
+                var send = document.getElementById('lineSendCode');
+                if (d.addFriendUrl) { add.href = d.addFriendUrl; add.style.display = ''; }
+                if (d.sendUrl) { send.href = d.sendUrl; send.style.display = ''; }
+                document.getElementById('lineManualHint').textContent = d.sendUrl
+                  ? 'ถ้าปุ่มเปิดไม่ได้ ให้เปิดแชทบัญชีทางการของโรงเรียนแล้วพิมพ์ "${LINK_KEYWORD} ' + d.code + '" ส่งเข้าไป'
+                  : 'เปิดแชทบัญชีทางการของโรงเรียนแล้วพิมพ์ "${LINK_KEYWORD} ' + d.code + '" ส่งเข้าไป';
+                btn.disabled = false;
+              })
+              .catch(e => { toast(e.message, 'danger'); btn.disabled = false; });
+          };
+          window.unlinkLine = function(btn){
+            if (!confirm('ยกเลิกการเชื่อมบัญชีไลน์? จะไม่ได้รับแจ้งเตือนทางไลน์อีก')) return;
+            btn.disabled = true;
+            fetch('/profile/line/unlink', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})
+              .then(r => r.json().then(d => ({ok:r.ok,d})))
+              .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
+              .catch(e => { toast(e.message, 'danger'); btn.disabled = false; });
+          };
+          window.toggleLineNotify = function(el){
+            fetch('/profile/line/toggle', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: el.checked})})
+              .then(r => r.json().then(d => ({ok:r.ok,d})))
+              .then(({ok,d}) => { if(!ok) throw new Error(d.error); toast(d.enabled ? 'เปิดแจ้งเตือนทางไลน์แล้ว' : 'ปิดแจ้งเตือนทางไลน์แล้ว', 'success'); })
+              .catch(e => { toast(e.message, 'danger'); el.checked = !el.checked; });
           };
         </script>
       </div>

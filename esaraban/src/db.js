@@ -179,6 +179,14 @@ export function migrate() {
     -- รหัสผ่านและ PIN ด้วยตัวเองก่อนใช้งานอย่างอื่น — ตราบใดที่ยังไม่เปลี่ยน คนที่ส่งรหัสให้ก็ยังเข้าบัญชี
     -- นั้นได้ ซึ่งทำให้ลายเซ็น/การลงนาม "ทราบ" ที่ออกจากบัญชีนั้นพิสูจน์ตัวตนไม่ได้จริง
     must_change_password INTEGER NOT NULL DEFAULT 0,
+    -- การเชื่อมบัญชีกับ LINE เพื่อรับแจ้งเตือน (ดู services/lineNotify.js)
+    -- line_user_id คือรหัสผู้ใช้ที่ LINE ออกให้ ซึ่งต่างกันไปในแต่ละ Official Account
+    line_user_id TEXT,
+    line_linked_at TEXT,
+    line_notify_enabled INTEGER NOT NULL DEFAULT 1,
+    -- รหัสที่ผู้ใช้ส่งเข้าแชทเพื่อบอกว่า "บัญชีไลน์นี้คือฉัน" — ใช้ครั้งเดียวแล้วล้างทิ้ง มีวันหมดอายุ
+    line_link_code TEXT,
+    line_link_code_expires_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT
@@ -556,7 +564,39 @@ export function migrate() {
   CREATE INDEX IF NOT EXISTS idx_notifications_user_time ON notifications(user_id, created_at DESC);
   -- ขั้นตอนที่รอผู้รับงานคนนี้อยู่ (หน้า "งานของฉัน" และการหาผู้รักษาการแทน)
   CREATE INDEX IF NOT EXISTS idx_workflow_assignee ON workflow_steps(assignee_id, status);
+
+  -- คิวข้อความที่จะส่งเข้าไลน์ (ดู services/lineNotify.js)
+  --
+  -- ทำไมต้องพักไว้ในตารางก่อน ไม่ส่งออกไปเลยตอนสร้างการแจ้งเตือน: จุดที่สร้างการแจ้งเตือนหลายจุด
+  -- อยู่ภายใน transaction เช่นการกดประชาสัมพันธ์ให้ทุกคน ถ้ายิงออกไปทันทีแล้ว transaction ล้มเหลว
+  -- จนต้อง ROLLBACK ฐานข้อมูลจะกลับไปเป็นเหมือนไม่มีอะไรเกิดขึ้น แต่ครูทั้งโรงเรียนได้ข้อความไปแล้ว
+  -- (เป็นอาการเดียวกับบั๊กอนุมัติใบลาที่บันทึกครึ่งเดียว) การเขียนลงคิวอยู่ใน transaction เดียวกัน
+  -- ROLLBACK แล้วข้อความก็หายไปด้วย และยังได้การส่งซ้ำเวลา LINE ล่มชั่วคราวเป็นของแถม
+  CREATE TABLE IF NOT EXISTS line_outbox (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    line_user_id TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    sent_at TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_line_outbox_pending ON line_outbox(sent_at, created_at);
   `);
+
+  // บัญชีไลน์หนึ่งบัญชีต้องผูกกับผู้ใช้ในระบบได้คนเดียวเท่านั้น — ถ้าผูกซ้อนได้ บัญชีไลน์นั้นจะได้รับ
+  // การแจ้งเตือนของคนอื่นไปด้วย ซึ่งรวมถึงชื่อเรื่องหนังสือที่เจ้าตัวไม่มีสิทธิ์เห็น
+  // (partial index เพราะคนที่ยังไม่ได้เชื่อมมีค่าเป็น NULL กันหมด ซึ่งต้องซ้ำกันได้)
+  const userColsForLine = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  if (!userColsForLine.includes('line_user_id')) {
+    db.exec('ALTER TABLE users ADD COLUMN line_user_id TEXT');
+    db.exec('ALTER TABLE users ADD COLUMN line_linked_at TEXT');
+    db.exec('ALTER TABLE users ADD COLUMN line_notify_enabled INTEGER NOT NULL DEFAULT 1');
+    db.exec('ALTER TABLE users ADD COLUMN line_link_code TEXT');
+    db.exec('ALTER TABLE users ADD COLUMN line_link_code_expires_at TEXT');
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_line_user ON users(line_user_id) WHERE line_user_id IS NOT NULL');
 
   // ฐานข้อมูลที่ deploy ไปแล้วก่อนหน้านี้ยังไม่มีคอลัมน์นี้ — SQLite ไม่มี "ADD COLUMN IF NOT EXISTS"
   // จึงต้องเช็ค pragma ก่อนแล้วค่อย ALTER (CREATE TABLE ด้านบนใช้กับฐานข้อมูลใหม่ที่ยังไม่มีตารางเท่านั้น)

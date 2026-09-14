@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 const tmpDb = path.join(os.tmpdir(), `esaraban-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -43,6 +44,7 @@ const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, planBackupCleanup,
 const sqliteModule = await import('node:sqlite');
 const { createDestructionBatch, approveDestructionBatch, ELIGIBLE_PAGE_SIZE } = await import('../src/services/retention.js');
 const { MAX_STAMP_TEXT } = await import('../src/services/pdfStamp.js');
+const { notifyUser: notifyUserForTest } = await import('../src/services/notify.js');
 const zlib = await import('node:zlib');
 
 const seed = db._seed;
@@ -135,7 +137,9 @@ async function dispatchGet(user, path, query = {}) {
 
 // เหมือน dispatchGet แต่เป็น POST พร้อม body — ใช้ตรวจว่าเส้นทางปฏิเสธค่าที่ไม่ถูกต้อง "ก่อน" ที่จะ
 // ไปแตะฐานข้อมูล ซึ่งเทสต์ระดับฟังก์ชันมองไม่เห็น เพราะการตรวจบางอย่างอยู่ในตัวเส้นทางเอง
-async function dispatchPost(user, path, body = {}) {
+// opts.reqHeaders/opts.rawBody สำหรับเส้นทางที่ต้องดูของดิบจาก request จริง — ตัวรับ webhook ของ LINE
+// ตรวจลายเซ็นจากไบต์ที่ส่งมาเป๊ะๆ ไม่ใช่จาก JSON ที่ parse แล้ว
+async function dispatchPost(user, path, body = {}, opts = {}) {
   if (!routerForTest) {
     ({ router: routerForTest } = await import('../src/router.js'));
     await import('../src/routes/index.js');
@@ -149,7 +153,10 @@ async function dispatchPost(user, path, body = {}) {
     writeHead(code, h) { status = code; Object.assign(headers, h || {}); this.headersSent = true; return this; },
     end(chunk) { if (chunk) chunks.push(String(chunk)); },
   };
-  const ctx = { req: { method: 'POST', headers: {} }, res, url: new URL(`http://x${path}`), query: {}, user, body, ip: '127.0.0.1' };
+  const ctx = {
+    req: { method: 'POST', headers: opts.reqHeaders || {} }, res, url: new URL(`http://x${path}`),
+    query: {}, user, body, rawBody: opts.rawBody, ip: '127.0.0.1',
+  };
   await routerForTest.dispatch('POST', path, ctx);
   const text = chunks.join('');
   let json = {};
@@ -5420,6 +5427,339 @@ describe('ส่งเรื่องเข้ากลุ่มไลน์', (
     } finally {
       if (saved === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = saved;
     }
+  });
+});
+
+// แจ้งเตือนเด้งเข้าไลน์ — ครูไม่ได้เปิดเว็บสารบรรณค้างไว้ทั้งวัน แต่เปิดไลน์อยู่ตลอด
+// จุดที่ห้ามพลาด: ข้อความที่ออกไปอยู่นอกการคุมสิทธิ์แล้ว และตัวรับ webhook เป็นที่อยู่สาธารณะ
+describe('แจ้งเตือนเข้าไลน์', () => {
+  let ln;
+  const TOKEN = 'test-channel-access-token';
+  const SECRET = 'test-channel-secret';
+  let savedToken; let savedSecret; let savedBase;
+  // เก็บทุกอย่างที่ "ส่งออกไปหา LINE" ไว้ตรวจ แทนการยิงออกอินเทอร์เน็ตจริง
+  let outbound = [];
+  let nextReply = { ok: true, status: 200 };
+
+  before(async () => {
+    ln = await import('../src/services/lineNotify.js');
+    savedToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+    savedSecret = process.env.LINE_CHANNEL_SECRET;
+    savedBase = process.env.PUBLIC_BASE_URL;
+    process.env.LINE_CHANNEL_ACCESS_TOKEN = TOKEN;
+    process.env.LINE_CHANNEL_SECRET = SECRET;
+    process.env.PUBLIC_BASE_URL = 'https://saraban.test';
+    ln._setLineSenderForTest(async (pathname, payload) => {
+      outbound.push({ pathname, payload });
+      return typeof nextReply === 'function' ? nextReply(outbound.length) : nextReply;
+    });
+  });
+  after(() => {
+    ln._setLineSenderForTest(null);
+    if (savedToken === undefined) delete process.env.LINE_CHANNEL_ACCESS_TOKEN; else process.env.LINE_CHANNEL_ACCESS_TOKEN = savedToken;
+    if (savedSecret === undefined) delete process.env.LINE_CHANNEL_SECRET; else process.env.LINE_CHANNEL_SECRET = savedSecret;
+    if (savedBase === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = savedBase;
+    db.prepare('UPDATE users SET line_user_id = NULL, line_linked_at = NULL, line_link_code = NULL, line_link_code_expires_at = NULL, line_notify_enabled = 1').run();
+    db.prepare('DELETE FROM line_outbox').run();
+  });
+
+  const reset = () => { outbound = []; nextReply = { ok: true, status: 200 }; db.prepare('DELETE FROM line_outbox').run(); };
+  const linkDirect = (userId, lineUserId) => {
+    db.prepare('UPDATE users SET line_user_id = NULL WHERE line_user_id = ?').run(lineUserId);
+    db.prepare('UPDATE users SET line_user_id = ?, line_linked_at = ?, line_notify_enabled = 1 WHERE id = ?')
+      .run(lineUserId, nowIso(), userId);
+  };
+  const outboxOf = (userId) => db.prepare('SELECT * FROM line_outbox WHERE user_id = ? ORDER BY created_at').all(userId);
+  const signedBody = (obj, secret = SECRET) => {
+    const raw = Buffer.from(JSON.stringify(obj), 'utf8');
+    const sig = createHmac('sha256', secret).update(raw).digest('base64');
+    return { raw, sig, obj };
+  };
+
+  // ที่อยู่ webhook เปิดสาธารณะ ใครก็ยิงเข้ามาได้ ลายเซ็นคือสิ่งเดียวที่กั้นไม่ให้คนนอกปลอมเหตุการณ์
+  // "ครูส่งรหัสเชื่อมบัญชีมา" แล้วเดารหัสรัวๆ จนติด เพื่อรับแจ้งเตือน (ซึ่งมีชื่อเรื่องหนังสือ) ของครูคนนั้น
+  describe('ตัวรับ webhook ต้องเชื่อเฉพาะของที่ LINE ส่งมาจริง', () => {
+    test('ลายเซ็นถูกต้องผ่าน ลายเซ็นผิด/ของถูกแก้กลางทาง/ไม่มีลายเซ็น ต้องไม่ผ่าน', () => {
+      const { raw, sig } = signedBody({ events: [] });
+      assert.equal(ln.verifyLineSignature(raw, sig), true, 'ลายเซ็นที่ถูกต้องต้องผ่าน');
+      assert.equal(ln.verifyLineSignature(Buffer.from(`${raw.toString('utf8')} `), sig), false, 'เนื้อหาถูกแก้แล้วลายเซ็นเดิมต้องไม่ผ่าน');
+      assert.equal(ln.verifyLineSignature(raw, signedBody({ events: [] }, 'secret-ของคนอื่น').sig), false, 'ลายเซ็นจาก secret อื่นต้องไม่ผ่าน');
+      assert.equal(ln.verifyLineSignature(raw, ''), false, 'ไม่มีลายเซ็นต้องไม่ผ่าน');
+      // ความยาวไม่เท่ากันต้องคืน false เฉยๆ ไม่ใช่โยน error จน webhook ตอบ 500 (LINE จะปิด webhook ให้เอง)
+      assert.equal(ln.verifyLineSignature(raw, 'c2hvcnQ='), false, 'ลายเซ็นสั้นผิดขนาดต้องคืน false ไม่ใช่พัง');
+      assert.equal(ln.verifyLineSignature(raw, 'ไม่ใช่ base64 เลย'), false);
+    });
+
+    test('ยิงของปลอมเข้ามาต้องได้ 401 และต้องไม่มีการผูกบัญชีเกิดขึ้น', async () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      const { code } = ln.createLinkCode(target);
+      const payload = { events: [{ type: 'message', message: { type: 'text', text: `${ln.LINK_KEYWORD} ${code}` }, source: { userId: 'U-ของปลอม' }, replyToken: 'rt' }] };
+      const raw = Buffer.from(JSON.stringify(payload), 'utf8');
+
+      const res = await dispatchPost(null, '/line/webhook', payload, { rawBody: raw, reqHeaders: { 'x-line-signature': 'ลายเซ็นมั่วๆ' } });
+      assert.equal(res.status, 401, 'ลายเซ็นผิดต้องถูกปฏิเสธ');
+      assert.equal(db.prepare('SELECT line_user_id FROM users WHERE id = ?').get(target).line_user_id, null,
+        'ยิงของปลอมเข้ามาแล้วผูกบัญชีไลน์ของคนอื่นเข้ากับบัญชีครูได้');
+      assert.equal(outbound.length, 0, 'ไม่ควรมีการตอบกลับไปหา LINE เลย');
+
+      // และของจริงต้องผ่าน ไม่ใช่ปฏิเสธหมดทุกอย่างแล้วเทสต์เขียวโดยไม่ได้ตรวจอะไร
+      const sig = createHmac('sha256', SECRET).update(raw).digest('base64');
+      const okRes = await dispatchPost(null, '/line/webhook', payload, { rawBody: raw, reqHeaders: { 'x-line-signature': sig } });
+      assert.equal(okRes.status, 200);
+      assert.equal(db.prepare('SELECT line_user_id FROM users WHERE id = ?').get(target).line_user_id, 'U-ของปลอม');
+    });
+
+    test('ยังไม่ได้ตั้ง Channel Secret ต้องไม่รับ webhook เลย', async () => {
+      reset();
+      const saved = process.env.LINE_CHANNEL_SECRET;
+      delete process.env.LINE_CHANNEL_SECRET;
+      try {
+        const payload = { events: [] };
+        const res = await dispatchPost(null, '/line/webhook', payload, { rawBody: Buffer.from(JSON.stringify(payload)), reqHeaders: {} });
+        assert.equal(res.status, 503, 'ตรวจลายเซ็นไม่ได้แล้วยังรับของเข้ามา = ใครก็ปลอมเหตุการณ์ได้');
+      } finally { process.env.LINE_CHANNEL_SECRET = saved; }
+    });
+  });
+
+  describe('รหัสเชื่อมบัญชี', () => {
+    test('รหัสใช้ได้ครั้งเดียว แล้วต้องใช้ซ้ำไม่ได้อีก', () => {
+      const target = seed.userIds.teacher001;
+      db.prepare('UPDATE users SET line_user_id = NULL WHERE id = ?').run(target);
+      const { code } = ln.createLinkCode(target);
+      assert.equal(ln.redeemLinkCode({ code, lineUserId: 'U-ครูคนนี้' }).ok, true);
+      assert.equal(ln.redeemLinkCode({ code, lineUserId: 'U-คนอื่นที่แอบเห็นรหัส' }).ok, false,
+        'รหัสเดิมยังใช้ผูกบัญชีได้อีก — ใครเห็นรหัสค้างบนจอก็แย่งบัญชีไปได้');
+    });
+
+    test('รหัสที่หมดอายุแล้วต้องใช้ไม่ได้', () => {
+      const target = seed.userIds.teacher001;
+      db.prepare('UPDATE users SET line_user_id = NULL WHERE id = ?').run(target);
+      const { code } = ln.createLinkCode(target);
+      db.prepare('UPDATE users SET line_link_code_expires_at = ? WHERE id = ?')
+        .run(new Date(Date.now() - 60000).toISOString(), target);
+      const res = ln.redeemLinkCode({ code, lineUserId: 'U-สายเกินไป' });
+      assert.equal(res.ok, false);
+      assert.equal(res.reason, 'expired');
+    });
+
+    test('รหัสที่ไม่มีอยู่จริงต้องไม่ผูกอะไรเลย', () => {
+      assert.equal(ln.redeemLinkCode({ code: 'ZZZZZZZZ', lineUserId: 'U-เดารหัส' }).ok, false);
+      assert.equal(ln.redeemLinkCode({ code: '', lineUserId: 'U-เดารหัส' }).ok, false);
+    });
+
+    // ถ้าบัญชีไลน์เดียวผูกได้หลายคน บัญชีนั้นจะได้รับแจ้งเตือนของคนอื่นไปด้วย รวมถึงชื่อเรื่องหนังสือ
+    // ที่เจ้าตัวไม่มีสิทธิ์เห็น
+    test('บัญชีไลน์หนึ่งบัญชีผูกกับผู้ใช้ได้คนเดียวเท่านั้น', () => {
+      const a = seed.userIds.teacher001;
+      const b = seed.userIds.reg001;
+      db.prepare('UPDATE users SET line_user_id = NULL WHERE id IN (?, ?)').run(a, b);
+      assert.equal(ln.redeemLinkCode({ code: ln.createLinkCode(a).code, lineUserId: 'U-เครื่องเดียวกัน' }).ok, true);
+      assert.equal(ln.redeemLinkCode({ code: ln.createLinkCode(b).code, lineUserId: 'U-เครื่องเดียวกัน' }).ok, true);
+      const holders = db.prepare('SELECT id FROM users WHERE line_user_id = ?').all('U-เครื่องเดียวกัน').map((r) => r.id);
+      assert.deepEqual(holders, [b], 'บัญชีไลน์เดียวผูกค้างไว้กับผู้ใช้สองคนพร้อมกัน');
+    });
+
+    // บล็อกบัญชีทางการไปแล้ว แต่ระบบยังบอกว่า "เชื่อมบัญชีแล้ว" = เจ้าตัวคิดว่าได้รับแจ้งเตือนอยู่
+    // ทั้งที่ข้อความล้มเงียบๆ ทุกฉบับ
+    test('ครูบล็อกบัญชีทางการ (unfollow) ต้องถูกปลดการเชื่อมทันที', async () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-จะบล็อก');
+      await ln.handleLineEvents([{ type: 'unfollow', source: { userId: 'U-จะบล็อก' } }]);
+      assert.equal(db.prepare('SELECT line_user_id FROM users WHERE id = ?').get(target).line_user_id, null);
+    });
+  });
+
+  describe('ข้อความที่ส่งออกไป', () => {
+    test('ข้อความต้องมีลิงก์แบบเต็มกลับมาที่เรื่องนั้น', () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-รับแจ้งเตือน');
+      const doc = makeDoc({ title: 'เรื่องที่ต้องรีบทำ' });
+      notifyUserForTest({ userId: target, documentId: doc.id, title: 'หนังสือใหม่ต้องดำเนินการ', message: 'เรื่องที่ต้องรีบทำ' });
+      const rows = outboxOf(target);
+      assert.equal(rows.length, 1, 'ไม่ได้เข้าคิวเลย');
+      assert.ok(rows[0].body.includes(`https://saraban.test/documents/${doc.id}`), rows[0].body);
+      assert.ok(rows[0].body.includes('เรื่องที่ต้องรีบทำ'), rows[0].body);
+    });
+
+    // ระเบียบว่าด้วยการรักษาความลับของทางราชการกำหนดช่องทางส่งหนังสือลับไว้เฉพาะ ไลน์ไม่ใช่หนึ่งในนั้น
+    test('หนังสือชั้นความลับต้องไม่ส่งเลขที่และชื่อเรื่องเข้าไลน์', () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-รับแจ้งเตือน');
+      const TITLE = 'ชื่อเรื่องลับที่ห้ามหลุดออกนอกระบบ';
+      const doc = makeDoc({ title: TITLE, secretLevel: 'secret' });
+      const row = getDocRow(doc.id);
+      notifyUserForTest({ userId: target, documentId: doc.id, title: `หนังสือใหม่ต้องดำเนินการ: ${row.doc_number_display}`, message: TITLE });
+      const body = outboxOf(target)[0].body;
+      assert.ok(!body.includes(TITLE), `ชื่อเรื่องหนังสือลับหลุดไปอยู่ในข้อความไลน์: ${body}`);
+      assert.ok(!body.includes(row.doc_number_display), `เลขทะเบียนหนังสือลับหลุดไปอยู่ในข้อความไลน์: ${body}`);
+      // ต้องยังบอกให้รู้ว่ามีเรื่องรออยู่ ไม่ใช่เงียบไปเฉยๆ จนเรื่องลับค้างไม่มีใครทำ
+      assert.ok(body.includes(`https://saraban.test/documents/${doc.id}`), 'ต้องยังมีลิงก์ให้เข้ามาอ่านในระบบ');
+    });
+
+    test('คนที่ยังไม่เชื่อมบัญชี หรือปิดแจ้งเตือนไว้ ต้องไม่เข้าคิว', () => {
+      reset();
+      const unlinked = seed.userIds.director01;
+      db.prepare('UPDATE users SET line_user_id = NULL WHERE id = ?').run(unlinked);
+      notifyUserForTest({ userId: unlinked, title: 'ทดสอบ', message: 'ทดสอบ' });
+      assert.equal(outboxOf(unlinked).length, 0, 'คนที่ยังไม่เชื่อมบัญชีไม่ควรมีอะไรเข้าคิว');
+
+      const off = seed.userIds.teacher001;
+      linkDirect(off, 'U-ปิดแจ้งเตือน');
+      ln.setLineNotifyEnabled(off, false);
+      notifyUserForTest({ userId: off, title: 'ทดสอบ', message: 'ทดสอบ' });
+      assert.equal(outboxOf(off).length, 0, 'ปิดแจ้งเตือนไว้แล้วยังส่งอยู่');
+      ln.setLineNotifyEnabled(off, true);
+    });
+
+    test('ยังไม่ได้ตั้งค่า LINE ต้องไม่เก็บอะไรไว้ในคิวเลย', () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-รับแจ้งเตือน');
+      const saved = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+      delete process.env.LINE_CHANNEL_ACCESS_TOKEN;
+      try {
+        notifyUserForTest({ userId: target, title: 'ทดสอบ', message: 'ทดสอบ' });
+        assert.equal(outboxOf(target).length, 0, 'ยังไม่เปิดใช้ไลน์แต่คิวโตขึ้นเรื่อยๆ');
+      } finally { process.env.LINE_CHANNEL_ACCESS_TOKEN = saved; }
+    });
+
+    // นี่คือเหตุผลทั้งหมดที่ต้องพักไว้ในคิวก่อน ไม่ยิงออกไปทันที — การกดประชาสัมพันธ์ให้ทุกคนแจ้งเตือน
+    // อยู่ในธุรกรรม ถ้ายิงออกทันทีแล้วธุรกรรมล้ม ฐานข้อมูลกลับไปเหมือนไม่มีอะไรเกิดขึ้น
+    // แต่ครูทั้งโรงเรียนได้ข้อความไปแล้ว (อาการเดียวกับบั๊กอนุมัติใบลาที่บันทึกครึ่งเดียว)
+    test('งานที่ล้มกลางคัน (ROLLBACK) ต้องไม่มีข้อความหลุดออกไป', () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-รับแจ้งเตือน');
+      db.exec('BEGIN IMMEDIATE');
+      notifyUserForTest({ userId: target, title: 'เรื่องที่สุดท้ายแล้วบันทึกไม่สำเร็จ', message: 'x' });
+      assert.equal(outboxOf(target).length, 1, 'ระหว่างธุรกรรมต้องเห็นแถวที่เพิ่งเขียน');
+      db.exec('ROLLBACK');
+      assert.equal(outboxOf(target).length, 0, 'ธุรกรรมล้มแล้วข้อความยังค้างอยู่ในคิว — ครูจะได้ไลน์แจ้งเรื่องที่ไม่ได้เกิดขึ้นจริง');
+    });
+  });
+
+  describe('ตัวส่งคิว', () => {
+    test('ส่งสำเร็จแล้วต้องไม่ส่งซ้ำอีก', async () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-รับแจ้งเตือน');
+      notifyUserForTest({ userId: target, title: 'ฉบับที่หนึ่ง', message: 'x' });
+      notifyUserForTest({ userId: target, title: 'ฉบับที่สอง', message: 'y' });
+
+      const first = await ln.flushLineOutbox();
+      assert.equal(first.sent, 2, `ควรส่ง 2 ฉบับ แต่ได้ ${JSON.stringify(first)}`);
+      assert.equal(outbound.length, 2);
+      assert.equal(outbound[0].pathname, '/message/push');
+      assert.equal(outbound[0].payload.to, 'U-รับแจ้งเตือน');
+
+      const second = await ln.flushLineOutbox();
+      assert.equal(second.sent, 0, 'ส่งซ้ำอีกรอบ — ครูจะได้ข้อความเดิมทุก 20 วินาทีไปตลอด');
+      assert.equal(outbound.length, 2);
+    });
+
+    // LINE ล่มชั่วคราวคือเรื่องปกติ ถ้าทิ้งทันทีที่ล้มครั้งแรก หนังสือด่วนจะเงียบหายไปโดยไม่มีใครรู้
+    test('LINE ล่มชั่วคราว (5xx) ต้องลองใหม่ แล้วเลิกเมื่อครบจำนวนครั้ง', async () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-รับแจ้งเตือน');
+      notifyUserForTest({ userId: target, title: 'ฉบับที่ LINE ล่ม', message: 'x' });
+      nextReply = { ok: false, status: 503, error: 'LINE ตอบ 503' };
+
+      for (let i = 0; i < ln._internals.MAX_ATTEMPTS; i++) {
+        const r = await ln.flushLineOutbox();
+        assert.equal(r.failed, 1, `รอบที่ ${i + 1} ควรลองส่งแล้วล้มเหลว`);
+      }
+      const row = outboxOf(target)[0];
+      assert.equal(row.sent_at, null);
+      assert.equal(row.attempts, ln._internals.MAX_ATTEMPTS, 'ต้องหยุดลองที่จำนวนครั้งที่กำหนด ไม่ลองไปเรื่อยๆ ตลอดกาล');
+      const after = await ln.flushLineOutbox();
+      assert.equal(after.failed, 0, 'ครบจำนวนครั้งแล้วต้องไม่ลองอีก');
+    });
+
+    // โทเคนผิด/ครูบล็อกบัญชีไป = ส่งอีกกี่ครั้งก็ไม่ผ่าน การลองซ้ำมีแต่ทำให้ข้อความของคนอื่นรอคิวอยู่ข้างหลัง
+    test('ความผิดพลาดถาวร (4xx) ต้องเลิกส่งทันที ไม่ลองซ้ำ', async () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-รับแจ้งเตือน');
+      notifyUserForTest({ userId: target, title: 'ฉบับที่โทเคนผิด', message: 'x' });
+      nextReply = { ok: false, status: 403, error: 'LINE ตอบ 403: forbidden' };
+      await ln.flushLineOutbox();
+      assert.equal(outboxOf(target)[0].attempts, ln._internals.MAX_ATTEMPTS, 'ควรเลิกส่งตั้งแต่ครั้งแรก');
+      const again = await ln.flushLineOutbox();
+      assert.equal(again.failed, 0);
+      assert.equal(outbound.length, 1, 'ยิงซ้ำทั้งที่รู้แล้วว่าไม่มีทางผ่าน');
+    });
+
+    // LINE ล่มยาวข้ามคืนแล้วกลับมา ถ้าไม่ตัดของเก่าทิ้ง ครูจะโดนถล่มด้วยข้อความเมื่อวานเป็นสิบฉบับรวดเดียว
+    test('ข้อความที่ค้างเกินหนึ่งวันต้องเลิกส่ง', async () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-รับแจ้งเตือน');
+      notifyUserForTest({ userId: target, title: 'ฉบับค้างข้ามวัน', message: 'x' });
+      const old = new Date(Date.now() - (ln._internals.MAX_AGE_HOURS + 2) * 3600000).toISOString();
+      db.prepare('UPDATE line_outbox SET created_at = ? WHERE user_id = ?').run(old, target);
+      const r = await ln.flushLineOutbox();
+      assert.equal(r.expired, 1);
+      assert.equal(r.sent, 0, 'ข้อความเมื่อวานยังถูกส่งออกไป');
+      assert.equal(outbound.length, 0);
+    });
+
+    test('ยกเลิกการเชื่อมบัญชีต้องล้างคิวที่ยังไม่ได้ส่งด้วย', async () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-รับแจ้งเตือน');
+      notifyUserForTest({ userId: target, title: 'ฉบับที่ค้างอยู่ตอนกดยกเลิก', message: 'x' });
+      ln.unlinkLineAccount(target);
+      assert.equal(outboxOf(target).length, 0, 'ยกเลิกแล้วข้อความเก่ายังตามไปส่งอีก');
+      await ln.flushLineOutbox();
+      assert.equal(outbound.length, 0);
+    });
+  });
+
+  describe('หน้าเว็บ', () => {
+    test('ครูขอรหัสเชื่อมบัญชีจากหน้าโปรไฟล์ได้ และรหัสต้องไม่ถูกบันทึกลง audit log', async () => {
+      reset();
+      const teacher = loadUserForTest(seed.userIds.teacher001);
+      db.prepare('UPDATE users SET line_user_id = NULL WHERE id = ?').run(teacher.id);
+      const res = await dispatchPost(teacher, '/profile/line/code', {});
+      assert.equal(res.status, 200, res.body);
+      assert.equal(res.json.code?.length, ln._internals.CODE_LENGTH, `รหัสที่ได้: ${res.json.code}`);
+      assert.ok(res.json.message.includes(ln.LINK_KEYWORD));
+      // ผู้ดูแลอ่าน audit log ได้ ถ้ารหัสอยู่ในนั้น ผู้ดูแลก็ผูกบัญชีไลน์ตัวเองเข้ากับบัญชีครูคนไหนก็ได้
+      const log = db.prepare("SELECT detail FROM audit_logs WHERE action = 'line_link_code_issued' ORDER BY created_at DESC LIMIT 1").get();
+      assert.ok(log, 'ต้องมีร่องรอยว่ามีการขอรหัส');
+      assert.ok(!String(log.detail || '').includes(res.json.code), 'รหัสเชื่อมบัญชีถูกบันทึกลง audit log');
+    });
+
+    test('หน้าโปรไฟล์แสดงสถานะการเชื่อมบัญชีตามจริง', async () => {
+      const teacher = loadUserForTest(seed.userIds.teacher001);
+      db.prepare('UPDATE users SET line_user_id = NULL WHERE id = ?').run(teacher.id);
+      const before = await dispatchGet(loadUserForTest(teacher.id), '/profile', {});
+      assert.ok(before.body.includes('ขอรหัสเชื่อมบัญชี'), 'ยังไม่เชื่อมต้องมีปุ่มขอรหัส');
+
+      linkDirect(teacher.id, 'U-แสดงบนหน้าโปรไฟล์');
+      const after = await dispatchGet(loadUserForTest(teacher.id), '/profile', {});
+      assert.ok(after.body.includes('ยกเลิกการเชื่อมบัญชีไลน์'), 'เชื่อมแล้วต้องมีปุ่มยกเลิก');
+      assert.ok(!after.body.includes('ขอรหัสเชื่อมบัญชี'), 'เชื่อมแล้วยังขึ้นปุ่มขอรหัสอยู่อีก');
+    });
+
+    test('หน้าตั้งค่าของผู้ดูแลบอกที่อยู่ webhook และนับคนที่เชื่อมแล้ว', async () => {
+      const admin = loadUserForTest(seed.userIds.admin);
+      const res = await dispatchGet(admin, '/admin/line', {});
+      assert.equal(res.status, 200);
+      assert.ok(res.body.includes('/line/webhook'), 'ไม่บอกที่อยู่ webhook ที่ต้องเอาไปกรอกใน LINE Developers');
+      const linked = db.prepare('SELECT COUNT(*) c FROM users WHERE line_user_id IS NOT NULL AND deleted_at IS NULL').get().c;
+      assert.ok(res.body.includes(`<strong>${linked}</strong> คน`), 'จำนวนคนที่เชื่อมบัญชีแล้วไม่ตรงกับความจริง');
+    });
+
+    test('ครูธรรมดาเปิดหน้าตั้งค่าไลน์ของผู้ดูแลไม่ได้', async () => {
+      const res = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/admin/line', {});
+      assert.equal(res.status, 403);
+    });
   });
 });
 
