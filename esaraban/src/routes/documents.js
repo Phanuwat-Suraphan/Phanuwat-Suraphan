@@ -18,6 +18,7 @@ import {
   ackSlotTopPercent, ACK_WORD_HEIGHT_PERCENT, ACK_ENTRY_HEIGHT_PERCENT, MAX_STAMP_TEXT,
 } from '../services/pdfStamp.js';
 import { assertMaxLength } from '../services/validate.js';
+import { canShareToLine, documentShareText, lineShareUrl } from '../services/line.js';
 import { getActiveDelegateFor } from '../services/delegation.js';
 import {
   buildDocumentQuery, countDocuments, listDocuments, describeFilters, listRegisterYears, CLOSED_STATUSES,
@@ -1477,6 +1478,8 @@ router.get('/documents/:id', requirePage((ctx) => {
       <div class="chip-row">
         <a class="btn btn-outline btn-sm" href="${liveAttachments.length ? `/files/${liveAttachments[0].id}` : `/documents/${doc.id}/print`}" target="_blank" rel="noopener">🖨️ พิมพ์เอกสาร${liveAttachments.length ? ' (PDF ที่บันทึกไว้)' : ''}</a>
         ${liveAttachments.length ? `<a class="btn btn-outline btn-sm" href="/documents/${doc.id}/print" target="_blank" rel="noopener">📝 บันทึกข้อความ/สรุปลายเซ็น</a>` : ''}
+        ${canShareToLine(doc) ? `<a class="btn btn-outline btn-sm" href="${esc(lineShareUrl(documentShareText(doc)))}" target="_blank" rel="noopener"
+          title="เปิดหน้าต่างแชร์ของ LINE พร้อมเลขที่ ชื่อเรื่อง และลิงก์กลับมาที่หนังสือฉบับนี้ (ใช้บนมือถือที่มีแอป LINE)">💬 ส่งเข้าไลน์</a>` : ''}
         ${canVoid ? `<button class="btn btn-outline btn-sm" onclick="actionWithReason(this, '/documents/${doc.id}/void', 'ระบุเหตุผลที่ยกเลิกเอกสาร (เลขที่จะยังคงอยู่ในลำดับ ไม่ถูกนำไปใช้ซ้ำ)')">ยกเลิกเอกสาร</button>` : ''}
         ${canArchive ? `<button class="btn btn-outline btn-sm" onclick="fetch('/documents/${doc.id}/archive',{method:'POST'}).then(()=>location.reload())">📦 จัดเก็บเข้าแฟ้ม</button>` : ''}
         ${canForceDelete ? `<a class="btn btn-outline btn-sm" href="/admin/audit?document=${esc(doc.id)}">🧾 ประวัติการดำเนินการ (audit)</a>` : ''}

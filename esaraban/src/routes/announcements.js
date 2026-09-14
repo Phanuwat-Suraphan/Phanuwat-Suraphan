@@ -3,6 +3,7 @@ import { layout, esc, fmtDate, emptyState } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { db, uuid, nowIso, beYear, audit } from '../db.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream, deleteFile as deleteDriveFile } from '../services/googleDrive.js';
+import { announcementShareText, lineShareUrl } from '../services/line.js';
 import { Readable } from 'node:stream';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -158,7 +159,13 @@ router.get('/announcements/:id', requirePage((ctx) => {
   const content = `
     <div class="card-header">
       <h2 class="mt-0">${a.category === 'ประกาศ' ? '📣' : '📌'} ${esc(a.title)}</h2>
-      <a class="btn btn-outline btn-sm" href="/announcements">← กลับหน้าประกาศ</a>
+      <div class="chip-row">
+        <!-- ประกาศเป็นเรื่องที่ตั้งใจให้ทุกคนเห็นอยู่แล้ว จึงแชร์เข้ากลุ่มไลน์ได้เสมอ ไม่มีชั้นความลับ
+             ให้ต้องกัน (ต่างจากหนังสือ ดู services/line.js) -->
+        <a class="btn btn-outline btn-sm" href="${esc(lineShareUrl(announcementShareText(a)))}" target="_blank" rel="noopener"
+          title="เปิดหน้าต่างแชร์ของ LINE พร้อมชื่อประกาศและลิงก์กลับมาที่ประกาศนี้">💬 ส่งเข้าไลน์</a>
+        <a class="btn btn-outline btn-sm" href="/announcements">← กลับหน้าประกาศ</a>
+      </div>
     </div>
     <div class="card">
       <div class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">

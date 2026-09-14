@@ -721,8 +721,12 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
   before(() => {
     const doc = makeDoc({ title: 'เอกสารตัวอย่างสำหรับกวาดหน้าเว็บ', dueDate: '2026-08-25' });
     assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, instruction: 'เพื่อพิจารณา', actorUser: registrarUser });
+    // ต้องจองช่วงวันจากตัวจ่ายช่วงกลาง ห้ามเขียนวันที่ตายตัว — fixture นี้เคยตรึงไว้ที่ 24-26 ส.ค. 2569
+    // ซึ่งไม่ชนอะไรตอนเขียน แต่พอเวลาจริงเดินมาถึงกลางเดือน ก.ย. วันดังกล่าวกลายเป็น "ย้อนหลัง 20 วัน"
+    // พอดี แล้วไปชนกับเทสต์ "ยื่นใบลาย้อนหลัง" ซึ่งนับจากวันนี้ — เทสต์ที่เคยเขียวจึงแดงขึ้นมาเองโดยที่
+    // ไม่มีใครแก้โค้ดเลย ตัวจ่ายช่วงกลางจองวันไกลออกไปให้แต่ละใบไม่ซ้ำกัน จึงไม่ชนกับใครไม่ว่าวันนี้เป็นวันไหน
     createLeaveRequest({
-      requesterId: teacherUser.id, leaveType: 'sick', startDate: '2026-08-24', endDate: '2026-08-26',
+      requesterId: teacherUser.id, leaveType: 'sick', ...nextLeaveWindow(3),
       reason: 'ไม่สบาย', approverId: seed.userIds.director01,
     });
     createDelegation({
@@ -5278,6 +5282,144 @@ describe('สำรองฐานข้อมูล: สำเนาต้อ�
     const dbAt = src.indexOf("await import('./src/db.js')");
     assert.ok(restoreAt > 0 && dbAt > 0, 'หาบรรทัดกู้คืน/โหลด db.js ไม่เจอ');
     assert.ok(restoreAt < dbAt, 'ต้องกู้คืนก่อนโหลด db.js');
+  });
+});
+
+// ที่โรงเรียนนี้ช่องทางแจ้งงานจริงคือกลุ่มไลน์ ปุ่ม "ส่งเข้าไลน์" จึงเป็นทางที่เรื่องเดินทางจริง
+// สิ่งที่ห้ามพลาดคือข้อความที่ถูกแชร์ออกไปอยู่นอกการคุมสิทธิ์ของระบบแล้ว — ใครอยู่ในกลุ่มก็เห็น
+describe('ส่งเรื่องเข้ากลุ่มไลน์', () => {
+  let lineSvc; let urlSvc;
+  before(async () => {
+    lineSvc = await import('../src/services/line.js');
+    urlSvc = await import('../src/services/publicUrl.js');
+  });
+
+  // ลิงก์ที่ส่งไปกลุ่มไลน์ต้องเป็นที่อยู่เต็ม ไม่ใช่ /documents/xxx ซึ่งกดจากในไลน์แล้วไปไม่ถึงไหน
+  test('ประกอบที่อยู่เว็บแบบเต็มจากหัว request ที่ผ่าน proxy มา', () => {
+    const saved = process.env.PUBLIC_BASE_URL;
+    delete process.env.PUBLIC_BASE_URL;
+    try {
+      urlSvc._resetRememberedBaseUrl();
+      // ยังไม่เคยเห็น request เลย — ต้องไม่เดาชื่อเว็บมั่วๆ ให้คืนเส้นทางเดิมไปตรงๆ
+      assert.equal(urlSvc.absoluteUrl('/documents/x'), '/documents/x');
+
+      // Render/Nginx ต่อกับแอปด้วย http ที่ขาใน แต่ผู้ใช้เข้ามาด้วย https — ถ้าดูแค่ขาในจะได้ลิงก์
+      // http:// ซึ่งมือถือขึ้นคำเตือน "ไม่ปลอดภัย" ให้ครูเห็นทุกครั้งที่กดจากไลน์
+      urlSvc.rememberBaseUrl({ host: 'saraban.example.org', 'x-forwarded-proto': 'https' });
+      assert.equal(urlSvc.absoluteUrl('/documents/x'), 'https://saraban.example.org/documents/x');
+
+      // ไม่มีหัวบอก proto เลย และไม่ใช่เครื่องตัวเอง — ต้องเดาเป็น https ไม่ใช่ http
+      urlSvc._resetRememberedBaseUrl();
+      urlSvc.rememberBaseUrl({ host: 'saraban.example.org' });
+      assert.ok(urlSvc.absoluteUrl('/x').startsWith('https://'), urlSvc.absoluteUrl('/x'));
+    } finally {
+      if (saved === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = saved;
+      urlSvc._resetRememberedBaseUrl();
+    }
+  });
+
+  // โรงเรียนที่เอาโดเมนตัวเองมาวางหน้า Render อีกที หัว host ที่มาถึงแอปเป็นชื่อภายในของผู้ให้บริการ
+  // ลิงก์ที่ส่งไปไลน์จึงต้องยึดค่าที่ตั้งไว้ ไม่ใช่สิ่งที่บังเอิญเห็นในหัว request
+  test('ค่าที่ตั้งไว้ใน PUBLIC_BASE_URL ชนะที่อยู่ที่เห็นจาก request เสมอ', () => {
+    const saved = process.env.PUBLIC_BASE_URL;
+    try {
+      urlSvc.rememberBaseUrl({ host: 'internal-abc123.onrender.com', 'x-forwarded-proto': 'https' });
+      process.env.PUBLIC_BASE_URL = 'https://saraban.wat-saohin.ac.th/';
+      // ตัด / ปิดท้ายทิ้ง ไม่งั้นลิงก์กลายเป็น //documents/x ซึ่งเบราว์เซอร์อ่านเป็นคนละเว็บ
+      assert.equal(urlSvc.absoluteUrl('/documents/x'), 'https://saraban.wat-saohin.ac.th/documents/x');
+    } finally {
+      if (saved === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = saved;
+      urlSvc._resetRememberedBaseUrl();
+    }
+  });
+
+  test('ข้อความที่แชร์ต้องมีเลขที่ ชื่อเรื่อง และลิงก์กลับมาที่หนังสือฉบับนั้น', () => {
+    const saved = process.env.PUBLIC_BASE_URL;
+    process.env.PUBLIC_BASE_URL = 'https://saraban.test';
+    try {
+      const d = makeDoc({ title: 'ขอเชิญประชุมผู้บริหารสถานศึกษา', correspondentName: 'สพป.เชียงใหม่ เขต ๑' });
+      const row = getDocRow(d.id);
+      const text = lineSvc.documentShareText(row);
+      assert.ok(text.includes(row.doc_number_display), `ไม่มีเลขทะเบียนในข้อความ: ${text}`);
+      assert.ok(text.includes('ขอเชิญประชุมผู้บริหารสถานศึกษา'), `ไม่มีชื่อเรื่อง: ${text}`);
+      assert.ok(text.includes('สพป.เชียงใหม่ เขต ๑'), `ไม่มีชื่อผู้ส่ง: ${text}`);
+      assert.ok(text.includes(`https://saraban.test/documents/${d.id}`), `ไม่มีลิงก์แบบเต็ม: ${text}`);
+      // LINE ทำตัวอย่างลิงก์ให้เฉพาะ URL ตัวสุดท้ายของข้อความ — ถ้ามีอะไรต่อท้าย ตัวอย่างจะไม่ขึ้น
+      assert.ok(text.trimEnd().endsWith(`/documents/${d.id}`), `ลิงก์ต้องอยู่บรรทัดสุดท้าย: ${text}`);
+    } finally {
+      if (saved === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = saved;
+    }
+  });
+
+  // ชื่อเรื่องที่อยู่ในตัวข้อความไม่ผ่านการเช็คสิทธิ์ใดๆ เลย — พอส่งเข้ากลุ่มแล้วเรียกคืนไม่ได้
+  test('หนังสือชั้นความลับต้องไม่มีปุ่มส่งเข้าไลน์', () => {
+    for (const level of ['secret', 'top_secret']) {
+      const row = getDocRow(makeDoc({ title: `หนังสือ${level}`, secretLevel: level }).id);
+      assert.equal(lineSvc.canShareToLine(row), false, `ชั้นความลับ ${level} ยังแชร์เข้าไลน์ได้`);
+    }
+    // และของปกติต้องแชร์ได้จริง ไม่ใช่ปิดหมดทุกอันแล้วเทสต์ผ่านแบบไม่ได้ตรวจอะไร
+    assert.equal(lineSvc.canShareToLine(getDocRow(makeDoc({ secretLevel: 'normal' }).id)), true);
+    assert.equal(lineSvc.canShareToLine(getDocRow(makeDoc({ secretLevel: 'internal' }).id)), true);
+  });
+
+  // ส่งลิงก์หนังสือที่ทำลาย/ยกเลิกไปแล้วเข้ากลุ่ม = บอกให้ครูไปทำเรื่องที่ไม่มีอยู่แล้ว
+  test('หนังสือที่ทำลายหรือยกเลิกไปแล้วต้องไม่มีปุ่มส่งเข้าไลน์', () => {
+    for (const status of ['destroyed', 'voided']) {
+      assert.equal(lineSvc.canShareToLine({ id: 'x', status, secret_level: 'normal' }), false,
+        `หนังสือสถานะ ${status} ยังแชร์เข้าไลน์ได้`);
+    }
+  });
+
+  // ข้อความมีขึ้นบรรทัดใหม่ เว้นวรรค และอักษรไทย ถ้าไม่เข้ารหัส ลิงก์จะขาดกลางทางแล้วแชร์ไปได้แค่ครึ่งเดียว
+  test('ลิงก์แชร์ต้องเข้ารหัสข้อความทั้งก้อน ไม่มีอักขระดิบหลุดออกมา', () => {
+    const url = lineSvc.lineShareUrl('บรรทัดแรก\nบรรทัดที่สอง & มีเว้นวรรค');
+    assert.ok(url.startsWith('https://line.me/R/share?text='), url);
+    const raw = url.slice('https://line.me/R/share?text='.length);
+    assert.doesNotMatch(raw, /[\s"'<>]/, `มีอักขระดิบหลุดออกมาในลิงก์: ${raw}`);
+    assert.equal(decodeURIComponent(raw), 'บรรทัดแรก\nบรรทัดที่สอง & มีเว้นวรรค');
+  });
+
+  test('หน้าหนังสือแสดงปุ่มส่งเข้าไลน์ให้ฉบับปกติ แต่ไม่แสดงให้ฉบับลับ', async () => {
+    const saved = process.env.PUBLIC_BASE_URL;
+    process.env.PUBLIC_BASE_URL = 'https://saraban.test';
+    try {
+      const reg = loadUserForTest(seed.userIds.reg001);
+      const normal = makeDoc({ title: 'หนังสือปกติสำหรับปุ่มไลน์', createdBy: seed.userIds.reg001 });
+      const secret = makeDoc({ title: 'หนังสือลับสำหรับปุ่มไลน์', secretLevel: 'secret', createdBy: seed.userIds.reg001 });
+
+      const okPage = await dispatchGet(reg, `/documents/${normal.id}`, {});
+      assert.equal(okPage.status, 200);
+      assert.ok(okPage.body.includes('line.me/R/share'), 'หน้าหนังสือปกติไม่มีปุ่มส่งเข้าไลน์');
+      assert.ok(okPage.body.includes(encodeURIComponent('หนังสือปกติสำหรับปุ่มไลน์')),
+        'ปุ่มมีแต่ยังไม่ได้ใส่ชื่อเรื่องลงในข้อความที่จะแชร์');
+
+      const secretPage = await dispatchGet(reg, `/documents/${secret.id}`, {});
+      assert.equal(secretPage.status, 200);
+      assert.ok(!secretPage.body.includes('line.me/R/share'),
+        'หน้าหนังสือลับยังมีปุ่มส่งเข้าไลน์ — ชื่อเรื่องหลุดออกนอกระบบได้');
+    } finally {
+      if (saved === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = saved;
+    }
+  });
+
+  test('หน้าประกาศมีปุ่มส่งเข้าไลน์พร้อมลิงก์กลับมาที่ประกาศนั้น', async () => {
+    const saved = process.env.PUBLIC_BASE_URL;
+    process.env.PUBLIC_BASE_URL = 'https://saraban.test';
+    try {
+      const reg = loadUserForTest(seed.userIds.reg001);
+      const made = await dispatchPost(reg, '/announcements',
+        { category: 'ประชาสัมพันธ์', title: 'อบรมครูวันเสาร์', body: 'รายละเอียดตามเอกสารแนบ' });
+      assert.ok(made.status === 200 || made.status === 201, `โพสต์ประกาศไม่ผ่าน: ${made.status} ${made.body}`);
+      const ann = db.prepare('SELECT * FROM announcements WHERE title = ? ORDER BY created_at DESC LIMIT 1').get('อบรมครูวันเสาร์');
+      assert.ok(ann, 'หาประกาศที่เพิ่งสร้างไม่เจอ');
+      const page = await dispatchGet(reg, `/announcements/${ann.id}`, {});
+      assert.equal(page.status, 200);
+      assert.ok(page.body.includes('line.me/R/share'), 'หน้าประกาศไม่มีปุ่มส่งเข้าไลน์');
+      assert.ok(page.body.includes(encodeURIComponent(`https://saraban.test/announcements/${ann.id}`)),
+        'ปุ่มแชร์ประกาศไม่มีลิงก์กลับมาที่ประกาศนั้น');
+    } finally {
+      if (saved === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = saved;
+    }
   });
 });
 

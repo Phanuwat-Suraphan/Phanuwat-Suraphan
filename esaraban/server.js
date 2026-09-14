@@ -11,6 +11,7 @@ import { restoreDatabaseIfMissing, startAutoBackup } from './src/services/dbBack
 await restoreDatabaseIfMissing();
 
 const { getSessionUser } = await import('./src/auth.js');
+const { rememberBaseUrl } = await import('./src/services/publicUrl.js');
 const { db } = await import('./src/db.js');
 const { router } = await import('./src/router.js');
 await import('./src/routes/index.js'); // registers all routes onto `router`
@@ -88,6 +89,9 @@ function applySecurityHeaders(res) {
 const server = http.createServer(async (req, res) => {
   try {
     applySecurityHeaders(res);
+    // จำที่อยู่เว็บจริงไว้ เพื่อให้ข้อความที่ส่งออกนอกระบบ (แชร์เข้าไลน์/แจ้งเตือนเข้าไลน์) มีลิงก์
+    // แบบเต็มที่กดได้ — ตัวส่งแจ้งเตือนทำงานเป็นรอบๆ ไม่มี request อยู่ในมือ (ดู services/publicUrl.js)
+    rememberBaseUrl(req.headers);
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pathname = decodeURIComponent(url.pathname);
 
