@@ -5763,6 +5763,156 @@ describe('แจ้งเตือนเข้าไลน์', () => {
   });
 });
 
+// เปิดระบบในแอป LINE (LIFF) และการพากลับไปหน้าที่ตั้งใจจะเปิดหลังล็อกอิน
+//
+// ลิงก์ที่ส่งกันในกลุ่มไลน์ชี้ตรงมาที่หนังสือฉบับนั้น ซึ่งแปลว่าตอนนี้มีลิงก์ของระบบเดินทางอยู่ในที่
+// ที่เราคุมไม่ได้ — การพากลับหลังล็อกอินจึงต้องตรวจปลายทางทุกครั้ง ไม่งั้นกลายเป็นลิงก์ที่ขึ้นชื่อ
+// เว็บโรงเรียนแต่พาไปเว็บปลอม
+describe('เปิดระบบในแอป LINE และการพากลับไปหน้าที่ตั้งใจ', () => {
+  let ln; let vd;
+  let savedLiff; let savedLoginCh;
+  before(async () => {
+    ln = await import('../src/services/lineNotify.js');
+    vd = await import('../src/services/validate.js');
+    savedLiff = process.env.LINE_LIFF_ID;
+    savedLoginCh = process.env.LINE_LOGIN_CHANNEL_ID;
+  });
+  after(() => {
+    ln._setLineIdTokenVerifierForTest(null);
+    if (savedLiff === undefined) delete process.env.LINE_LIFF_ID; else process.env.LINE_LIFF_ID = savedLiff;
+    if (savedLoginCh === undefined) delete process.env.LINE_LOGIN_CHANNEL_ID; else process.env.LINE_LOGIN_CHANNEL_ID = savedLoginCh;
+    db.prepare('UPDATE users SET line_user_id = NULL, line_linked_at = NULL').run();
+  });
+
+  test('ปลายทางที่พากลับได้ต้องเป็นเส้นทางในเว็บนี้เท่านั้น', () => {
+    assert.equal(vd.safeNextPath('/documents/abc?x=1'), '/documents/abc?x=1');
+    assert.equal(vd.safeNextPath('/'), '/');
+    for (const evil of [
+      'https://เว็บปลอม.example',       // ที่อยู่เต็มของเว็บอื่น
+      '//เว็บปลอม.example',             // เบราว์เซอร์อ่านเป็นเว็บอื่น (protocol-relative)
+      '/\\เว็บปลอม.example',            // เบราว์เซอร์บางตัวอ่าน \ เป็น /
+      'javascript:alert(1)',
+      '/ok\nLocation: https://เว็บปลอม.example', // แทรกหัว HTTP เพิ่ม
+      'documents/abc',                  // ไม่ได้ขึ้นต้นด้วย /
+      '', null, undefined, 123,
+    ]) {
+      assert.equal(vd.safeNextPath(evil), '', `ควรปฏิเสธ: ${String(evil)}`);
+    }
+  });
+
+  test('กดลิงก์หนังสือจากกลุ่มไลน์ทั้งที่ยังไม่ล็อกอิน ต้องพากลับมาที่หนังสือฉบับนั้นหลังล็อกอิน', async () => {
+    const doc = makeDoc({ title: 'หนังสือที่กดมาจากลิงก์ในไลน์' });
+    const guard = await dispatchGet(null, `/documents/${doc.id}`, {});
+    assert.equal(guard.status, 302);
+    assert.ok(guard.headers.Location.startsWith('/login?next='),
+      `ควรจำหน้าที่ตั้งใจจะเปิดไว้ด้วย แต่ได้ ${guard.headers.Location}`);
+    assert.equal(decodeURIComponent(guard.headers.Location.split('next=')[1]), `/documents/${doc.id}`);
+
+    const done = await dispatchPost(null, '/login', { employeeCode: 'teacher001', password: pw('teacher001'), next: `/documents/${doc.id}` });
+    assert.equal(done.status, 302);
+    assert.equal(done.headers.Location, `/documents/${doc.id}`, 'ล็อกอินเสร็จแล้วต้องพากลับไปที่หนังสือ ไม่ใช่โยนไปหน้าแรก');
+  });
+
+  test('ปลายทางที่ชี้ออกนอกเว็บ ต้องถูกทิ้งแล้วพาไปหน้าแรกแทน', async () => {
+    const done = await dispatchPost(null, '/login', { employeeCode: 'teacher001', password: pw('teacher001'), next: '//เว็บปลอม.example/หน้าหลอกเอารหัสผ่าน' });
+    assert.equal(done.status, 302);
+    assert.equal(done.headers.Location, '/', 'ลิงก์ที่ขึ้นชื่อเว็บโรงเรียนแต่พาออกไปเว็บอื่นได้');
+  });
+
+  test('ยังไม่ได้ตั้งค่า LIFF — /liff ต้องพาเข้าระบบตามปกติ ไม่ใช่ขึ้นหน้าขาว', async () => {
+    delete process.env.LINE_LIFF_ID;
+    const res = await dispatchGet(null, '/liff', { to: '/documents' });
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.Location, '/documents');
+  });
+
+  test('ตั้งค่า LIFF แล้ว — หน้าต้องโหลด SDK ได้จริง (CSP ต้องยอมเฉพาะหน้านี้)', async () => {
+    process.env.LINE_LIFF_ID = '1234567890-abcdefgh';
+    const res = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/liff', { to: '/tasks' });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.includes('static.line-scdn.net'), 'ไม่ได้โหลด SDK ของ LIFF');
+    assert.ok(res.body.includes('1234567890-abcdefgh'), 'ไม่ได้ส่ง LIFF ID ลงไปในหน้า');
+    // CSP ของทั้งระบบอนุญาตเฉพาะสคริปต์จากเว็บตัวเอง ถ้าไม่ผ่อนตรงนี้ SDK จะถูกบล็อกเงียบๆ
+    // ไม่มี error ให้เห็นบนหน้าจอเลย — หน้าจะค้างอยู่ที่ "กำลังเปิดระบบสารบรรณ..." ตลอดไป
+    const csp = res.headers['Content-Security-Policy'];
+    assert.ok(csp, 'หน้านี้ต้องประกาศ CSP ของตัวเองทับของกลาง');
+    assert.ok(csp.includes('https://static.line-scdn.net'), `CSP ยังบล็อก SDK ของ LIFF อยู่: ${csp}`);
+    // แต่ต้องผ่อนเฉพาะที่จำเป็น ไม่ใช่เปิดหมด
+    assert.ok(!csp.includes("script-src *") && !csp.includes("'unsafe-eval'"), `ผ่อน CSP กว้างเกินไป: ${csp}`);
+    assert.ok(csp.includes("frame-ancestors 'none'"), 'ยังต้องกันการถูกเอาไปฝังในเว็บอื่นเหมือนเดิม');
+  });
+
+  test('ปลายทางของ /liff ที่ชี้ออกนอกเว็บ ต้องถูกทิ้ง', async () => {
+    process.env.LINE_LIFF_ID = '1234567890-abcdefgh';
+    const res = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/liff', { to: '//เว็บปลอม.example' });
+    assert.equal(res.status, 200);
+    assert.ok(!res.body.includes('เว็บปลอม'), 'ที่อยู่เว็บอื่นหลุดเข้าไปอยู่ในหน้า /liff');
+  });
+
+  describe('เชื่อมบัญชีอัตโนมัติจาก ID token', () => {
+    const CHANNEL = '2000000001';
+    const future = () => Math.floor(Date.now() / 1000) + 600;
+    const stub = (claims) => ln._setLineIdTokenVerifierForTest(async () => claims);
+
+    test('โทเคนที่ถูกต้องต้องผูกบัญชีให้', async () => {
+      process.env.LINE_LOGIN_CHANNEL_ID = CHANNEL;
+      const target = seed.userIds.teacher001;
+      db.prepare('UPDATE users SET line_user_id = NULL WHERE id = ?').run(target);
+      stub({ sub: 'U-จาก-liff', aud: CHANNEL, iss: 'https://access.line.me', exp: future() });
+      const res = await ln.linkLineAccountByIdToken({ userId: target, idToken: 'jwt' });
+      assert.equal(res.ok, true, JSON.stringify(res));
+      assert.equal(db.prepare('SELECT line_user_id FROM users WHERE id = ?').get(target).line_user_id, 'U-จาก-liff');
+    });
+
+    // ID token ของแอป LINE อื่นก็ "ของจริง" เหมือนกัน ถ้าไม่ตรวจว่าออกให้แอปเรา ใครที่มีแอป LINE
+    // ของตัวเองก็เอาโทเคนจากแอปตัวเองมาผูกบัญชีที่นี่ได้
+    test('โทเคนที่ออกให้แอปอื่น (aud ไม่ตรง) ต้องไม่ผูกให้', async () => {
+      process.env.LINE_LOGIN_CHANNEL_ID = CHANNEL;
+      const target = seed.userIds.reg001;
+      db.prepare('UPDATE users SET line_user_id = NULL WHERE id = ?').run(target);
+      stub({ sub: 'U-แอปอื่น', aud: '9999999999', iss: 'https://access.line.me', exp: future() });
+      const res = await ln.linkLineAccountByIdToken({ userId: target, idToken: 'jwt' });
+      assert.equal(res.ok, false);
+      assert.equal(res.reason, 'wrong_audience');
+      assert.equal(db.prepare('SELECT line_user_id FROM users WHERE id = ?').get(target).line_user_id, null);
+    });
+
+    test('โทเคนหมดอายุ / ปลอม / ผู้ออกไม่ใช่ LINE ต้องไม่ผูกให้', async () => {
+      process.env.LINE_LOGIN_CHANNEL_ID = CHANNEL;
+      const target = seed.userIds.reg001;
+      const cases = [
+        ['หมดอายุแล้ว', { sub: 'U-x', aud: CHANNEL, iss: 'https://access.line.me', exp: Math.floor(Date.now() / 1000) - 10 }, 'expired'],
+        ['ผู้ออกไม่ใช่ LINE', { sub: 'U-x', aud: CHANNEL, iss: 'https://เว็บปลอม.example', exp: future() }, 'wrong_issuer'],
+        ['LINE บอกว่าไม่ใช่ของจริง', null, 'invalid_token'],
+        ['ไม่มีรหัสผู้ใช้ในโทเคน', { aud: CHANNEL, exp: future() }, 'invalid_token'],
+      ];
+      for (const [label, claims, reason] of cases) {
+        db.prepare('UPDATE users SET line_user_id = NULL WHERE id = ?').run(target);
+        stub(claims);
+        const res = await ln.linkLineAccountByIdToken({ userId: target, idToken: 'jwt' });
+        assert.equal(res.ok, false, `ควรปฏิเสธ: ${label}`);
+        assert.equal(res.reason, reason, label);
+        assert.equal(db.prepare('SELECT line_user_id FROM users WHERE id = ?').get(target).line_user_id, null, label);
+      }
+    });
+
+    test('ยังไม่ได้ตั้ง LINE_LOGIN_CHANNEL_ID ต้องไม่ผูกให้เลย', async () => {
+      delete process.env.LINE_LOGIN_CHANNEL_ID;
+      const target = seed.userIds.reg001;
+      db.prepare('UPDATE users SET line_user_id = NULL WHERE id = ?').run(target);
+      stub({ sub: 'U-x', aud: CHANNEL, iss: 'https://access.line.me', exp: future() });
+      const res = await ln.linkLineAccountByIdToken({ userId: target, idToken: 'jwt' });
+      assert.equal(res.ok, false, 'ไม่มีค่าไว้ตรวจ aud แล้วยังผูกให้ = เชื่อโทเคนอะไรก็ได้');
+      assert.equal(res.reason, 'not_configured');
+    });
+
+    test('เส้นทางเชื่อมบัญชีอัตโนมัติต้องล็อกอินก่อน', async () => {
+      const res = await dispatchPost(null, '/liff/link', { idToken: 'jwt' });
+      assert.equal(res.status, 401);
+    });
+  });
+});
+
 test('cleanup: remove the throwaway test database file', () => {
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });

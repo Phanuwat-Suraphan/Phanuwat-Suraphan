@@ -2,6 +2,7 @@ import { router, html, redirect, json } from '../router.js';
 import { layout, esc, illustration, schoolName, schoolInitials } from '../render.js';
 import { login, logout, sessionCookieHeader, revokeOtherSessions } from '../auth.js';
 import { db, audit, nowIso, hashSecret, verifySecret, isWeakPin, testModeCredentials, starterCredentials } from '../db.js';
+import { safeNextPath } from '../services/validate.js';
 
 /** กล่อง "โหมดทดสอบ" บนหน้า login — บอกรหัสตรงนั้นเลยและกดเลือกบัญชีได้ทันที
  *
@@ -62,7 +63,7 @@ function testModePanel() {
   </script>`;
 }
 
-function loginPage({ error } = {}) {
+function loginPage({ error, next = '' } = {}) {
   return `<div class="login-wrap">
     <div class="login-card">
       <div class="login-illustration">
@@ -77,6 +78,7 @@ function loginPage({ error } = {}) {
         </div>
         ${error ? `<div class="alert alert-danger">${esc(error)}</div>` : ''}
         <form method="post" action="/login">
+          ${next ? `<input type="hidden" name="next" value="${esc(next)}" />` : ''}
           <div class="field">
             <label>รหัสพนักงาน / Username</label>
             <input type="text" name="employeeCode" required autofocus autocomplete="username" placeholder="เช่น teacher001" />
@@ -104,17 +106,20 @@ function loginPage({ error } = {}) {
 }
 
 router.get('/login', (ctx) => {
-  if (ctx.user) return redirect(ctx, '/');
-  html(ctx, 200, layout({ user: null, title: 'เข้าสู่ระบบ', path: '/login', content: loginPage() }));
+  const next = safeNextPath(ctx.query.next);
+  if (ctx.user) return redirect(ctx, next || '/');
+  html(ctx, 200, layout({ user: null, title: 'เข้าสู่ระบบ', path: '/login', content: loginPage({ next }) }));
 });
 
 router.post('/login', (ctx) => {
   const { employeeCode, password } = ctx.body;
+  // เส้นทางปลายทางต้องผ่านตัวตรวจเสมอ ไม่ใช่เชื่อค่าที่ส่งมากับฟอร์ม (ดู services/validate.js)
+  const next = safeNextPath(ctx.body?.next);
   const result = login((employeeCode || '').trim(), password || '', ctx.ip, ctx.req.headers['user-agent'] || '');
   if (!result.ok) {
-    return html(ctx, 401, layout({ user: null, title: 'เข้าสู่ระบบ', path: '/login', content: loginPage({ error: result.error }) }));
+    return html(ctx, 401, layout({ user: null, title: 'เข้าสู่ระบบ', path: '/login', content: loginPage({ error: result.error, next }) }));
   }
-  redirect(ctx, '/', { 'Set-Cookie': sessionCookieHeader(result.cookie) });
+  redirect(ctx, next || '/', { 'Set-Cookie': sessionCookieHeader(result.cookie) });
 });
 
 // ---------------- ตั้งรหัสผ่าน/PIN ของตัวเองตอนเข้าใช้ครั้งแรก ----------------

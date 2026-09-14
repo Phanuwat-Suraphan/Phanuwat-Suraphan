@@ -1,4 +1,13 @@
 import { redirect, json } from './router.js';
+import { safeNextPath } from './services/validate.js';
+
+// ลิงก์ที่ส่งกันในกลุ่มไลน์ชี้ตรงมาที่หนังสือฉบับนั้น (เช่น /documents/xxx) คนที่ยังไม่ได้ล็อกอินกด
+// แล้วเด้งไปหน้าเข้าสู่ระบบ พอล็อกอินเสร็จเคยถูกโยนไปหน้าแรกเฉยๆ — หนังสือที่ตั้งใจจะเปิดหายไป
+// ต้องไล่หาเองใหม่ในทะเบียน ซึ่งเป็นงานที่ลิงก์นั้นตั้งใจจะประหยัดให้ตั้งแต่แรก
+function loginUrlFor(ctx) {
+  const here = safeNextPath(`${ctx.url?.pathname || ''}${ctx.url?.search || ''}`);
+  return here && here !== '/' ? `/login?next=${encodeURIComponent(here)}` : '/login';
+}
 
 // เส้นทางที่ยังเข้าได้ทั้งที่ยังไม่ได้ตั้งรหัสผ่านใหม่ — ต้องมีหน้าตั้งรหัสเองกับทางออกจากระบบ ไม่งั้น
 // ผู้ใช้จะติดอยู่ในวงวนที่ทุกหน้าเด้งไปหน้าเดิมแต่หน้านั้นก็เด้งตัวเอง
@@ -16,7 +25,7 @@ function mustSetOwnPassword(ctx) {
 
 export function requirePage(handler) {
   return (ctx) => {
-    if (!ctx.user) return redirect(ctx, '/login');
+    if (!ctx.user) return redirect(ctx, loginUrlFor(ctx));
     if (mustSetOwnPassword(ctx)) return redirect(ctx, '/first-login');
     return handler(ctx);
   };
@@ -38,7 +47,7 @@ export function requireApi(handler) {
 
 export function requireRole(...roles) {
   return (handler) => (ctx) => {
-    if (!ctx.user) return redirect(ctx, '/login');
+    if (!ctx.user) return redirect(ctx, loginUrlFor(ctx));
     if (mustSetOwnPassword(ctx)) return redirect(ctx, '/first-login');
     if (!ctx.user.roleCodes.some((r) => roles.includes(r))) {
       ctx.res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' });

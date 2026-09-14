@@ -24,6 +24,9 @@ const LINE_API = 'https://api.line.me/v2/bot';
 export function lineAccessToken() { return String(process.env.LINE_CHANNEL_ACCESS_TOKEN || '').trim(); }
 export function lineChannelSecret() { return String(process.env.LINE_CHANNEL_SECRET || '').trim(); }
 export function lineBasicId() { return String(process.env.LINE_OA_BASIC_ID || '').trim(); }
+// LIFF = การเปิดเว็บนี้ขึ้นมาในแอป LINE เลย ไม่ต้องเด้งออกไปเบราว์เซอร์ (ดู routes/liff.js)
+export function liffId() { return String(process.env.LINE_LIFF_ID || '').trim(); }
+export function lineLoginChannelId() { return String(process.env.LINE_LOGIN_CHANNEL_ID || '').trim(); }
 
 /** ส่งข้อความเข้าไลน์ได้หรือยัง — ถ้ายัง ทุกอย่างในไฟล์นี้เงียบไว้เฉยๆ */
 export function isLineNotifyConfigured() { return Boolean(lineAccessToken()); }
@@ -363,6 +366,66 @@ export async function handleLineEvents(events) {
   return outcomes;
 }
 
+// ──────────────────────── เชื่อมบัญชีอัตโนมัติเมื่อเปิดจากในแอป LINE ────────────────────────
+//
+// เวลาเปิดระบบผ่าน LIFF (คือเปิดขึ้นมาในแอป LINE เลย) ตัว LIFF บอกได้ว่าคนที่กำลังเปิดอยู่คือบัญชี
+// ไลน์ไหน จึงไม่ต้องให้ครูขอรหัสแล้วพิมพ์ส่งเข้าแชทอีก — ระบบผูกให้เองในคลิกเดียว
+//
+// ห้ามเชื่อ userId ที่หน้าเว็บส่งมาตรงๆ เด็ดขาด ใครก็ยิง fetch ใส่เส้นทางนี้พร้อม userId ของคนอื่นได้
+// จึงรับเป็น ID token (JWT ที่ LINE เซ็นไว้) แล้วส่งไปให้ LINE ตรวจให้ว่าเป็นของจริงและออกให้ใคร
+async function httpVerifyIdToken(idToken, clientId) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 10000);
+  try {
+    const res = await fetch('https://api.line.me/oauth2/v2.1/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ id_token: idToken, client_id: clientId }).toString(),
+      signal: ac.signal,
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+let idTokenVerifier = httpVerifyIdToken;
+/** สำหรับเทสต์เท่านั้น */
+export function _setLineIdTokenVerifierForTest(fn) { idTokenVerifier = fn || httpVerifyIdToken; }
+
+/**
+ * ผูกบัญชีจาก ID token ที่ได้มาจาก LIFF
+ *
+ * ตรวจสามชั้นก่อนเชื่อ: LINE บอกว่าโทเคนนี้ของจริงไหม, ออกให้แอปของเราหรือของคนอื่น (aud),
+ * และหมดอายุหรือยัง (exp) — ชั้น aud สำคัญที่สุด เพราะ ID token ของแอป LINE อื่นก็เป็น "ของจริง"
+ * เหมือนกัน ถ้าไม่ตรวจ ใครที่มีแอป LINE ของตัวเองก็เอาโทเคนจากแอปตัวเองมาผูกบัญชีที่นี่ได้
+ */
+export async function linkLineAccountByIdToken({ userId, idToken }) {
+  const clientId = lineLoginChannelId();
+  if (!clientId) return { ok: false, reason: 'not_configured' };
+  if (!idToken || typeof idToken !== 'string') return { ok: false, reason: 'invalid_token' };
+  const claims = await idTokenVerifier(idToken, clientId);
+  if (!claims || !claims.sub) return { ok: false, reason: 'invalid_token' };
+  if (String(claims.aud) !== clientId) return { ok: false, reason: 'wrong_audience' };
+  if (claims.iss && claims.iss !== 'https://access.line.me') return { ok: false, reason: 'wrong_issuer' };
+  if (claims.exp && Number(claims.exp) * 1000 < Date.now()) return { ok: false, reason: 'expired' };
+
+  const existing = db.prepare('SELECT id FROM users WHERE line_user_id = ?').get(claims.sub);
+  if (existing && existing.id === userId) return { ok: true, alreadyLinked: true };
+  // บัญชีไลน์เดียวผูกได้กับคนเดียว (เหตุผลเดียวกับ redeemLinkCode)
+  db.prepare('UPDATE users SET line_user_id = NULL, line_linked_at = NULL WHERE line_user_id = ? AND id != ?')
+    .run(claims.sub, userId);
+  db.prepare(`
+    UPDATE users SET line_user_id = ?, line_linked_at = ?, line_link_code = NULL,
+      line_link_code_expires_at = NULL, updated_at = ? WHERE id = ?
+  `).run(claims.sub, nowIso(), nowIso(), userId);
+  audit({ userId, action: 'line_linked', tableName: 'users', recordId: userId, detail: { via: 'liff' } });
+  return { ok: true };
+}
+
 /** ตัวเลขสำหรับหน้าผู้ดูแล — เชื่อมกันกี่คน คิวค้างเท่าไร ส่งไม่ผ่านกี่ฉบับ */
 export function lineNotifyStatus() {
   const linked = db.prepare('SELECT COUNT(*) c FROM users WHERE line_user_id IS NOT NULL AND deleted_at IS NULL').get().c;
@@ -378,6 +441,10 @@ export function lineNotifyStatus() {
     configured: isLineNotifyConfigured(),
     webhookReady: isLineWebhookConfigured(),
     basicId: lineBasicId(),
+    liffId: liffId(),
+    // เปิดในแอป LINE ได้ต้องมีทั้งไอดี LIFF และไอดี channel ของ LINE Login ที่ LIFF อันนั้นสังกัดอยู่
+    // (ไอดี channel ใช้ตรวจว่า ID token ที่หน้าเว็บส่งมาเป็นของแอปเราจริง ไม่ใช่ของแอปคนอื่น)
+    liffReady: Boolean(liffId() && lineLoginChannelId()),
     linked, active, pending, givenUp,
     lastError: lastError?.last_error || null,
   };

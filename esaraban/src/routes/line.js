@@ -1,12 +1,13 @@
 // เส้นทางที่เกี่ยวกับ LINE — ตัวรับ webhook, การเชื่อมบัญชีของแต่ละคน และหน้าตั้งค่าของผู้ดูแล
-import { router, html, json } from '../router.js';
+import { router, html, json, redirect } from '../router.js';
 import { layout, esc } from '../render.js';
 import { requireApi, requireRole, requirePage } from '../middleware.js';
 import { audit } from '../db.js';
+import { safeNextPath } from '../services/validate.js';
 import {
   verifyLineSignature, handleLineEvents, isLineWebhookConfigured, isLineNotifyConfigured,
   createLinkCode, unlinkLineAccount, setLineNotifyEnabled, lineNotifyStatus,
-  flushLineOutbox, LINK_KEYWORD,
+  flushLineOutbox, LINK_KEYWORD, liffId, linkLineAccountByIdToken,
 } from '../services/lineNotify.js';
 
 // ───────────────────────────── ตัวรับ webhook จาก LINE ─────────────────────────────
@@ -60,6 +61,84 @@ router.post('/profile/line/toggle', requireApi((ctx) => {
   json(ctx, 200, { ok: true, enabled: ctx.body?.enabled !== false });
 }));
 
+// ───────────────────────────── เปิดระบบในแอป LINE (LIFF) ─────────────────────────────
+//
+// LIFF คือการเปิดหน้าเว็บนี้ขึ้นมา "ในแอป LINE" เลย ไม่เด้งออกไปเบราว์เซอร์ภายนอก ซึ่งสำคัญกว่าที่คิด
+// บนมือถือ: เบราว์เซอร์ภายนอกมักไม่ได้ล็อกอินค้างไว้ ครูจึงต้องพิมพ์รหัสผ่านใหม่ทุกครั้งที่กดลิงก์
+// จากกลุ่มไลน์ ซึ่งบนมือถือคือเหตุผลอันดับหนึ่งที่คนเลิกกดลิงก์
+//
+// ตั้งเป็น Endpoint URL ของ LIFF app และตั้งเป็นปุ่มในเมนูด้านล่างแชท (rich menu) ของบัญชีโรงเรียน
+const LIFF_SDK = 'https://static.line-scdn.net/liff/edge/2/sdk.js';
+
+router.get('/liff', (ctx) => {
+  // ปลายทางต้องเป็นเส้นทางภายในเว็บนี้เท่านั้น — ที่อยู่นี้เดินทางผ่านกลุ่มไลน์ ถ้าปล่อยให้ชี้ออกนอกได้
+  // จะกลายเป็นลิงก์ที่ขึ้นชื่อเว็บโรงเรียนแต่พาไปเว็บปลอม (ดู services/validate.js)
+  const to = safeNextPath(ctx.query.to) || '/';
+  const id = liffId();
+
+  // CSP ของทั้งระบบอนุญาตเฉพาะสคริปต์จากเว็บตัวเอง ซึ่งจะบล็อก SDK ของ LIFF เงียบๆ (ไม่มี error
+  // ให้เห็นบนหน้าจอด้วย) จึงต้องผ่อนเฉพาะหน้านี้หน้าเดียวให้โหลดจากโดเมนของ LINE ได้
+  // ไม่ผ่อนทั้งระบบ เพราะหน้าอื่นไม่มีเหตุผลต้องโหลดสคริปต์จากข้างนอกเลย
+  const csp = [
+    "default-src 'self'",
+    `script-src 'self' 'unsafe-inline' ${new URL(LIFF_SDK).origin}`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    'connect-src \'self\' https://api.line.me',
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; ');
+
+  if (!id) {
+    // ยังไม่ได้ตั้งค่า LIFF — พาเข้าระบบตามปกติ ดีกว่าขึ้นหน้าขาวให้ครูงง
+    return redirect(ctx, to);
+  }
+
+  const body = `<!doctype html>
+<html lang="th"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>กำลังเปิดระบบสารบรรณ</title>
+<link rel="stylesheet" href="/style.css" />
+<script src="${LIFF_SDK}"></script>
+</head><body>
+<div style="display:flex;min-height:70vh;align-items:center;justify-content:center;text-align:center;padding:2rem">
+  <div>
+    <div style="font-size:2.4rem">💬</div>
+    <p id="liffMsg">กำลังเปิดระบบสารบรรณ...</p>
+    <p><a class="btn btn-outline btn-sm" href="${esc(to)}">เปิดแบบปกติ</a></p>
+  </div>
+</div>
+<script>
+  (function () {
+    var to = ${JSON.stringify(to)};
+    var loggedIn = ${ctx.user ? 'true' : 'false'};
+    function go() { window.location.replace(to); }
+    function fail(msg) { document.getElementById('liffMsg').textContent = msg; setTimeout(go, 1200); }
+    if (typeof liff === 'undefined') return fail('เปิดระบบตามปกติแทน');
+    liff.init({ liffId: ${JSON.stringify(id)} }).then(function () {
+      // ยังไม่ได้ล็อกอินระบบสารบรรณ — ไปล็อกอินก่อน แล้วค่อยกลับมาผูกบัญชีรอบหน้า
+      if (!loggedIn || !liff.isLoggedIn()) return go();
+      var token = liff.getIDToken && liff.getIDToken();
+      if (!token) return go();
+      // ผูกบัญชีไลน์ให้อัตโนมัติ ไม่ต้องให้ครูขอรหัสแล้วพิมพ์ส่งเข้าแชทเอง
+      // ล้มเหลวก็แค่ไม่ผูก ไม่ขวางการเข้าใช้งาน (ยังไปวิธีขอรหัสที่หน้าโปรไฟล์ได้)
+      fetch('/liff/link', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken: token }) }).then(go).catch(go);
+    }).catch(function () { go(); });
+  })();
+</script>
+</body></html>`;
+  ctx.res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': csp });
+  ctx.res.end(body);
+});
+
+router.post('/liff/link', requireApi(async (ctx) => {
+  const res = await linkLineAccountByIdToken({ userId: ctx.user.id, idToken: ctx.body?.idToken });
+  if (!res.ok) return json(ctx, 400, { error: 'เชื่อมบัญชีอัตโนมัติไม่สำเร็จ', reason: res.reason });
+  json(ctx, 200, res);
+}));
+
 // ───────────────────────────── หน้าตั้งค่าของผู้ดูแล ─────────────────────────────
 
 const ADMIN_ONLY = requireRole('admin');
@@ -87,6 +166,8 @@ router.get('/admin/line', ADMIN_ONLY(requirePage((ctx) => {
         ${statusRow('ส่งข้อความเข้าไลน์', s.configured, s.configured ? '' : 'ตั้งตัวแปร <code>LINE_CHANNEL_ACCESS_TOKEN</code> บนเซิร์ฟเวอร์')}
         ${statusRow('รับการเชื่อมบัญชี', s.webhookReady, s.webhookReady ? '' : 'ตั้งตัวแปร <code>LINE_CHANNEL_SECRET</code> บนเซิร์ฟเวอร์')}
         ${statusRow('ลิงก์เพิ่มเพื่อน', Boolean(s.basicId), s.basicId ? esc(s.basicId) : 'ตั้งตัวแปร <code>LINE_OA_BASIC_ID</code> เช่น <code>@123abcde</code> — ไม่ตั้งก็ยังใช้ได้ แต่ครูต้องหาบัญชีทางการเอง')}
+        ${statusRow('เปิดระบบในแอป LINE (LIFF)', s.liffReady, s.liffReady ? esc(s.liffId)
+          : 'ตั้งตัวแปร <code>LINE_LIFF_ID</code> และ <code>LINE_LOGIN_CHANNEL_ID</code> — ไม่ตั้งก็ใช้ได้ทุกอย่าง แค่เปิดในเบราว์เซอร์ปกติแทน')}
         <tr><td class="text-muted">เชื่อมบัญชีแล้ว</td><td><strong>${s.linked}</strong> คน (เปิดรับแจ้งเตือนอยู่ ${s.active} คน)</td></tr>
         <tr><td class="text-muted">คิวที่รอส่ง</td><td>${s.pending} ฉบับ${s.givenUp ? ` · <span style="color:var(--danger)">เลิกส่งแล้ว ${s.givenUp} ฉบับ</span>` : ''}</td></tr>
         ${s.lastError ? `<tr><td class="text-muted">ข้อผิดพลาดล่าสุด</td><td style="color:var(--danger);font-size:.85rem">${esc(s.lastError)}</td></tr>` : ''}
@@ -119,6 +200,29 @@ router.get('/admin/line', ADMIN_ONLY(requirePage((ctx) => {
             ไม่งั้นครูจะได้ข้อความตอบอัตโนมัติทับข้อความของระบบ</li>
         <li>บอกครูให้เข้า <a href="/profile">โปรไฟล์ของฉัน</a> → "แจ้งเตือนเข้าไลน์" → กดขอรหัส แล้วกดลิงก์ที่ขึ้นมา</li>
       </ol>
+    </div>
+
+    <div class="card">
+      <h3 class="mt-0">เปิดระบบในแอป LINE เลย (LIFF) — ไม่บังคับ</h3>
+      <p class="text-muted" style="font-size:.88rem">
+        ปกติครูกดลิงก์จากกลุ่มไลน์แล้วเด้งออกไปเบราว์เซอร์ภายนอก ซึ่งมักไม่ได้ล็อกอินค้างไว้
+        ต้องพิมพ์รหัสผ่านใหม่ทุกครั้ง — เปิดใช้ LIFF แล้วระบบจะเปิดขึ้นมาในแอป LINE เลย
+        และผูกบัญชีไลน์ให้อัตโนมัติโดยไม่ต้องขอรหัส
+      </p>
+      <ol style="line-height:2;padding-left:1.2rem">
+        <li>ที่ <code>developers.line.biz</code> สร้าง channel แบบ <strong>LINE Login</strong> ไว้ใน
+            provider <strong>เดียวกัน</strong>กับ Messaging API channel ข้างบน
+            <div class="text-muted" style="font-size:.82rem">ต้องเป็น provider เดียวกันจริงๆ — ไม่งั้นรหัสผู้ใช้ที่ได้จากสองที่จะคนละตัว แล้วข้อความจะส่งไม่ถึง</div></li>
+        <li>ในแท็บ LIFF กด Add แล้วตั้ง Endpoint URL เป็น <code>${esc(webhookUrl.replace('/line/webhook', '/liff'))}</code>
+            · Size: Full · เปิด Scope <code>profile</code> และ <code>openid</code></li>
+        <li>ตั้งตัวแปร <code>LINE_LIFF_ID</code> = LIFF ID ที่ได้ และ
+            <code>LINE_LOGIN_CHANNEL_ID</code> = Channel ID ของ LINE Login channel นั้น แล้ว restart</li>
+        <li>เอา LIFF URL (<code>https://liff.line.me/&lt;LIFF ID&gt;</code>) ไปตั้งเป็นปุ่มใน
+            เมนูด้านล่างแชท (rich menu) ของบัญชีทางการ ครูก็กดเข้าระบบได้จากในไลน์เลย</li>
+      </ol>
+      <p class="text-muted" style="font-size:.85rem">
+        ไม่ตั้งค่าส่วนนี้ก็ใช้งานได้ทุกอย่างตามปกติ แค่เปิดในเบราว์เซอร์ภายนอกแทน
+      </p>
     </div>
 
     <div class="card">
