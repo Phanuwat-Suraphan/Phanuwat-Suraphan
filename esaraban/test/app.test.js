@@ -5930,6 +5930,59 @@ describe('เปิดระบบในแอป LINE และการพา�
   });
 });
 
+// ครูกดลิงก์หนังสือจากกลุ่มไลน์ = เปิดบนมือถือเสมอ ไม่ใช่บนคอม เรื่องที่มองไม่เห็นเลยบนจอคอม
+// จึงกลายเป็นเรื่องที่เจอทุกวัน — ตรวจจากไฟล์ CSS เพราะชุดเทสต์นี้ไม่มีเบราว์เซอร์ให้วัดของจริง
+// (วัดของจริงด้วยเบราว์เซอร์แยกต่างหากแล้วตอนแก้ ที่นี่กันไม่ให้ถูกถอดออกภายหลังโดยไม่มีใครรู้)
+describe('ใช้งานบนมือถือ', () => {
+  let css;
+  before(() => { css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8'); });
+
+  // ตัดคอมเมนต์ออกก่อนเสมอ ไม่งั้นข้อความอธิบายในคอมเมนต์จะทำให้เทสต์ผ่านทั้งที่กฎถูกลบไปแล้ว
+  const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '');
+  // ดึงเนื้อในของ @media ที่ระบุ (นับวงเล็บปีกกาเอา เพราะข้างในมีกฎซ้อนอีกหลายชั้น)
+  const mediaBlock = (source, header) => {
+    const start = source.indexOf(header);
+    if (start < 0) return '';
+    let i = source.indexOf('{', start), depth = 0, out = '';
+    for (; i < source.length; i++) {
+      const c = source[i];
+      if (c === '{') { depth++; if (depth === 1) continue; }
+      if (c === '}') { depth--; if (depth === 0) break; }
+      out += c;
+    }
+    return out;
+  };
+
+  // Safari บน iPhone ซูมหน้าจอเข้าไปเองทันทีที่แตะช่องกรอกที่ตัวอักษรเล็กกว่า 16px แล้วไม่ซูมกลับให้
+  // ครูต้องหุบนิ้วซูมออกเองทุกครั้ง ทุกช่อง ทุกหน้า — วัดจริงด้วยเบราว์เซอร์แล้วเดิมอยู่ที่ 14.4px
+  // ทั้งระบบ (ช่องแนบไฟล์ 13.3px) จึงเกิดกับทุกฟอร์ม รวมช่องค้นหาบนแถบบนสุดซึ่งอยู่ทุกหน้า
+  test('ช่องกรอกบนจอมือถือต้องเป็น 16px ไม่งั้น iPhone ซูมหน้าจอเองแล้วไม่ซูมกลับ', () => {
+    const mobile = stripComments(mediaBlock(css, '@media (max-width: 899px)'));
+    assert.ok(mobile, 'หาบล็อกกฎสำหรับจอมือถือใน style.css ไม่เจอ');
+    const rule = mobile.split('}').find((r) => /font-size:\s*16px/.test(r));
+    assert.ok(rule, 'ไม่มีกฎตั้งขนาดตัวอักษรช่องกรอกเป็น 16px บนจอมือถือ — iPhone จะซูมหน้าจอเองทุกครั้งที่แตะช่องกรอก');
+    // ต้องครอบคลุมทุกชนิดที่ทำให้ซูม ไม่ใช่แก้เฉพาะช่องที่มีคนทักมา
+    for (const sel of ['input[type=text]', 'select', 'textarea', 'input[type=file]', 'input[type=date]', '.topbar-search input']) {
+      assert.ok(rule.includes(sel), `กฎ 16px ยังไม่ครอบคลุม ${sel} — ช่องชนิดนี้ยังทำให้จอซูมเองอยู่`);
+    }
+    // ระบุเป็น px เท่านั้น — ถ้าใช้ rem แล้วผู้ใช้ตั้งขนาดตัวอักษรเบราว์เซอร์ไว้เล็กกว่าปกติ
+    // 1rem จะน้อยกว่า 16px จริง แล้วกลับไปซูมเองอีกโดยที่กฎยังอยู่ครบ
+    assert.doesNotMatch(rule, /font-size:\s*[\d.]+rem/, 'ต้องระบุเป็น px ไม่ใช่ rem — เกณฑ์ของ iOS คือ 16px จริงๆ');
+  });
+
+  // ชื่อตัวแปรอย่าง LINE_CHANNEL_ACCESS_TOKEN เป็นคำเดียวยาว 25 ตัวอักษรที่ไม่มีช่องว่างให้ตัด
+  // เบราว์เซอร์จึงดันตารางกว้างตามจนหน้าล้นออกนอกจอ (วัดจริง: หน้ากว้าง 468px บนจอ 390px)
+  test('ข้อความแบบโค้ดต้องตัดบรรทัดได้ ไม่ดันหน้าให้ล้นออกนอกจอมือถือ', () => {
+    const clean = stripComments(css);
+    assert.ok(/\bcode\s*\{[^}]*overflow-wrap:\s*anywhere/.test(clean),
+      'ไม่มีกฎให้ <code> ตัดบรรทัดได้ — ชื่อตัวแปรยาวๆ จะดันหน้าจนล้นออกนอกจอมือถือ');
+    // ต้องเป็น anywhere เท่านั้น — break-word ตัดบรรทัดให้ก็จริง แต่ไม่มีผลกับการคำนวณความกว้าง
+    // ต่ำสุดของช่องตาราง ตารางจึงยังกว้างเท่าเดิมและหน้าก็ยังล้นอยู่
+    assert.doesNotMatch(clean, /\bcode\s*\{[^}]*overflow-wrap:\s*break-word[^}]*\}/,
+      'ต้องใช้ overflow-wrap: anywhere ไม่ใช่ break-word — break-word ไม่ช่วยเรื่องความกว้างของตาราง');
+  });
+});
+
 test('cleanup: remove the throwaway test database file', () => {
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });
