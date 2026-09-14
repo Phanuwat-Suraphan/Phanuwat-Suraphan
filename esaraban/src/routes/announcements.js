@@ -87,7 +87,11 @@ router.get('/announcements', requirePage((ctx) => {
           ${items.length ? items.map((a) => `
             <div style="padding:.6rem 0;border-bottom:1px solid var(--border)">
               <div class="flex items-center justify-between" style="gap:.5rem">
-                <strong>${esc(a.title)}</strong>
+                <!-- หัวข้อต้องเป็นลิงก์ไปหน้าของประกาศนั้นเสมอ — เดิมเป็นข้อความเฉยๆ และมีทางเข้า
+                     หน้าประกาศรายฉบับอยู่ทางเดียวคือลิงก์ "อ่านต่อ" ซึ่งขึ้นเฉพาะประกาศที่เนื้อหายาว
+                     เกิน 300 ตัวอักษร ประกาศสั้นๆ (ซึ่งเป็นส่วนใหญ่) จึงไม่มีหน้าของตัวเองให้เข้าถึงเลย
+                     แปลว่าส่งลิงก์ประกาศให้ใครไม่ได้ และไม่มีปุ่มส่งเข้ากลุ่มไลน์ให้กดด้วย -->
+                <strong><a href="/announcements/${a.id}">${esc(a.title)}</a></strong>
                 ${isAdmin ? `<button type="button" class="btn btn-sm btn-outline" onclick="deleteAnnouncement('${a.id}')" title="ลบ">🗑️</button>` : ''}
               </div>
               ${bodyHtml(a)}

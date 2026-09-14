@@ -5409,6 +5409,23 @@ describe('ส่งเรื่องเข้ากลุ่มไลน์', (
     }
   });
 
+  // เจอตอนทดสอบบนเบราว์เซอร์จริง: ปุ่มแชร์อยู่บนหน้าประกาศรายฉบับ แต่ทางเข้าหน้านั้นมีอยู่ทางเดียว
+  // คือลิงก์ "อ่านต่อ" ซึ่งขึ้นเฉพาะประกาศที่เนื้อหายาวเกิน 300 ตัวอักษร ประกาศสั้นๆ ซึ่งเป็นส่วนใหญ่
+  // จึงไม่มีหน้าของตัวเองให้เข้าถึงเลย ปุ่มแชร์ที่เพิ่งใส่ไปก็กดไม่ถึง (เทสต์ระดับเส้นทางมองไม่เห็น
+  // เพราะมันเปิด /announcements/:id ตรงๆ อยู่แล้ว)
+  test('หน้ารายการประกาศต้องมีทางเข้าหน้าของประกาศทุกฉบับ ไม่ใช่เฉพาะฉบับที่เนื้อหายาว', async () => {
+    const reg = loadUserForTest(seed.userIds.reg001);
+    const made = await dispatchPost(reg, '/announcements',
+      { category: 'ประกาศ', title: 'ประกาศสั้นๆ ที่ต้องกดเข้าไปดูได้', body: 'สั้นมาก' });
+    assert.ok(made.status === 200 || made.status === 201, `โพสต์ประกาศไม่ผ่าน: ${made.status} ${made.body}`);
+    const ann = db.prepare('SELECT * FROM announcements WHERE title = ? ORDER BY created_at DESC LIMIT 1')
+      .get('ประกาศสั้นๆ ที่ต้องกดเข้าไปดูได้');
+    const list = await dispatchGet(reg, '/announcements', {});
+    assert.equal(list.status, 200);
+    assert.ok(list.body.includes(`href="/announcements/${ann.id}"`),
+      'ประกาศสั้นไม่มีลิงก์ไปหน้าของตัวเองในหน้ารายการ — ส่งลิงก์ให้ใครไม่ได้ และกดปุ่มส่งเข้าไลน์ไม่ถึง');
+  });
+
   test('หน้าประกาศมีปุ่มส่งเข้าไลน์พร้อมลิงก์กลับมาที่ประกาศนั้น', async () => {
     const saved = process.env.PUBLIC_BASE_URL;
     process.env.PUBLIC_BASE_URL = 'https://saraban.test';
