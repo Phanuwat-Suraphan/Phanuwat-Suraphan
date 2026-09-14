@@ -1,7 +1,7 @@
 // สรุปงานรายวันจากไฟล์ Excel ที่ธุรการอัปโหลด — แยกเก็บทีละวันเพื่อให้ย้อนหาง่าย แก้ไขต่อในระบบได้
 // (ไม่ต้องกลับไปแก้ในไฟล์ Excel แล้วอัปโหลดใหม่) และดูรวมข้ามวันได้โดยยังแยกหัวข้อรายวันให้เห็นชัด
 import { router, html, json, redirect } from '../router.js';
-import { layout, esc, fmtThaiDateLong, illustratedEmptyState } from '../render.js';
+import { layout, esc, fmtThaiDateLong, illustratedEmptyState, rowAttrs, rowLink } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, nowIso, audit, todayInBangkok } from '../db.js';
 import { httpError } from '../services/workflow.js';
@@ -119,8 +119,8 @@ router.get('/daily-summary', requirePage((ctx) => {
     <div class="card">
       ${days.length ? `<div class="table-wrap"><table>
         <thead><tr><th>วันที่</th><th>จำนวนงาน</th><th>ทำแล้ว</th><th>ไฟล์ต้นฉบับ</th><th>ผู้อัปโหลด</th><th></th></tr></thead>
-        <tbody>${days.map((d) => `<tr onclick="location.href='/daily-summary/${d.id}'" style="cursor:pointer">
-          <td><strong>${esc(fmtThaiDateLong(d.summary_date))}</strong>${dayCounts.get(d.summary_date) > 1
+        <tbody>${days.map((d) => `<tr ${rowAttrs(`/daily-summary/${d.id}`)}>
+          <td>${rowLink(`/daily-summary/${d.id}`, `<strong>${esc(fmtThaiDateLong(d.summary_date))}</strong>`)}${dayCounts.get(d.summary_date) > 1
             ? ` <span class="badge badge-warning" title="วันนี้มีสรุปงานมากกว่าหนึ่งชุด — ตรวจว่าอัปโหลดซ้ำหรือตั้งใจแยกเป็นรอบเช้า/บ่าย">⚠️ ${dayCounts.get(d.summary_date)} ชุด</span>` : ''}</td>
           <td>${d.item_count} รายการ</td>
           <td>${d.done_count}/${d.item_count}</td>

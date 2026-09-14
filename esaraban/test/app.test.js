@@ -2018,7 +2018,8 @@ describe('ลงรับหลายฉบับรวดเดียว', () =
 // ค้นด้วยชื่อไฟล์แนบไม่ได้ และดูจากรายการไม่ออกว่าฉบับไหนสแกนแล้วบ้าง ต้องเปิดทีละฉบับ
 describe('ทะเบียนหนังสือ: ตามหาไฟล์ให้เจอ', () => {
   const reg = () => loadUserForTest(seed.userIds.reg001);
-  const rowIds = (body) => [...body.matchAll(/location\.href='\/documents\/([^']+)'/g)].map((m) => m[1]);
+  // อ่านจาก data-href ที่ <tr> ซึ่งเป็นตัวบอกว่า "แถวนี้คือหนังสือฉบับไหน" (ดู render.js rowAttrs)
+  const rowIds = (body) => [...body.matchAll(/<tr data-href="\/documents\/([^"]+)"/g)].map((m) => m[1]);
   const pdf = (tag) => Buffer.from(`%PDF-1.4\n% ${tag}\ntrailer<</Root 1 0 R>>\n%%EOF\n`).toString('base64');
   const attach = (id, name) => dispatchPost(reg(), `/documents/${id}/attachments`,
     { fileName: name, fileType: 'application/pdf', fileDataBase64: pdf(name + Date.now()) });
@@ -2063,7 +2064,7 @@ describe('ทะเบียนหนังสือ: ตามหาไฟล�
 
     // บนจอแคบตารางเลื่อนซ้ายขวา คอลัมน์ 📎 จึงตกไปอยู่นอกจอ ต้องมีตัวบอกซ้ำอยู่ในช่อง "เรื่อง"
     // ที่เห็นตลอด (ซ่อน/แสดงสลับกันด้วย CSS) ไม่งั้นธุรการที่เปิดจากมือถือยังต้องเลื่อนดูทีละแถว
-    const rowOf = (id) => body.split(`location.href='/documents/${id}'`)[1]?.split('</tr>')[0] || '';
+    const rowOf = (id) => body.split(`<tr data-href="/documents/${id}"`)[1]?.split('</tr>')[0] || '';
     assert.match(rowOf(withFile.id), /class="clip-inline"[^>]*>📎/,
       'แถวที่มีไฟล์ต้องมีตัวบอกสำหรับจอแคบอยู่ในช่องเรื่องด้วย');
     assert.doesNotMatch(rowOf(without.id), /clip-inline/,
@@ -2203,7 +2204,8 @@ describe('ทะเบียนหนังสือ: ตามหาไฟล�
 
 describe('ทะเบียนหนังสือ: ตัวกรองละเอียด', () => {
   const getDocumentsPage = (user, query) => dispatchGet(user, '/documents', query);
-  const rowIds = (body) => [...body.matchAll(/location\.href='\/documents\/([^']+)'/g)].map((m) => m[1]);
+  // อ่านจาก data-href ที่ <tr> ซึ่งเป็นตัวบอกว่า "แถวนี้คือหนังสือฉบับไหน" (ดู render.js rowAttrs)
+  const rowIds = (body) => [...body.matchAll(/<tr data-href="\/documents\/([^"]+)"/g)].map((m) => m[1]);
 
   const reg = () => loadUserForTest(seed.userIds.reg001);
 
@@ -5980,6 +5982,78 @@ describe('ใช้งานบนมือถือ', () => {
     // ต่ำสุดของช่องตาราง ตารางจึงยังกว้างเท่าเดิมและหน้าก็ยังล้นอยู่
     assert.doesNotMatch(clean, /\bcode\s*\{[^}]*overflow-wrap:\s*break-word[^}]*\}/,
       'ต้องใช้ overflow-wrap: anywhere ไม่ใช่ break-word — break-word ไม่ช่วยเรื่องความกว้างของตาราง');
+  });
+});
+
+// ทุกตารางในระบบเคยใช้ <tr onclick="location.href=..."> ซึ่งยิงทดสอบด้วยเบราว์เซอร์จริงแล้วพบว่าพัง
+// สี่อย่างพร้อมกัน: ลากเลือกข้อความแล้วหน้าเด้ง, Ctrl+คลิกไม่เปิดแท็บใหม่ซ้ำยังพาแท็บเดิมไปด้วย,
+// คลิกลูกกลิ้งไม่ทำอะไร, และใช้คีย์บอร์ดเปิดรายการไม่ได้เลย (ทะเบียน 50 แถว Tab ไปถึง 0 จุด)
+describe('แถวตารางที่กดแล้วเปิดรายการนั้น', () => {
+  const SRC_DIR = new URL('../src/', import.meta.url);
+  const srcFiles = () => fs.readdirSync(new URL('routes/', SRC_DIR)).filter((f) => f.endsWith('.js'))
+    .map((f) => ['src/routes/' + f, fs.readFileSync(new URL('routes/' + f, SRC_DIR), 'utf8')]);
+
+  // กันการกลับมาใหม่ — รูปแบบนี้เขียนง่ายกว่าและดูเหมือนใช้ได้ คนที่เพิ่มตารางใหม่จะหยิบไปใช้อีก
+  // โดยไม่รู้ว่ามันพังสี่อย่าง ถ้าไม่มีอะไรคอยเตือน
+  test('ต้องไม่มีที่ไหนกลับไปใช้ onclick="location.href" กับแถวตารางอีก', () => {
+    const offenders = srcFiles()
+      .filter(([, src]) => /onclick=["']location\.href/.test(src))
+      .map(([name]) => name);
+    assert.deepEqual(offenders, [],
+      `ไฟล์เหล่านี้ใช้ onclick กับแถวตาราง ให้ใช้ rowAttrs()/rowLink() จาก render.js แทน: ${offenders.join(', ')}`);
+  });
+
+  // rowAttrs อย่างเดียวไม่พอ — มันทำให้ "กดที่ไหนก็ได้ในแถว" ได้ก็จริง แต่สิ่งที่แก้ Ctrl+คลิก
+  // คลิกลูกกลิ้ง และการกด Tab ได้จริงคือลิงก์ <a> ในช่องแรก ต้องมาคู่กันเสมอ
+  test('ทุกที่ที่ใช้ rowAttrs ต้องมี rowLink ในไฟล์เดียวกันด้วย', () => {
+    const lonely = srcFiles()
+      .filter(([, src]) => src.includes('rowAttrs(') && !src.includes('rowLink('))
+      .map(([name]) => name);
+    assert.deepEqual(lonely, [],
+      `ไฟล์เหล่านี้มีแถวที่กดได้แต่ไม่มีลิงก์จริงในแถว — เปิดแท็บใหม่/ใช้คีย์บอร์ดไม่ได้: ${lonely.join(', ')}`);
+  });
+
+  test('ทุกแถวในทะเบียนหนังสือต้องมีลิงก์จริงไปหน้าหนังสือฉบับนั้น', async () => {
+    const reg = loadUserForTest(seed.userIds.reg001);
+    const made = [makeDoc({ title: 'ฉบับที่หนึ่งสำหรับตรวจลิงก์ในแถว', createdBy: seed.userIds.reg001 }),
+      makeDoc({ title: 'ฉบับที่สองสำหรับตรวจลิงก์ในแถว', createdBy: seed.userIds.reg001 })];
+    const res = await dispatchGet(reg, '/documents', { direction: 'incoming' });
+    assert.equal(res.status, 200);
+    for (const d of made) {
+      // ต้องเจาะจงว่าเป็นแท็ก <a> จริงๆ — เขียนแค่ href="/documents/..." ไม่พอ เพราะ
+      // data-href="/documents/..." ก็มีข้อความนั้นอยู่ข้างใน เทสต์จะเขียวทั้งที่ลิงก์หายไปแล้ว
+      // (พลาดมาแล้วตอนเขียนเทสต์นี้รอบแรก — ถอด rowLink ออกแล้วเทสต์ยังผ่าน)
+      assert.ok(res.body.includes(`<a class="row-link" href="/documents/${d.id}"`),
+        `แถวของหนังสือ ${d.id} ไม่มีลิงก์จริง — กด Ctrl+คลิก/ใช้คีย์บอร์ดเปิดไม่ได้`);
+      assert.ok(res.body.includes(`data-href="/documents/${d.id}"`),
+        `แถวของหนังสือ ${d.id} กดที่ช่องอื่นในแถวแล้วไม่เปิด`);
+    }
+  });
+
+  test('หน้าแรกและงานของฉัน แถวต้องมีลิงก์จริงเหมือนกัน', async () => {
+    const reg = loadUserForTest(seed.userIds.reg001);
+    const doc = makeDoc({ title: 'หนังสือที่ต้องโผล่บนหน้าแรก', createdBy: seed.userIds.reg001 });
+    assignStep({ documentId: doc.id, assigneeId: seed.userIds.reg001, instruction: 'เพื่อทราบ', actorUser: registrarUser });
+    for (const path of ['/', '/tasks']) {
+      const res = await dispatchGet(loadUserForTest(seed.userIds.reg001), path, {});
+      assert.equal(res.status, 200, path);
+      assert.ok(res.body.includes(`<a class="row-link" href="/documents/${doc.id}"`)
+        || res.body.includes(`<a class="list-link" href="/documents/${doc.id}"`),
+        `${path} ไม่มีลิงก์จริงไปหน้าหนังสือ (มีแต่แถวที่กดได้ ซึ่งเปิดแท็บใหม่/ใช้คีย์บอร์ดไม่ได้)`);
+    }
+  });
+
+  // ตัวจัดการคลิกต้องเว้นสามกรณีนี้ ไม่งั้นกลับไปพังแบบเดิมทั้งที่มีลิงก์แล้ว
+  test('ตัวจัดการคลิกต้องเว้นการลากเลือกข้อความ ปุ่มร่วม และองค์ประกอบที่กดได้อยู่แล้ว', () => {
+    const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+    const handler = app.slice(app.indexOf("tr[data-href]"), app.indexOf("keyboard shortcuts"));
+    assert.ok(handler, 'หาตัวจัดการคลิกแถวใน public/app.js ไม่เจอ');
+    assert.match(handler, /getSelection/, 'ไม่ได้เว้นกรณีลากเลือกข้อความ — คัดลอกเลขทะเบียนแล้วหน้าจะเด้งอีก');
+    assert.match(handler, /isCollapsed/, 'ตรวจการเลือกข้อความไม่ครบ');
+    assert.match(handler, /ctrlKey/, 'ไม่ได้เว้นกรณีกด Ctrl+คลิก — จะไม่เปิดแท็บใหม่และพาแท็บเดิมไปด้วย');
+    assert.match(handler, /metaKey/, 'ไม่ได้เว้นกรณีกด Cmd+คลิก (ผู้ใช้ Mac)');
+    assert.match(handler, /e\.button !== 0/, 'ไม่ได้เว้นคลิกลูกกลิ้ง/ปุ่มขวา');
+    assert.match(handler, /closest\('a, button/, 'ไม่ได้เว้นลิงก์/ปุ่มที่อยู่ในแถว — กดปุ่มในแถวแล้วจะเด้งไปหน้าอื่นแทน');
   });
 });
 

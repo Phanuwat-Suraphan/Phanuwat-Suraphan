@@ -431,6 +431,31 @@ thead th { background: var(--surface-2); color: var(--text-muted); font-size: .8
 tbody tr:hover { background: var(--surface-2); }
 tbody tr:last-child td { border-bottom: none; }
 
+/* แถวที่กดแล้วเปิดรายการนั้น (ดูเหตุผลเต็มใน public/app.js)
+   .row-link คือลิงก์จริงในช่องแรกของแถว ซึ่งเป็นตัวที่ทำให้ Ctrl+คลิก คลิกลูกกลิ้ง และการกด Tab
+   แล้ว Enter ใช้งานได้ — ไม่ได้มีไว้แค่ให้ดูเหมือนลิงก์
+   สืบสีจากช่องตารางแทนที่จะเป็นสีลิงก์ เพราะทั้งแถวกดได้อยู่แล้ว ถ้าย้อมสีเฉพาะช่องแรกจะดูเหมือนว่า
+   กดได้แค่ตรงนั้น
+   display:block + padding/margin หักกลบ ทำให้พื้นที่แตะสูงเต็มช่องตาราง (วัดเดิมได้แค่ 17px
+   ซึ่งต่ำกว่าเกณฑ์ของทั้ง Apple และ Google มาก) โดยที่ความสูงของแถวไม่เปลี่ยนเลย */
+.row-clickable { cursor: pointer; }
+.row-link {
+  color: inherit; text-decoration: none;
+  display: block; padding: .65rem 0; margin: -.65rem 0;
+}
+.row-link:hover { text-decoration: underline; }
+/* ต้องเห็นชัดว่าโฟกัสอยู่แถวไหนตอนกด Tab ไล่ลงมา ไม่งั้นคนที่ใช้คีย์บอร์ดจะหลงว่าอยู่ตรงไหนแล้ว */
+.row-link:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
+
+/* ลิงก์ที่ครอบ "ทั้งรายการ" ในการ์ดแบบรายการ (เอกสารล่าสุดบนหน้าแรก, หัวข้อประกาศ)
+   คนละแบบกับ .row-link ตรงที่ระยะห่างเล็กกว่า เพราะไม่ได้อยู่ในช่องตารางที่มี padding ของตัวเองอยู่แล้ว */
+.list-link {
+  display: block; color: inherit; text-decoration: none;
+  padding: .5rem 0;
+}
+.list-link:hover { text-decoration: underline; }
+.list-link:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
+
 /* ตัวบอก "ฉบับนี้มีไฟล์สแกนแล้ว" ในทะเบียนหนังสือ
    จอกว้าง: เป็นคอลัมน์ 📎 ของตัวเอง อ่านเป็นแถวยาวลงมาได้ว่าฉบับไหนยังค้างไม่ได้สแกน
    จอแคบ: ตารางกว้างเกินจอและเลื่อนซ้ายขวาอยู่ใน .table-wrap คอลัมน์ท้ายๆ จึงตกไปอยู่นอกจอ

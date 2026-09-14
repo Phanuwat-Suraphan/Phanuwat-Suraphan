@@ -1,5 +1,5 @@
 import { router, html, json } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateShort, statusBadge } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateShort, statusBadge, rowAttrs, rowLink } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { RETENTION_LABEL } from '../db.js';
 import {
@@ -29,8 +29,8 @@ router.get('/retention', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage(
   const batchRows = batches.map((b) => {
     const statusLabel = { pending_approval: 'รออนุมัติ', approved: 'อนุมัติแล้ว (ทำลายแล้ว)', rejected: 'ไม่อนุมัติ' }[b.status];
     const statusClass = { pending_approval: 'badge-warning', approved: 'badge-danger', rejected: 'badge-muted' }[b.status];
-    return `<tr onclick="location.href='/retention/batches/${b.id}'" style="cursor:pointer">
-      <td>${esc(b.id.slice(0, 8))}</td>
+    return `<tr ${rowAttrs(`/retention/batches/${b.id}`)}>
+      <td>${rowLink(`/retention/batches/${b.id}`, esc(b.id.slice(0, 8)))}</td>
       <td>${b.item_count} รายการ</td>
       <td>${esc(b.creator_first)} ${esc(b.creator_last)}</td>
       <td><span class="badge ${statusClass}">${statusLabel}</span></td>

@@ -253,6 +253,35 @@
     modal.classList.toggle('show', show);
   };
 
+  // ---------- แถวตารางที่กดแล้วเปิดรายการนั้น ----------
+  //
+  // เดิมทุกตารางในระบบใช้ <tr onclick="location.href='...'"> ตรงๆ ซึ่งพังสี่อย่างพร้อมกัน
+  // (ยิงทดสอบด้วยเบราว์เซอร์จริงแล้วทั้งสี่ข้อ):
+  //
+  //   1. ลากเลือกข้อความในแถว (เช่นจะคัดลอกเลขทะเบียนไปวางในอีเมล) แล้วหน้าเด้งไปหน้าเอกสารทันที
+  //      คัดลอกจากทะเบียนไม่ได้เลย และหลุดจากรายการที่กรองไว้ด้วย
+  //   2. Ctrl/Cmd+คลิก ไม่เปิดแท็บใหม่ ซ้ำร้ายยังพาแท็บเดิมไปด้วย — ธุรการที่ตั้งใจเปิดหลายฉบับ
+  //      พร้อมกันจึงเสียรายการที่กรองไว้ทุกครั้ง
+  //   3. คลิกลูกกลิ้ง (เปิดแท็บหลัง) ไม่ทำอะไรเลย
+  //   4. ใช้คีย์บอร์ดอย่างเดียวเปิดหนังสือจากทะเบียนไม่ได้เลย — วัดแล้วทะเบียน 50 แถวมีจุดที่
+  //      Tab ไปถึงได้ 0 จุด และโปรแกรมอ่านหน้าจอก็ไม่มีอะไรให้ประกาศว่ากดได้
+  //
+  // ตอนนี้แต่ละแถวมีลิงก์จริง (<a>) อยู่ในช่องแรก ซึ่งแก้ข้อ 2-4 ให้เองตามธรรมชาติของเบราว์เซอร์
+  // ส่วนการกดที่ไหนก็ได้ในแถวยังใช้ได้เหมือนเดิม แต่ย้ายมาทำที่นี่เพื่อให้เว้นสามกรณีข้างล่างได้
+  document.addEventListener('click', function (e) {
+    const row = e.target.closest && e.target.closest('tr[data-href]');
+    if (!row) return;
+    // ปล่อยให้ลิงก์/ปุ่ม/ช่องติ๊กในแถวทำงานของตัวเอง (รวมลิงก์จริงในช่องแรก ซึ่งเบราว์เซอร์
+    // จัดการ Ctrl+คลิก/คลิกลูกกลิ้ง/Enter ให้ถูกต้องอยู่แล้ว)
+    if (e.target.closest('a, button, input, select, textarea, label')) return;
+    // ปุ่มขวา/ปุ่มกลาง หรือกดปุ่มร่วม = ผู้ใช้ตั้งใจทำอย่างอื่น ไม่ใช่ "เปิดในแท็บนี้"
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    // กำลังลากเลือกข้อความอยู่ — ห้ามเด้งหน้า
+    const sel = window.getSelection && window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().trim()) return;
+    window.location.href = row.getAttribute('data-href');
+  });
+
   // ---------- keyboard shortcuts (UI/UX Bible §28) ----------
   // Ctrl/Cmd+K -> focus search. Ctrl/Cmd+N -> new document (note: some browsers reserve
   // Ctrl+N for "new window" and never deliver the keydown event to the page at all — no

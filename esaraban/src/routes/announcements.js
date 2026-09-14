@@ -91,7 +91,7 @@ router.get('/announcements', requirePage((ctx) => {
                      หน้าประกาศรายฉบับอยู่ทางเดียวคือลิงก์ "อ่านต่อ" ซึ่งขึ้นเฉพาะประกาศที่เนื้อหายาว
                      เกิน 300 ตัวอักษร ประกาศสั้นๆ (ซึ่งเป็นส่วนใหญ่) จึงไม่มีหน้าของตัวเองให้เข้าถึงเลย
                      แปลว่าส่งลิงก์ประกาศให้ใครไม่ได้ และไม่มีปุ่มส่งเข้ากลุ่มไลน์ให้กดด้วย -->
-                <strong><a href="/announcements/${a.id}">${esc(a.title)}</a></strong>
+                <strong><a class="list-link" href="/announcements/${a.id}">${esc(a.title)}</a></strong>
                 ${isAdmin ? `<button type="button" class="btn btn-sm btn-outline" onclick="deleteAnnouncement('${a.id}')" title="ลบ">🗑️</button>` : ''}
               </div>
               ${bodyHtml(a)}

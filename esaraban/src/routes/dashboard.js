@@ -1,5 +1,5 @@
 import { router, html } from '../router.js';
-import { layout, esc, fmtDate, statusBadge, priorityBadge, illustratedEmptyState, daysUntil, dueCell, bangkokHour } from '../render.js';
+import { layout, esc, fmtDate, statusBadge, priorityBadge, illustratedEmptyState, daysUntil, dueCell, bangkokHour, rowAttrs, rowLink } from '../render.js';
 import { requirePage } from '../middleware.js';
 import { db, todayInBangkok } from '../db.js';
 import { canUserSeeDocument, visibleDocumentsSqlFilter } from '../services/workflow.js';
@@ -246,17 +246,22 @@ router.get('/', requirePage((ctx) => {
         <div class="card-header"><h3 class="mt-0">📌 งานของฉัน — ต้องดำเนินการ</h3><a class="text-muted" href="/tasks" style="font-size:.82rem">ดูทั้งหมด →</a></div>
         ${myPending.length ? `<div class="table-wrap"><table>
           <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ความเร็ว</th><th>สถานะ</th></tr></thead>
-          <tbody>${myPending.map((d) => `<tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer">
-            <td>${esc(d.doc_number_display)}${d.is_delegated ? ' <span title="รักษาการแทน">🪪</span>' : ''}</td><td>${esc(d.title)}</td>
+          <tbody>${myPending.map((d) => `<tr ${rowAttrs(`/documents/${d.id}`)}>
+            <td>${rowLink(`/documents/${d.id}`, esc(d.doc_number_display))}${d.is_delegated ? ' <span title="รักษาการแทน">🪪</span>' : ''}</td><td>${esc(d.title)}</td>
             <td>${priorityBadge(d.priority)}</td><td>${statusBadge(d.status)}</td></tr>`).join('')}</tbody>
         </table></div>` : illustratedEmptyState('allClear', 'วันนี้ไม่มีงานค้างแล้ว พักผ่อนสบายๆ ได้เลยครับ ☕')}
       </div>
       <div class="card">
         <h3 class="mt-0">🕒 เอกสารล่าสุดในระบบ</h3>
+        ${/* ทั้งรายการเป็นลิงก์เดียว ไม่ใช่แค่เลขทะเบียน — เดิมพื้นที่แตะสูงแค่ 17px (วัดบนจอ iPhone จริง)
+              ซึ่งต่ำกว่าเกณฑ์ของทั้ง Apple และ Google มาก และ "ชื่อเรื่อง" ซึ่งเป็นสิ่งที่คนอ่านแล้วอยากกด
+              กลับไม่ใช่ลิงก์เลย ต้องเล็งไปที่ตัวเลขเล็กๆ ข้างบนแทน */ ''}
         ${recent.length ? recent.map((d) => `
-          <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
-            <a href="/documents/${d.id}" style="font-weight:600">${esc(d.doc_number_display)}</a> ${statusBadge(d.status)}
-            <div class="text-muted" style="font-size:.82rem">${esc(d.title)}</div>
+          <div style="border-bottom:1px solid var(--border)">
+            <a class="list-link" href="/documents/${d.id}">
+              <span style="font-weight:600;color:var(--primary)">${esc(d.doc_number_display)}</span> ${statusBadge(d.status)}
+              <div class="text-muted" style="font-size:.82rem">${esc(d.title)}</div>
+            </a>
           </div>`).join('') : illustratedEmptyState('emptyInbox', 'ยังไม่มีเอกสารในระบบ เริ่มต้นสร้างรายการแรกได้เลยครับ')}
       </div>
     </div>
@@ -303,8 +308,8 @@ router.get('/tasks', requirePage((ctx) => {
         <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ความเร็ว</th><th>ครบกำหนด</th><th>มอบหมายเมื่อ</th></tr></thead>
         <tbody>${rows.map((d) => {
           const n = daysUntil(d.due_date);
-          return `<tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer${n !== null && n < 0 ? ';background:rgba(220,38,38,.06)' : ''}">
-            <td style="white-space:nowrap">${esc(d.doc_number_display)}${d.is_delegated ? ' <span title="รักษาการแทน">🪪</span>' : ''}${d.secret_level !== 'normal' ? ' <span title="ชั้นความลับ">🔒</span>' : ''}</td>
+          return `<tr ${rowAttrs(`/documents/${d.id}`)} style="${n !== null && n < 0 ? 'background:rgba(220,38,38,.06)' : ''}">
+            <td style="white-space:nowrap">${rowLink(`/documents/${d.id}`, esc(d.doc_number_display))}${d.is_delegated ? ' <span title="รักษาการแทน">🪪</span>' : ''}${d.secret_level !== 'normal' ? ' <span title="ชั้นความลับ">🔒</span>' : ''}</td>
             <td class="wrap"><strong>${esc(d.title)}</strong></td>
             <td>${priorityBadge(d.priority)}</td>
             <td style="white-space:nowrap">${dueCell(d.due_date)}</td>
@@ -367,10 +372,10 @@ router.get('/summary', requirePage((ctx) => {
         </tr></thead>
         <tbody>${rows.map((d) => {
           const n = daysUntil(d.due_date);
-          return `<tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer${n < 0 ? ';background:rgba(220,38,38,.06)' : ''}">
+          return `<tr ${rowAttrs(`/documents/${d.id}`)} style="${n < 0 ? 'background:rgba(220,38,38,.06)' : ''}">
             <td>${priorityBadge(d.priority)}</td>
             <td style="white-space:nowrap">${dueCell(d.due_date, { long: true })}</td>
-            <td><strong>${esc(d.title)}</strong><div class="text-muted" style="font-size:.78rem">${esc(d.doc_number_display)}${d.secret_level !== 'normal' ? ' 🔒' : ''}</div></td>
+            <td>${rowLink(`/documents/${d.id}`, `<strong>${esc(d.title)}</strong>`)}<div class="text-muted" style="font-size:.78rem">${esc(d.doc_number_display)}${d.secret_level !== 'normal' ? ' 🔒' : ''}</div></td>
             <td>${d.subject ? esc(d.subject).replace(/\n/g, '<br/>') : '<span class="text-muted">—</span>'}</td>
             <td>${d.pending_instruction ? esc(d.pending_instruction).replace(/\n/g, '<br/>') : '<span class="text-muted">—</span>'}
               ${d.pending_assignee ? `<div class="text-muted" style="font-size:.78rem;margin-top:.2rem">ผู้รับผิดชอบ: ${esc(d.pending_assignee)}</div>` : ''}</td>

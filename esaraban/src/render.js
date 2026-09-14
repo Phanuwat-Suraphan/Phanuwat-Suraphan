@@ -147,6 +147,20 @@ export function statusBadge(s) {
 }
 export const LABELS = { PRIORITY_LABEL, SECRET_LABEL, STATUS_LABEL };
 
+/**
+ * แถวตารางที่กดแล้วเปิดรายการนั้น
+ *
+ * ใช้คู่กันเสมอสองตัว: rowAttrs() ใส่ที่ <tr> ให้กดที่ไหนก็ได้ในแถว และ rowLink() ครอบเนื้อหา
+ * ช่องแรกให้เป็นลิงก์จริง เหตุผลเต็มอยู่ใน public/app.js — สรุปคือถ้ามีแต่ตัวแรก จะคัดลอกข้อความ
+ * ในแถวไม่ได้ เปิดแท็บใหม่ไม่ได้ และใช้คีย์บอร์ดเปิดรายการไม่ได้เลย
+ */
+export function rowAttrs(href) {
+  return `data-href="${esc(href)}" class="row-clickable"`;
+}
+export function rowLink(href, innerHtml) {
+  return `<a class="row-link" href="${esc(href)}">${innerHtml}</a>`;
+}
+
 function navItem(href, icon, label, currentPath) {
   const active = currentPath === href || (href !== '/' && currentPath.startsWith(href));
   return `<a class="nav-link${active ? ' active' : ''}" href="${href}"><span class="icon">${icon}</span><span>${esc(label)}</span></a>`;

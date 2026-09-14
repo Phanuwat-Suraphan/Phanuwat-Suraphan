@@ -1,5 +1,5 @@
 import { router, html, json, redirect, contentDispositionHeader, truncateFilename } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, stampDateThai, stampTimeThai, priorityBadge, secretBadge, statusBadge, emptyState, fmtCount, LABELS, schoolName } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, stampDateThai, stampTimeThai, priorityBadge, secretBadge, statusBadge, emptyState, fmtCount, LABELS, schoolName, rowAttrs, rowLink } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, nowIso, audit, todayInBangkok, RETENTION_LABEL } from '../db.js';
 import {
@@ -108,8 +108,8 @@ router.get('/documents', requirePage((ctx) => {
   const rowsHtml = rows.map((d) => {
     const n = stillOpen(d) ? daysUntil(d.due_date) : null;
     return `
-    <tr onclick="location.href='/documents/${d.id}'" style="cursor:pointer${n !== null && n < 0 ? ';background:rgba(220,38,38,.06)' : ''}">
-      <td style="white-space:nowrap"><strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong></td>
+    <tr ${rowAttrs(`/documents/${d.id}`)} style="${n !== null && n < 0 ? 'background:rgba(220,38,38,.06)' : ''}">
+      <td style="white-space:nowrap">${rowLink(`/documents/${d.id}`, `<strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong>`)}</td>
       ${direction === 'all' ? `<td style="white-space:nowrap">${d.direction === 'incoming' ? '📥 เข้า' : '📤 ออก'}</td>` : ''}
       <td class="wrap">${esc(d.title)}${d.secret_level !== 'normal' ? ' 🔒' : ''}${d.attachment_count
         ? ` <span class="clip-inline" title="มีไฟล์แนบ ${d.attachment_count} ไฟล์">📎${d.attachment_count > 1 ? d.attachment_count : ''}</span>` : ''}

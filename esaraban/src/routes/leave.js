@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { router, html, json, contentDispositionHeader, truncateFilename } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateShort, fmtThaiDateLong, schoolName } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateShort, fmtThaiDateLong, schoolName, rowAttrs, rowLink } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, audit, beYear } from '../db.js';
 import {
@@ -50,8 +50,8 @@ router.get('/leave', requirePage((ctx) => {
   const pending = listPendingApprovals(ctx.user.id);
 
   const rowHtml = (r, showRequester) => `
-    <tr onclick="location.href='/leave/${r.id}'" style="cursor:pointer">
-      <td>${esc(LEAVE_TYPE_LABEL[r.leave_type])}</td>
+    <tr ${rowAttrs(`/leave/${r.id}`)}>
+      <td>${rowLink(`/leave/${r.id}`, esc(LEAVE_TYPE_LABEL[r.leave_type]))}</td>
       ${showRequester ? `<td>${esc(r.requester_prefix || '')}${esc(r.requester_first)} ${esc(r.requester_last)}</td>` : ''}
       <td>${esc(fmtThaiDateShort(r.start_date))} — ${esc(fmtThaiDateShort(r.end_date))}</td>
       <td>${r.days_count} วัน</td>
