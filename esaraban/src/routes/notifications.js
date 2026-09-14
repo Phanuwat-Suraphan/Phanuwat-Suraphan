@@ -1,0 +1,54 @@
+import { router, html, json } from '../router.js';
+import { layout, esc, fmtDate, emptyState } from '../render.js';
+import { requirePage, requireApi } from '../middleware.js';
+import { db } from '../db.js';
+
+const PRIORITY_ICON = { info: 'ℹ️', success: '✅', warning: '⚠️', urgent: '🔴', critical: '🚨' };
+
+// ข้อความแจ้งเตือนบางรายการยาวมาก (เช่น เหตุผลที่ไม่อนุมัติซึ่งผู้ใช้พิมพ์เอง) หน้านี้แสดง 100 รายการ
+// ต่อครั้ง ถ้าไม่ตัดจะหนักได้ถึงหลักแสนไบต์ทั้งที่จำนวนรายการมีเพดานอยู่แล้ว — รายละเอียดเต็มอ่านได้ที่
+// หน้าของเรื่องนั้นซึ่งลิงก์ไปอยู่แล้ว
+const MESSAGE_PREVIEW_CHARS = 200;
+const preview = (msg) => {
+  const s = String(msg || '');
+  return s.length > MESSAGE_PREVIEW_CHARS ? `${s.slice(0, MESSAGE_PREVIEW_CHARS)}…` : s;
+};
+
+router.get('/notifications', requirePage((ctx) => {
+  const rows = db.prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 100').all(ctx.user.id);
+  const content = `
+    <div class="card-header">
+      <h2 class="mt-0">🔔 การแจ้งเตือน</h2>
+      <button class="btn btn-outline btn-sm" onclick="fetch('/notifications/read-all',{method:'POST'}).then(()=>location.reload())">อ่านทั้งหมดแล้ว</button>
+    </div>
+    <div class="card">
+      ${rows.length ? rows.map((n) => `
+        <div class="flex items-center justify-between" style="padding:.7rem 0;border-bottom:1px solid var(--border);${n.is_read ? 'opacity:.6' : ''}">
+          <div>
+            <div style="font-weight:700">${PRIORITY_ICON[n.priority] || 'ℹ️'} ${esc(n.title)}</div>
+            <div class="text-muted" style="font-size:.85rem">${esc(preview(n.message))}</div>
+            <div class="text-muted" style="font-size:.75rem">${fmtDate(n.created_at)}</div>
+          </div>
+          <div class="chip-row">
+            ${
+              // link_url ต้องเป็น path ภายในระบบเท่านั้น — ค่านี้มาจากโค้ดฝั่งเซิร์ฟเวอร์อยู่แล้ว แต่กันไว้
+              // ไม่ให้กลายเป็นทางเปิด redirect ออกนอกเว็บถ้าวันหลังมีใครส่งค่าจากผู้ใช้เข้ามา
+              n.document_id ? `<a class="btn btn-sm btn-outline" href="/documents/${n.document_id}">เปิด</a>`
+                : /^\/[A-Za-z0-9/_-]*$/.test(n.link_url || '') ? `<a class="btn btn-sm btn-outline" href="${esc(n.link_url)}">เปิด</a>` : ''
+            }
+            ${!n.is_read ? `<button class="btn btn-sm btn-outline" onclick="fetch('/notifications/${n.id}/read',{method:'POST'}).then(()=>location.reload())">อ่านแล้ว</button>` : ''}
+          </div>
+        </div>`).join('') : emptyState('🔕', 'ไม่มีการแจ้งเตือน')}
+    </div>`;
+  html(ctx, 200, layout({ user: ctx.user, title: 'การแจ้งเตือน', path: '/notifications', content }));
+}));
+
+router.post('/notifications/:id/read', requireApi(async (ctx) => {
+  db.prepare('UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?').run(ctx.params.id, ctx.user.id);
+  json(ctx, 200, { ok: true });
+}));
+
+router.post('/notifications/read-all', requireApi(async (ctx) => {
+  db.prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ?').run(ctx.user.id);
+  json(ctx, 200, { ok: true });
+}));

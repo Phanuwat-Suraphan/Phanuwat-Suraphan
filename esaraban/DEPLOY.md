@@ -1,0 +1,261 @@
+# Deploying e-Saraban to a cloud VPS
+
+This app is a single Node.js process + local SQLite file — it needs a real VPS (not GitHub
+Pages, which only serves static files, and not most "static site" free hosts). A small VPS is
+enough: it matches the "โรงเรียนขนาดเล็ก" spec from the SRS (4 core / 8GB is generous for this
+MVP; even a 1 vCPU / 1–2GB instance works fine for one school).
+
+Any provider works (DigitalOcean, Vultr, Linode, Hetzner, AWS Lightsail...) — steps below use
+DigitalOcean/Vultr naming but are the same everywhere. Budget: cheapest Ubuntu droplet is
+usually $4–6/month.
+
+**Want it free?** [`deploy/ORACLE_CLOUD.md`](./deploy/ORACLE_CLOUD.md) covers Oracle Cloud's
+"Always Free" tier, which gives a real persistent VPS at no cost indefinitely (not a trial).
+Read that first if you're going that route — steps 1-2 below differ slightly on Oracle, then
+everything from step 3 onward is identical.
+
+## 1. Create the server
+
+- Create a droplet/instance: **Ubuntu 24.04 LTS**, smallest size, any region near the school
+- Note its public IP address
+- (Optional but recommended) point a domain/subdomain at that IP via an A record, e.g.
+  `esaraban.yourschool.ac.th` — needed for HTTPS in step 5
+
+## 2. Initial server setup
+
+SSH in as root, then:
+
+```bash
+adduser esaraban --disabled-password --gecos ""
+usermod -aG sudo esaraban
+# copy your SSH key so you can log in as this user, then disable root SSH login (Part 3/10 hardening):
+rsync --archive --chown=esaraban:esaraban ~/.ssh /home/esaraban
+# edit /etc/ssh/sshd_config: PermitRootLogin no, then: systemctl restart ssh
+
+# firewall — only 80/443/22, per the spec's Production Checklist
+apt update && apt install -y ufw fail2ban nginx certbot python3-certbot-nginx sqlite3
+ufw allow OpenSSH
+ufw allow 'Nginx Full'
+ufw enable
+
+# Node.js 22 LTS (NodeSource)
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt install -y nodejs
+node --version   # confirm v22.x — required for node:sqlite
+
+# Page-1 preview image of attachments
+# preview image shown behind the draggable stamp/signature boxes (poppler-utils' pdftoppm — without
+# it, that preview area just shows a plain "install poppler-utils" message instead of the page, but
+# dragging the boxes to a position still works fine since it's percentage-based, not pixel-based)
+apt install -y poppler-utils
+
+# optional: burn the "received" stamp / director's signature box into the actual PDF file
+# skip this if you don't need the "ประทับตราลงไฟล์ PDF จริง" button — the app works fine without
+# it, it just falls back to the CSS-only on-screen stamp overlay and shows a clear 501 error
+# if someone tries to use the real-PDF-stamping button anyway. Chromium renders the Thai-text
+# stamp box as a one-page PDF (headless print-to-pdf); qpdf overlays that page onto page 1 of
+# the original PDF without touching any other page or re-encoding the rest of the file.
+apt install -y chromium qpdf
+# Debian sometimes names the binary "chromium", Ubuntu older releases "chromium-browser" — if
+# `which chromium` comes back empty after install, set CHROME_BIN=chromium-browser (or the
+# actual binary name) as an environment variable for the esaraban service.
+```
+
+## 3. Deploy the app
+
+```bash
+su - esaraban
+git clone https://github.com/Phanuwat-Suraphan/Phanuwat-Suraphan.git /tmp/repo
+sudo mkdir -p /opt/esaraban
+sudo cp -r /tmp/repo/esaraban/. /opt/esaraban/
+sudo chown -R esaraban:esaraban /opt/esaraban
+mkdir -p /opt/esaraban/data /opt/esaraban/uploads
+```
+
+No `npm install` needed — the app has zero external dependencies by design (see README.md).
+
+## 4. Run it as a service (systemd)
+
+```bash
+# generate a real session secret — do not use the dev default in production
+openssl rand -hex 32
+
+sudo cp /opt/esaraban/deploy/esaraban.service /etc/systemd/system/esaraban.service
+sudo nano /etc/systemd/system/esaraban.service   # paste the generated secret into SESSION_SECRET=
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now esaraban
+sudo systemctl status esaraban       # should show "active (running)"
+curl http://127.0.0.1:3000/login     # should return HTML
+```
+
+## 5. Nginx reverse proxy + HTTPS
+
+```bash
+sudo cp /opt/esaraban/deploy/nginx.conf /etc/nginx/sites-available/esaraban
+sudo nano /etc/nginx/sites-available/esaraban   # replace esaraban.example.com with your real domain
+sudo ln -s /etc/nginx/sites-available/esaraban /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+
+# only works once your domain's DNS A record points at this server's IP:
+sudo certbot --nginx -d esaraban.yourschool.ac.th
+```
+
+Your site is now live at `https://esaraban.yourschool.ac.th`.
+
+## 6. Backups
+
+```bash
+chmod +x /opt/esaraban/deploy/backup.sh
+crontab -e
+# add: 0 0 * * * /opt/esaraban/deploy/backup.sh >> /var/log/esaraban-backup.log 2>&1
+```
+
+Also copy `/opt/esaraban-backups` off the server periodically (e.g. `rsync` to another
+machine, or sync to object storage) — a backup that only lives on the same disk doesn't
+survive a disk failure.
+
+## 7. Before real documents go into it
+
+This is still the MVP described in `README.md` — do these before treating it as production:
+
+- [ ] Change every seeded demo account's password and PIN (or delete the seed accounts and
+      create real ones via `/admin/users`)
+- [ ] Set a real `SESSION_SECRET` (step 4) — never ship the code's dev default
+- [ ] Confirm firewall only exposes 80/443/22 (`sudo ufw status`)
+- [ ] Add a virus scanner (ClamAV) in front of the upload path — not yet implemented
+- [ ] Test the restore path once (`sqlite3 data/esaraban.db ".restore backup.db"`) before you
+      need it for real
+
+## Updating after a git push
+
+The `--exclude` flags are the important part: `data/` (the register itself) and `uploads/` (the
+attached PDFs) live on the server's own disk and are **never** touched by an update. This is the
+whole difference from a free PaaS tier like Render, where every deploy resets the filesystem and
+takes the database and every uploaded document with it.
+
+```bash
+su - esaraban
+cd /tmp/repo && git pull
+sudo rsync -a --exclude=data --exclude=uploads /tmp/repo/esaraban/ /opt/esaraban/
+sudo systemctl restart esaraban
+```
+
+Take a backup before an update that includes a schema migration, so there is a known-good copy
+to go back to: `/opt/esaraban/deploy/backup.sh`.
+
+## เข้าระบบไม่ได้ / ลืมรหัสผ่านผู้ดูแล (ทางกู้คืน)
+
+ระบบนี้ไม่มีการรีเซ็ตรหัสผ่านทางอีเมล ถ้าผู้ดูแลเข้าไม่ได้จะไม่เหลือทางเข้าเลย จึงมีทางกู้คืนผ่าน
+environment variable ซึ่งเป็นสิ่งที่เจ้าของเซิร์ฟเวอร์ควบคุมได้อยู่แล้วแน่ๆ
+
+**ก่อนอื่น — เช็คว่าใช่การถูกล็อกชั่วคราวหรือเปล่า**
+กรอกรหัสผ่านผิดครบ 5 ครั้ง บัญชีจะถูกล็อก **15 นาที** และในระหว่างนั้น**รหัสที่ถูกต้องก็เข้าไม่ได้**
+(ตัวล็อกไม่ได้ดูรหัสผ่านเลย) ถ้าเพิ่งเปลี่ยนรหัสแล้วเข้าไม่ได้ ให้ดูข้อความบนหน้าจอ ถ้าเขียนว่า
+"บัญชีถูกล็อกชั่วคราว" ให้รอ 15 นาทีแล้วลองใหม่ — หรือให้ผู้ดูแลกดปุ่ม **"🔑 รีเซ็ตรหัส"**
+ในหน้าจัดการผู้ใช้ ซึ่งจะปลดล็อกให้พร้อมออกรหัสชั่วคราวใหม่ทันที
+
+**ถ้าเข้าบัญชีผู้ดูแลไม่ได้เลย:**
+
+1. ไปที่หน้าตั้งค่า environment ของเซิร์ฟเวอร์ (Render: Dashboard → service → **Environment**)
+2. เพิ่มตัวแปร `ADMIN_RESET_PASSWORD` = รหัสชั่วคราวที่ตั้งเอง (อย่างน้อย 8 ตัวอักษร)
+   — ถ้าจะกู้บัญชีอื่นที่ไม่ใช่ `admin` ให้ตั้ง `ADMIN_RESET_CODE` = รหัสประจำตัวของบัญชีนั้นด้วย
+3. **Save Changes** แล้วรอให้ระบบ restart (Render ทำให้เอง)
+4. ดู log จะเห็นบรรทัดขึ้นต้นด้วย `[recovery]` ยืนยันว่าตั้งรหัสให้แล้ว
+5. เข้าสู่ระบบด้วยรหัสนั้น — ระบบจะบังคับให้ตั้งรหัสผ่านและ PIN ของตัวเองทันที
+6. **⚠️ เสร็จแล้วให้ลบตัวแปร `ADMIN_RESET_PASSWORD` ออกทันที** ไม่งั้นรหัสนั้นจะถูกตั้งกลับ
+   ทุกครั้งที่ระบบ restart และค้างอยู่ในหน้าตั้งค่าให้คนที่เข้าถึง dashboard ได้เห็น
+
+การกู้คืนนี้จะปลดล็อกบัญชี เตะเซสชันที่ค้างอยู่ออกทั้งหมด และบังคับเปลี่ยนรหัสเสมอ
+รหัสจาก environment variable จึงเป็นรหัส**ชั่วคราว**เท่านั้น ไม่ได้กลายเป็นรหัสถาวรของบัญชี
+
+## เข้าใช้ครั้งแรกหลัง deploy (ไม่ต้องตั้งค่าอะไรเลย)
+
+เปิดลิงก์ของระบบ → หน้าเข้าสู่ระบบจะมีกล่อง **👋 ระบบเพิ่งติดตั้งใหม่** แสดงบัญชีตั้งต้นทั้ง 6 บทบาท
+พร้อม PIN **กดเลือกบัญชีแล้วกด "เข้าสู่ระบบ" ได้เลย** ไม่ต้องพิมพ์รหัส ไม่ต้องไปหาใน log
+และไม่โดนด่านบังคับตั้งรหัสใหม่ระหว่างทดลอง
+
+**กล่องนี้ปิดตัวเองเมื่อ**
+
+- ลงทะเบียน**หนังสือฉบับแรก** (= เริ่มใช้งานจริงแล้ว) — รหัสถูกลบออกจากฐานข้อมูลจริง ไม่ใช่แค่ซ่อน
+- หรือกดปุ่ม **"🔒 ปิดโหมดเริ่มต้นเดี๋ยวนี้"** ในหน้า *จัดการผู้ใช้งาน* (สำหรับกรณีที่ต้องเปิดให้คนนอก
+  เห็นก่อนจะเริ่มลงทะเบียนจริง)
+- บัญชีไหนที่เจ้าตัวตั้งรหัสของตัวเองแล้ว หรือถูกผู้ดูแลรีเซ็ตรหัสให้ใหม่ จะหายจากกล่องทันที
+
+การปิดโหมดนี้**ไม่ได้เปลี่ยนรหัสของใคร** แค่เลิกแสดงเท่านั้น — ถ้าจำรหัสไม่ได้แล้ว ให้ผู้ดูแลกด
+**"🔑 รีเซ็ตรหัส"** ออกรหัสชั่วคราวใหม่ให้
+
+> ⚠️ ระหว่างที่กล่องนี้ยังแสดงอยู่ ใครก็ตามที่เปิดลิงก์เจอสามารถเข้าระบบเป็นใครก็ได้ — ยอมรับได้เพราะ
+> ตอนนั้นยังไม่มีหนังสือสักฉบับให้ปกป้อง แต่**ก่อนเริ่มใช้งานจริง ให้ทุกคนตั้งรหัสของตัวเองที่
+> "โปรไฟล์ของฉัน" ก่อน**
+
+## โหมดทดสอบ — เข้าใช้ทุกบทบาทด้วยรหัสเดียว
+
+ตอนทดลองระบบก่อนใช้จริง การต้องจำรหัสของครูแต่ละคนเพื่อสลับบทบาทดู (ธุรการลงทะเบียน →
+หัวหน้าฝ่ายเกษียณ → ผอ. ลงนาม → ครูรับทราบ) ทำให้ทดสอบไม่จบสักที โหมดนี้ตั้งรหัสผ่านและ PIN
+ให้**ทุกบัญชีเหมือนกันหมด** และข้ามด่าน "ตั้งรหัสของตัวเองก่อนใช้งาน" ให้ด้วย
+
+1. ตั้ง `TEST_MODE_PASSWORD` = รหัสที่อยากใช้ (อย่างน้อย 8 ตัวอักษร)
+2. ถ้าอยากกำหนด PIN เองให้ตั้ง `TEST_MODE_PIN` = ตัวเลข 4–10 หลัก (ไม่ตั้งจะได้ `123456`)
+3. Save แล้วรอ restart
+4. เปิดหน้า login จะเห็นกล่อง **🧪 โหมดทดสอบ** บอกรหัสไว้ พร้อมปุ่มกดเลือกบัญชีได้เลย
+   ไม่ต้องพิมพ์ชื่อผู้ใช้เอง
+
+**ข้อควรรู้**
+
+- บัญชีที่ถูก**ปิด**ไว้จะไม่ถูกแตะ (การปิดบัญชีเป็นการตัดสินใจของโรงเรียน ไม่ใช่ผลข้างเคียงของรหัสผ่าน)
+- ทุกครั้งที่ระบบ restart รหัสจะถูกตั้งกลับให้ใหม่ตราบใดที่ตัวแปรยังอยู่
+- ระหว่างเปิดโหมดนี้ จะมีแถบเตือนสีเหลืองค้างอยู่**ทุกหน้า** ปิดไม่ได้ — ตั้งใจให้เป็นแบบนั้น
+  เพราะความเสี่ยงจริงคือเปิดทิ้งไว้แล้วลืม
+
+**⚠️ ห้ามเปิดค้างไว้ตอนใช้งานจริง** — ทุกคนใช้รหัสเดียวกันแปลว่าใครก็เข้าเป็นใครก็ได้ และลายเซ็น
+กับการลงนาม "ทราบ" ที่ออกจากบัญชีนั้นพิสูจน์ตัวตนไม่ได้เลย พอทดสอบเสร็จให้**ลบตัวแปร
+`TEST_MODE_PASSWORD` ออก** แล้ว restart จากนั้นให้ผู้ดูแลกด **"🔑 รีเซ็ตรหัส"** ให้ทุกคนทีละคน
+เพื่อให้แต่ละคนตั้งรหัสของตัวเองตอนเข้าใช้ครั้งแรก
+
+## ใช้งานร่วมกับ LINE
+
+ระบบต่อกับ LINE ได้สามทาง — ทางแรกใช้ได้เลยไม่ต้องตั้งค่าอะไร อีกสองทางต้องตั้งตัวแปรเพิ่ม
+
+### 1. ส่งเรื่องเข้ากลุ่มไลน์ (ไม่ต้องตั้งค่า)
+
+หน้าหนังสือและหน้าประกาศมีปุ่ม **💬 ส่งเข้าไลน์** ที่เปิดหน้าต่างแชร์ของ LINE พร้อมข้อความที่
+ประกอบไว้ให้ (เลขทะเบียน ชื่อเรื่อง ผู้ส่ง วันครบกำหนด และลิงก์กลับมาที่เรื่องนั้น) เลือกกลุ่มเองได้
+
+หนังสือชั้นความลับ (ลับ/ลับมาก) และหนังสือที่ทำลาย/ยกเลิกไปแล้วจะไม่มีปุ่มนี้
+
+ถ้าโรงเรียนเอาโดเมนของตัวเองมาวางหน้าอีกที ให้ตั้ง `PUBLIC_BASE_URL` = ที่อยู่เว็บที่ครูใช้จริง
+(เช่น `https://saraban.example.ac.th`) ไม่งั้นลิงก์ในข้อความจะเป็นชื่อภายในของผู้ให้บริการ
+
+### 2. แจ้งเตือนเด้งเข้าไลน์อัตโนมัติ
+
+ต้องมี **LINE Official Account** ของโรงเรียน (สร้างฟรีที่ `manager.line.biz`) แล้วตั้งตัวแปร
+
+| ตัวแปร | ค่าที่ต้องใส่ |
+| --- | --- |
+| `LINE_CHANNEL_ACCESS_TOKEN` | Channel access token จากแท็บ Messaging API |
+| `LINE_CHANNEL_SECRET` | Channel secret จากหน้าเดียวกัน |
+| `LINE_OA_BASIC_ID` | ไอดีบัญชีทางการ เช่น `@123abcde` (ไม่ตั้งก็ใช้ได้ แต่ครูต้องหาบัญชีเอง) |
+
+แล้วกรอก Webhook URL `https://<ชื่อเว็บของคุณ>/line/webhook` ในหน้า Messaging API และเปิด
+"Use webhook" — ขั้นตอนเต็มพร้อมปุ่มคัดลอก URL อยู่ในระบบที่หน้า **ระบบ → แจ้งเตือนเข้าไลน์**
+
+ครูแต่ละคนกดเชื่อมบัญชีเองที่ **โปรไฟล์ของฉัน → แจ้งเตือนเข้าไลน์ → ขอรหัสเชื่อมบัญชี**
+(ต้องเป็นเจ้าตัวกดเอง ผู้ดูแลกรอกให้ไม่ได้ — ถ้าผูกผิดคน ชื่อเรื่องหนังสือจะรั่วไปเรื่อยๆ)
+
+**⚠️ ห้ามส่ง `LINE_CHANNEL_ACCESS_TOKEN` กับ `LINE_CHANNEL_SECRET` ให้ใครทางแชท**
+ใครถือค่านี้ส่งข้อความในนามโรงเรียนได้ทันที กรอกบนหน้าตั้งค่าเซิร์ฟเวอร์ของคุณเองเท่านั้น
+
+หนังสือชั้นความลับจะไม่ส่งเลขที่และชื่อเรื่องเข้าไลน์ ส่งแค่ว่ามีเรื่องรออยู่พร้อมลิงก์ให้เข้ามาอ่านในระบบ
+
+### 3. รับไฟล์ที่แชร์มาจาก LINE
+
+ติดตั้งระบบลงหน้าจอโฮมของมือถือ (PWA) แล้วกดแชร์ไฟล์ PDF จาก LINE เข้าระบบได้ตรงๆ
+ไม่ต้องดาวน์โหลดก่อน — มีคำแนะนำอยู่บนหน้าแรกของระบบ ไม่ต้องตั้งค่าอะไร
+
+## Server timezone
+
+Nothing to configure. The app never reads the machine's timezone — every date and time it shows,
+counts by, or stamps into a PDF is computed as Asia/Bangkok explicitly, and the test suite runs
+green under `TZ=UTC`, `TZ=Asia/Bangkok`, and deliberately wrong zones. Cloud images almost always
+default to UTC; leaving it that way is fine.
