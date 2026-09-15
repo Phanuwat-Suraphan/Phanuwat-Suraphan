@@ -15,7 +15,7 @@ process.env.DB_PATH = tmpDb;
 process.env.SESSION_SECRET = 'test-secret-not-for-production';
 
 const { db, computeRetentionUntil, beYear, todayInBangkok, hashSecret, verifySecret, isWeakPin, nowIso, migrate, uuid } = await import('../src/db.js');
-const { login, getSessionUser, revokeOtherSessions, verifyPin } = await import('../src/auth.js');
+const { login, getSessionUser, revokeOtherSessions, verifyPin, sessionCookieHeader } = await import('../src/auth.js');
 const { contentDispositionHeader } = await import('../src/router.js');
 const { daysUntil, fmtDate, fmtThaiDateShort, fmtThaiDateLong, stampDateThai, stampTimeThai, bangkokHour } = await import('../src/render.js');
 const {
@@ -69,6 +69,10 @@ function makeDoc(overrides = {}) {
     // ธุรการเป็นผู้ลงทะเบียนหนังสือเข้าในความเป็นจริง จึงเป็นทั้งผู้บันทึกและผู้เสนอ/ยกเลิกเอง — เดิม fixture
     // ตั้งผู้บันทึกเป็นแอดมินแต่ไปเสนอ/ยกเลิกด้วยธุรการ ซึ่งเป็นสถานการณ์ที่ไม่เกิดขึ้นจริง และบังเอิญผ่านมาได้
     // เพราะตอนนั้นฝั่งเซิร์ฟเวอร์ยังไม่ได้ตรวจสิทธิ์ในสองฟังก์ชันนั้นเลย
+    // fixture สร้างหนังสือชื่อเรื่องเดียวกันรัวๆ ในวินาทีเดียว ซึ่งของจริงคือ "ธุรการกดปุ่มซ้ำ" และระบบ
+    // กันไว้โดยตั้งใจ (ดู assertNotJustRegistered) — ที่นี่คือการเตรียมข้อมูลทดสอบ ไม่ใช่การกดพลาด
+    // จึงบอกระบบไปตรงๆ ว่าตั้งใจ ส่วนตัวด่านกันการกดซ้ำมีเทสต์แยกของตัวเองที่ไม่ส่งธงนี้
+    allowDuplicate: true,
     createdBy: registrarUser.id, ...overrides,
   });
 }
@@ -1818,9 +1822,12 @@ describe('คำเตือนไฟล์ซ้ำต้องไม่บอ�
 // และไม่มีข้อความอะไรบอกเลย เพราะเงื่อนไข `if (!fileDataBase64)` กลืนกรณีนี้รวมกับ "ไม่ได้แนบไฟล์มา"
 // ซึ่งเป็นคนละเรื่องกัน กว่าธุรการจะรู้ว่าหนังสือฉบับนั้นไม่มีไฟล์สแกนก็ตอนต้องหยิบมาใช้
 describe('แนบไฟล์ที่ไม่มีข้อมูล (0 ไบต์) ต้องไม่เงียบ', () => {
+  // ชื่อเรื่องต้องไม่ซ้ำกันในแต่ละครั้ง — เส้นทางจริงกันการลงทะเบียนเรื่องเดิมซ้ำภายในหนึ่งนาที
+  // (ดู assertNotJustRegistered) ซึ่งเป็นพฤติกรรมที่ต้องการ ที่นี่แค่ต้องการหนังสือคนละฉบับจริงๆ
+  let docForSeq = 0;
   const makeDocFor = async () => {
     const res = await dispatchPost(registrarUser, '/documents', {
-      title: 'หนังสือสำหรับทดสอบไฟล์ว่าง', departmentId: deptId, correspondentName: 'ทดสอบ',
+      title: `หนังสือสำหรับทดสอบไฟล์ว่าง ${++docForSeq}`, departmentId: deptId, correspondentName: 'ทดสอบ',
     });
     return /\/documents\/([0-9a-f-]{36})/.exec(res.body)?.[1];
   };
@@ -1928,8 +1935,12 @@ describe('สิทธิ์เห็นหนังสือ: เงื่อ�
 // ใช้ซ้ำไม่ได้ตามหลักงานสารบรรณ ถ้าฉบับที่ 7 ใน 10 ฉบับกรอกผิดแล้วระบบบันทึก 6 ฉบับแรกไปก่อน ทะเบียน
 // จะมีเลขหายไปโดยอธิบายไม่ได้ตอนตรวจ — ทั้งชุดจึงต้องสำเร็จหรือไม่สำเร็จพร้อมกันเท่านั้น
 describe('ลงรับหลายฉบับรวดเดียว', () => {
+  // ชื่อเรื่องต้องไม่ซ้ำข้ามการเรียกแต่ละครั้ง — ระบบกันการลงทะเบียน "ชุดเดิม" ซ้ำภายในหนึ่งนาที
+  // โดยดูฉบับแรกของชุดเป็นตัวแทน (ดู createDocumentsBulk) ซึ่งเป็นพฤติกรรมที่ต้องการ
+  // เทสต์เหล่านี้ตรวจเรื่องการออกเลข ไม่ได้ตรวจชื่อเรื่อง จึงเติมลำดับต่อท้ายให้ไม่ชนกันเอง
+  let bulkSeq = 0;
   const bulkItem = (n, extra = {}) => ({
-    direction: 'incoming', title: `หนังสือชุด ฉบับที่ ${n}`, correspondentName: 'สพป.ทดสอบ',
+    direction: 'incoming', title: `หนังสือชุด ฉบับที่ ${n} (#${++bulkSeq})`, correspondentName: 'สพป.ทดสอบ',
     docTypeId: typeId, departmentId: deptId, ...extra,
   });
   const runningNumbers = () => db.prepare(
@@ -4063,7 +4074,14 @@ describe('ประชาสัมพันธ์: ส่งให้ทุก�
   test('แจ้งเวียนซ้ำได้ และเก็บประวัติทุกครั้ง', () => {
     const doc = makeDoc({ title: 'แจ้งย้ำอีกรอบ' });
     broadcastDocument({ documentId: doc.id, note: 'ครั้งแรก', actorUser: registrarUser });
-    broadcastDocument({ documentId: doc.id, note: 'แจ้งย้ำ', actorUser: registrarUser });
+
+    // กดซ้ำทันทีต้องถูกกันไว้ก่อน — ครูทั้งโรงเรียนจะได้แจ้งเตือน (และข้อความไลน์) สองรอบ
+    // ซึ่งเกือบทุกครั้งคือกดพลาด ไม่ใช่ตั้งใจย้ำ
+    assert.throws(() => broadcastDocument({ documentId: doc.id, note: 'กดพลาด', actorUser: registrarUser }),
+      /เพิ่งประชาสัมพันธ์/, 'กดซ้ำทันทีต้องถูกกันไว้ก่อน');
+
+    // แต่ห้ามกันตาย — การแจ้งย้ำอีกรอบเป็นเรื่องปกติของงานสารบรรณ ยืนยันแล้วต้องส่งได้จริง
+    broadcastDocument({ documentId: doc.id, note: 'แจ้งย้ำ', actorUser: registrarUser, allowDuplicate: true });
     const rows = listBroadcasts(doc.id);
     assert.equal(rows.length, 2, 'ต้องเก็บประวัติทั้งสองครั้ง');
     assert.equal(rows[0].note, 'แจ้งย้ำ', 'ครั้งล่าสุดต้องมาก่อน');
@@ -6054,6 +6072,355 @@ describe('แถวตารางที่กดแล้วเปิดรา�
     assert.match(handler, /metaKey/, 'ไม่ได้เว้นกรณีกด Cmd+คลิก (ผู้ใช้ Mac)');
     assert.match(handler, /e\.button !== 0/, 'ไม่ได้เว้นคลิกลูกกลิ้ง/ปุ่มขวา');
     assert.match(handler, /closest\('a, button/, 'ไม่ได้เว้นลิงก์/ปุ่มที่อยู่ในแถว — กดปุ่มในแถวแล้วจะเด้งไปหน้าอื่นแทน');
+  });
+});
+
+// กดปุ่มซ้ำ/เน็ตกระตุกแล้วเบราว์เซอร์ส่งซ้ำ — บนมือถือเกิดง่ายมาก และในงานสารบรรณแก้ไม่ได้
+// เลขทะเบียนที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้ตามระเบียบ ต้องยกเลิกฉบับเกินทิ้งอย่างเดียว
+// ทะเบียนจึงมีเลขที่ถูกยกเลิกคาอยู่ถาวรและต้องอธิบายตอนตรวจ
+// (ยิงทดสอบด้วยเบราว์เซอร์จริงแล้วเกิดขึ้นจริงทั้งการลงทีละฉบับ ลงหลายฉบับ และการประชาสัมพันธ์)
+describe('กดปุ่มซ้ำต้องไม่ได้ของซ้ำ', () => {
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  const create = (body) => dispatchPost(reg(), '/documents', {
+    departmentId: deptId, correspondentName: 'สพป.ทดสอบกดซ้ำ', ...body,
+  });
+
+  test('ลงทะเบียนเรื่องเดิมซ้ำทันที ต้องถูกกันไว้ก่อน และต้องไม่กินเลขทะเบียนเพิ่ม', async () => {
+    const title = `หนังสือกดซ้ำ ${Date.now()}`;
+    const first = await create({ title });
+    assert.equal(first.status, 201, first.body);
+
+    const second = await create({ title });
+    assert.equal(second.status, 409, `กดซ้ำต้องถูกกัน แต่ได้ ${second.status}`);
+    assert.match(second.json.error, /เพิ่งลงทะเบียน/);
+    const rows = db.prepare('SELECT doc_number_display FROM documents WHERE title = ? AND deleted_at IS NULL').all(title);
+    assert.equal(rows.length, 1, `กินเลขทะเบียนไป ${rows.length} เลขจากการกดครั้งเดียว: ${rows.map((r) => r.doc_number_display).join(', ')}`);
+  });
+
+  // ห้ามกันตาย — หนังสือคนละฉบับที่บังเอิญชื่อเรื่องเหมือนกันเป็นเรื่องปกติของงานสารบรรณ
+  // (เช่น "ขอความอนุเคราะห์วิทยากร" จากคนละหน่วยงานในวันเดียวกัน)
+  test('ยืนยันแล้วต้องลงซ้ำได้จริง ไม่ใช่กันตาย', async () => {
+    const title = `หนังสือชื่อซ้ำแต่คนละฉบับ ${Date.now()}`;
+    assert.equal((await create({ title })).status, 201);
+    const forced = await create({ title, allowDuplicate: true });
+    assert.equal(forced.status, 201, `ยืนยันแล้วต้องลงได้ แต่ได้ ${forced.status} ${forced.body}`);
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM documents WHERE title = ?').get(title).c, 2);
+  });
+
+  // หน้าเว็บต้องรู้ว่าต้องถามผู้ใช้แล้วส่งใหม่ด้วยธงอะไร ไม่ใช่ขึ้นข้อความแดงแล้วจบ
+  test('คำตอบต้องบอกหน้าเว็บได้ว่าจะถามยืนยันแล้วส่งใหม่อย่างไร', async () => {
+    const title = `หนังสือตรวจ confirmRetry ${Date.now()}`;
+    await create({ title });
+    const blocked = await create({ title });
+    assert.equal(blocked.json.confirmRetry?.field, 'allowDuplicate',
+      'ไม่ได้บอกชื่อธงที่ต้องส่งกลับมา — หน้าเว็บจะกันตายให้ผู้ใช้โดยไม่มีทางไปต่อ');
+    assert.ok(blocked.json.confirmRetry?.message?.includes(title), 'ข้อความยืนยันต้องบอกว่าเป็นเรื่องอะไร');
+    assert.ok(blocked.json.duplicateDocNumber, 'ต้องบอกเลขที่ของฉบับที่ลงไปแล้ว เพื่อให้ธุรการไปเปิดดูได้');
+  });
+
+  // คนละคนลงเรื่องชื่อเดียวกันคือคนละงาน ไม่ใช่การกดซ้ำ
+  test('คนละคนลงเรื่องชื่อเดียวกัน ต้องไม่ถูกกัน', async () => {
+    const title = `หนังสือคนละคนลง ${Date.now()}`;
+    assert.equal((await create({ title })).status, 201);
+    const other = await dispatchPost(loadUserForTest(seed.userIds.admin), '/documents',
+      { departmentId: deptId, correspondentName: 'สพป.ทดสอบกดซ้ำ', title });
+    assert.equal(other.status, 201, 'คนละคนลงเรื่องชื่อเดียวกันถูกกันไปด้วย');
+  });
+
+  // ลงหลายฉบับรวดเดียวเสียหายกว่าหลายเท่า — กดพลาดครั้งเดียวกินเลขทะเบียนได้ถึง 20 เลข
+  test('กดบันทึก "ลงหลายฉบับรวดเดียว" ซ้ำ ต้องไม่ได้ทั้งชุดสองรอบ', async () => {
+    const tag = `ชุดกดซ้ำ ${Date.now()}`;
+    const items = [1, 2, 3].map((i) => ({
+      direction: 'incoming', title: `${tag} ฉบับที่ ${i}`, correspondentName: 'สพป.ทดสอบกดซ้ำ', departmentId: deptId,
+    }));
+    const first = await dispatchPost(reg(), '/documents/bulk', { direction: 'incoming', items });
+    assert.equal(first.status, 201, first.body);
+
+    const second = await dispatchPost(reg(), '/documents/bulk', { direction: 'incoming', items });
+    assert.equal(second.status, 409, `กดซ้ำต้องถูกกัน แต่ได้ ${second.status}`);
+    assert.equal(second.json.confirmRetry?.field, 'allowDuplicate');
+    const n = db.prepare("SELECT COUNT(*) c FROM documents WHERE title LIKE ? AND deleted_at IS NULL").get(`${tag}%`).c;
+    assert.equal(n, 3, `กินเลขทะเบียนไป ${n} เลขจากที่กรอกไว้ 3 ฉบับ`);
+
+    // ยืนยันแล้วต้องลงชุดซ้ำได้ (เช่นได้หนังสือชุดเดิมมาอีกรอบจริงๆ)
+    const forced = await dispatchPost(reg(), '/documents/bulk', { direction: 'incoming', items, allowDuplicate: true });
+    assert.equal(forced.status, 201, `ยืนยันแล้วต้องลงได้ แต่ได้ ${forced.status} ${forced.body}`);
+  });
+
+  // ตั้งแต่ต่อกับไลน์แล้ว การกดซ้ำแปลว่าครูทั้งโรงเรียนได้ข้อความเข้าไลน์สองฉบับด้วย
+  test('กด "ประชาสัมพันธ์ให้ทุกคน" ซ้ำ ต้องไม่ส่งแจ้งเตือนถึงทุกคนสองรอบ', async () => {
+    const doc = makeDoc({ title: `หนังสือประชาสัมพันธ์กดซ้ำ ${Date.now()}`, createdBy: seed.userIds.reg001 });
+    const first = await dispatchPost(reg(), `/documents/${doc.id}/broadcast`, { note: 'โปรดทราบ' });
+    assert.equal(first.status, 200, first.body);
+    const countAfterFirst = db.prepare('SELECT COUNT(*) c FROM notifications WHERE document_id = ?').get(doc.id).c;
+    assert.ok(countAfterFirst > 0, 'ต้องมีการแจ้งเตือนจริงก่อน ไม่งั้นเทสต์นี้ไม่ได้ตรวจอะไร');
+
+    const second = await dispatchPost(reg(), `/documents/${doc.id}/broadcast`, { note: 'โปรดทราบ' });
+    assert.equal(second.status, 409, `กดซ้ำต้องถูกกัน แต่ได้ ${second.status}`);
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM notifications WHERE document_id = ?').get(doc.id).c, countAfterFirst,
+      'ครูทั้งโรงเรียนได้รับแจ้งเตือน (และข้อความไลน์) เรื่องเดียวกันสองรอบ');
+  });
+
+  // ตัวช่วยฝั่งหน้าเว็บที่ทำให้ "ถามยืนยันแล้วส่งใหม่" ใช้ได้จริง — ถ้าหายไป การกันซ้ำจะกลายเป็นกันตาย
+  test('หน้าเว็บต้องมีตัวจัดการถามยืนยันแล้วส่งใหม่ และทุกฟอร์มที่ถูกกันต้องใช้ตัวนี้', () => {
+    const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+    assert.match(app, /window\.postJson\s*=/, 'ไม่มี postJson ใน public/app.js');
+    const fn = app.slice(app.indexOf('window.postJson'), app.indexOf('window.submitWithFile'));
+    assert.match(fn, /confirmRetry/, 'postJson ไม่ได้จัดการ confirmRetry');
+    assert.match(fn, /confirm\(/, 'postJson ไม่ได้ถามผู้ใช้ก่อนส่งซ้ำ');
+
+    // ฟอร์มที่เซิร์ฟเวอร์กันซ้ำไว้ ต้องส่งผ่าน postJson ทั้งหมด ไม่งั้นผู้ใช้จะเจอข้อความแดงแล้วไปต่อไม่ได้
+    //
+    // ต้องตรวจ "ตัวฟอร์มจริง" ไม่ใช่ตัวช่วยกลาง — พลาดมาแล้วรอบแรก: เทสต์ตรวจว่า submitWithFile
+    // ใช้ postJson แล้วก็เขียว แต่ฟอร์มลงทะเบียนหนังสือมีตัวส่งของตัวเอง (เพราะต้องแนบไฟล์เพิ่ม
+    // อีกสองไฟล์ต่อจากนั้น) ไม่ได้ใช้ submitWithFile เลย ผลคือบนหน้าเว็บจริงไม่มีกล่องถามยืนยัน
+    // ขึ้นมาเลย การกันลงซ้ำจึงกลายเป็นกันตาย — จับได้ตอนยิงทดสอบด้วยเบราว์เซอร์จริงเท่านั้น
+    const docs = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
+    for (const [label, marker] of [
+      ['ลงทะเบียนหนังสือทีละฉบับ', "window.postJson('/documents', payload)"],
+      ['ลงหลายฉบับรวดเดียว', "window.postJson('/documents/bulk'"],
+      ['ประชาสัมพันธ์ให้ทุกคน', "window.postJson('/documents/${doc.id}/broadcast'"],
+    ]) {
+      assert.ok(docs.includes(marker), `ฟอร์ม "${label}" ยังไม่ได้ส่งผ่าน postJson — ผู้ใช้จะถูกกันตาย ไปต่อไม่ได้`);
+    }
+    // และตัวช่วยกลางที่ฟอร์มอื่นๆ ใช้อยู่ก็ต้องผ่าน postJson ด้วย
+    assert.match(app, /const data = await window\.postJson\(endpoint, payload\)/,
+      'submitWithFile ยังไม่ได้ส่งผ่าน postJson');
+  });
+});
+
+// ตั้งแต่ครูเข้าระบบจากลิงก์ในไลน์ การถูกเด้งออกเจ็บกว่าเดิมมาก — นั่นคือเบราว์เซอร์ในแอปซึ่งเก็บ
+// คุกกี้แยกจากเบราว์เซอร์ปกติ ล็อกอินใหม่ทีต้องพิมพ์รหัสบนแป้นพิมพ์มือถือทุกตัว
+describe('อายุเซสชันและความปลอดภัยของคุกกี้', () => {
+  const sessionRow = (id) => db.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
+  // ตั้งรหัสผ่านและปลดล็อกบัญชีเองทุกครั้ง — เทสต์ก่อนหน้านี้เปลี่ยนรหัสและยิงรหัสผิดจนบัญชีถูกล็อก
+  // ถ้าพึ่งสถานะที่เทสต์อื่นทิ้งไว้ เทสต์ชุดนี้จะแดงด้วยเหตุผลที่ไม่เกี่ยวกับสิ่งที่กำลังตรวจเลย
+  const SESSION_TEST_PW = 'SessionTest@2569';
+  const loginFresh = () => {
+    db.prepare('UPDATE users SET password_hash = ?, failed_login_count = 0, locked_until = NULL, must_change_password = 0 WHERE id = ?')
+      .run(hashSecret(SESSION_TEST_PW), seed.userIds.reg001);
+    const res = login('reg001', SESSION_TEST_PW, '127.0.0.1', 'test');
+    assert.ok(res.ok, `ต้องล็อกอินได้ก่อน: ${res.error || ''}`);
+    return { cookieHeader: `esaraban_sid=${encodeURIComponent(res.cookie)}`, user: res.user };
+  };
+  const sessionIdOf = (cookieHeader) => getSessionUser(cookieHeader).sessionId;
+
+  // เดิมนับ 8 ชั่วโมงจากตอนล็อกอินแล้วตัดทิ้ง ไม่ว่าจะใช้งานอยู่หรือไม่ — ธุรการที่ทำงานทั้งวันถูกเด้ง
+  // ออกกลางคันพอดีตอนครบ ถ้ากำลังกรอกฟอร์มลงทะเบียนอยู่ ข้อความที่พิมพ์ไว้หายทั้งหมด
+  test('ใช้งานอยู่แล้วอายุเซสชันต้องขยับตาม ไม่ใช่ตัดตายที่ 8 ชั่วโมงจากตอนล็อกอิน', () => {
+    const { cookieHeader } = loginFresh();
+    const id = sessionIdOf(cookieHeader);
+    // ย้อนเวลาหมดอายุไป 20 นาที เสมือนว่าผ่านไป 20 นาทีนับจากล็อกอิน
+    const shifted = new Date(Date.parse(sessionRow(id).expires_at) - 20 * 60000).toISOString();
+    db.prepare('UPDATE sessions SET expires_at = ? WHERE id = ?').run(shifted, id);
+
+    assert.ok(getSessionUser(cookieHeader), 'ยังต้องใช้งานได้');
+    assert.ok(sessionRow(id).expires_at > shifted,
+      'ใช้งานแล้วเวลาหมดอายุไม่ขยับเลย — ครูที่ใช้งานอยู่จะถูกเด้งออกกลางคัน');
+  });
+
+  // ถ้าต่ออายุทุก request การเปิดหน้าเว็บหนึ่งครั้งจะกลายเป็นการเขียนฐานข้อมูลหนึ่งครั้งเสมอ
+  // ซึ่งแพงโดยไม่จำเป็นและทำให้ไฟล์ WAL โตเร็ว
+  test('ยังไม่ถึงรอบต่ออายุ ต้องไม่เขียนฐานข้อมูลซ้ำทุกครั้งที่เปิดหน้า', () => {
+    const { cookieHeader } = loginFresh();
+    const id = sessionIdOf(cookieHeader);
+    const before = sessionRow(id).expires_at;
+    for (let i = 0; i < 5; i++) getSessionUser(cookieHeader);
+    assert.equal(sessionRow(id).expires_at, before, 'เขียนฐานข้อมูลทุก request');
+  });
+
+  // เครื่องส่วนกลางในห้องธุรการมีคนใช้ร่วมกัน เซสชันที่ถูกใช้เรื่อยๆ ต้องไม่กลายเป็นถาวร
+  test('ต่ออายุได้ แต่ต้องไม่เกินอายุสูงสุดของเซสชันนั้น', () => {
+    const { cookieHeader } = loginFresh();
+    const id = sessionIdOf(cookieHeader);
+    // เซสชันนี้เปิดมาแล้ว 7 วันเกือบเต็ม และกำลังจะหมดอายุในอีก 10 นาที
+    const createdLongAgo = new Date(Date.now() - (7 * 24 * 60 - 30) * 60000).toISOString();
+    const nearlyDone = new Date(Date.now() + 10 * 60000).toISOString();
+    db.prepare('UPDATE sessions SET created_at = ?, expires_at = ? WHERE id = ?').run(createdLongAgo, nearlyDone, id);
+
+    assert.ok(getSessionUser(cookieHeader), 'ยังไม่หมดอายุ ต้องใช้งานได้');
+    const extended = Date.parse(sessionRow(id).expires_at);
+    const hardLimit = Date.parse(createdLongAgo) + 7 * 24 * 60 * 60 * 1000;
+    assert.ok(extended <= hardLimit + 1000,
+      'ต่ออายุเลยเพดาน 7 วันไปแล้ว — เซสชันจะไม่มีวันหมดอายุตราบใดที่ยังมีคนใช้');
+  });
+
+  test('เซสชันที่หมดอายุแล้วต้องใช้ไม่ได้ และถูกเก็บกวาดตอนมีคนล็อกอิน', () => {
+    const { cookieHeader } = loginFresh();
+    const id = sessionIdOf(cookieHeader);
+    db.prepare('UPDATE sessions SET expires_at = ? WHERE id = ?').run(new Date(Date.now() - 1000).toISOString(), id);
+    assert.equal(getSessionUser(cookieHeader), null, 'หมดอายุแล้วยังใช้ได้');
+
+    // แถวที่ตายแล้วเดิมถูกลบก็ต่อเมื่อเจ้าของกลับมาใช้คุกกี้เดิมอีกครั้ง ซึ่งส่วนใหญ่ไม่เกิดขึ้น
+    // แถวจึงสะสมไปเรื่อยๆ และติดไปกับสำเนาสำรองที่ส่งขึ้น Google Drive ด้วย
+    const deadIds = [];
+    for (let i = 0; i < 4; i++) {
+      const deadId = `dead-session-${Date.now()}-${i}`;
+      db.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)')
+        .run(deadId, seed.userIds.reg001, new Date(Date.now() - 86400000).toISOString(), new Date(Date.now() - 172800000).toISOString());
+      deadIds.push(deadId);
+    }
+    loginFresh();
+    const left = deadIds.filter((d) => sessionRow(d));
+    assert.deepEqual(left, [], `เซสชันที่ตายแล้วยังค้างอยู่ ${left.length} แถว`);
+  });
+
+  describe('ธงความปลอดภัยของคุกกี้', () => {
+    let urlSvc; let savedBase;
+    before(async () => {
+      urlSvc = await import('../src/services/publicUrl.js');
+      savedBase = process.env.PUBLIC_BASE_URL;
+    });
+    after(() => {
+      if (savedBase === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = savedBase;
+      urlSvc._resetRememberedBaseUrl();
+    });
+
+    test('เว็บจริง (https) ต้องมี Secure, HttpOnly และ SameSite=Lax ครบ', () => {
+      process.env.PUBLIC_BASE_URL = 'https://saraban.example.ac.th';
+      const header = sessionCookieHeader('abc');
+      // Secure — หัว Strict-Transport-Security ช่วยได้ตั้งแต่ครั้งที่สองเป็นต้นไปเท่านั้น
+      // การเปิดเว็บครั้งแรกสุดของเครื่องนั้นด้วย http:// จะส่งคุกกี้ออกไปแบบอ่านได้
+      assert.match(header, /;\s*Secure\s*;/, 'ไม่มี Secure — คุกกี้เซสชันหลุดออกไปทาง http ได้');
+      assert.match(header, /HttpOnly/, 'ไม่มี HttpOnly — JavaScript อ่านคุกกี้ได้');
+      // ต้องเป็น Lax ไม่ใช่ Strict — Strict จะไม่ส่งคุกกี้เมื่อกดลิงก์มาจากไลน์
+      // ครูจะเห็นหน้าเข้าสู่ระบบทุกครั้งที่กดลิงก์จากกลุ่ม ทั้งที่ล็อกอินค้างอยู่
+      assert.match(header, /SameSite=Lax/, 'SameSite ต้องเป็น Lax เพื่อให้ลิงก์จากไลน์ยังล็อกอินอยู่');
+    });
+
+    // ธง Secure "เดาไม่ได้" ต่างจากที่อยู่เว็บที่ใช้ทำลิงก์ ซึ่งเดาเป็น https ได้เพราะเดาผิดเสียหายน้อย
+    // ถ้าเดาผิดทางนี้ เบราว์เซอร์ทิ้งคุกกี้ทิ้งทั้งใบ แล้วไม่มีใครล็อกอินได้เลยทั้งโรงเรียน
+    test('ไม่มีหลักฐานว่าเป็น https ต้องไม่ใส่ Secure — ไม่งั้นล็อกอินไม่ได้เลยทั้งโรงเรียน', () => {
+      delete process.env.PUBLIC_BASE_URL;
+      for (const [label, headers] of [
+        ['รันบนเครื่องตัวเอง', { host: '127.0.0.1:3000' }],
+        // เคสที่เกิดจริง: โรงเรียนติดตั้งระบบบนเครื่องในโรงเรียน เข้าผ่าน http://192.168.x.x
+        // ไม่มี x-forwarded-proto และเบราว์เซอร์ก็ไม่ยกเว้นให้เหมือน localhost
+        ['เครื่องในโรงเรียนผ่านเลขไอพี', { host: '192.168.1.50:3000' }],
+        ['หลังพร็อกซีที่ผู้ใช้เข้ามาด้วย http', { host: 'saraban.school', 'x-forwarded-proto': 'http' }],
+      ]) {
+        urlSvc._resetRememberedBaseUrl();
+        urlSvc.rememberBaseUrl(headers);
+        assert.doesNotMatch(sessionCookieHeader('abc'), /Secure/,
+          `${label}: ใส่ Secure ทั้งที่ไม่ใช่ https — เบราว์เซอร์จะทิ้งคุกกี้ แล้วล็อกอินไม่ได้เลย`);
+      }
+
+      // แต่พอเห็นหลักฐานจริง (หัวจากพร็อกซีของ Render) ต้องใส่ ไม่ใช่ปิดไว้เฉยๆ แล้วเทสต์เขียว
+      urlSvc._resetRememberedBaseUrl();
+      urlSvc.rememberBaseUrl({ host: 'saraban.school', 'x-forwarded-proto': 'https' });
+      assert.match(sessionCookieHeader('abc'), /Secure/, 'เข้ามาด้วย https จริงแล้วยังไม่ใส่ Secure');
+    });
+
+    test('คุกกี้ต้องอยู่ในเครื่องได้นานเท่าอายุสูงสุดของเซสชัน ไม่ใช่สั้นกว่า', () => {
+      process.env.PUBLIC_BASE_URL = 'https://saraban.example.ac.th';
+      const maxAge = Number(/Max-Age=(\d+)/.exec(sessionCookieHeader('abc'))?.[1]);
+      assert.ok(maxAge >= 7 * 24 * 3600 - 60,
+        `คุกกี้หมดอายุในเครื่องก่อนเซสชันฝั่งเซิร์ฟเวอร์ (${maxAge} วินาที) — ครูต้องล็อกอินใหม่ทั้งที่เซสชันยังมีชีวิต`);
+      assert.match(sessionCookieHeader('', { clear: true }), /Max-Age=0/, 'ออกจากระบบต้องล้างคุกกี้ทันที');
+    });
+  });
+});
+
+// โรงเรียนเก็บหนังสือไว้ 10 ปีตามระเบียบ หน้าที่ไม่มีเพดานจึงโตขึ้นเรื่อยๆ ทุกปีโดยไม่มีใครสังเกต
+// จนกว่าจะสายเกินไป — วัดจริงด้วยข้อมูลเท่าสามปี (5,000 ฉบับ) หน้าพิมพ์ทะเบียนหนักถึง 2.2 MB
+// ต่อการเปิดหนึ่งครั้ง และแพ็กฟรีของ Render มีหน่วยความจำแค่ 512 MB
+describe('หน้าที่แสดงรายการยาวต้องมีเพดาน และบอกตรงๆ เมื่อถูกตัด', () => {
+  const TAG = 'เอกสารทดสอบเพดานหน้าพิมพ์';
+  const CAP = 3000;
+  let insertedIds = [];
+
+  before(() => {
+    const ins = db.prepare(`INSERT INTO documents (id, direction, running_number, year_be, doc_number_display,
+      title, doc_type_id, department_id, priority, secret_level, correspondent_name, status,
+      retention_class, retention_until, created_by, created_at, updated_at)
+      VALUES (?, 'incoming', ?, 9999, ?, ?, ?, ?, 'normal', 'normal', 'สพป.ทดสอบ', 'completed',
+        'normal_10y', '2579-12-31', ?, ?, ?)`);
+    db.exec('BEGIN IMMEDIATE');
+    // year_be = 9999 เพื่อให้ตัวกรอง "ทะเบียนประจำปี" แยกชุดนี้ออกจากข้อมูลของเทสต์อื่นได้สนิท
+    for (let i = 1; i <= CAP + 1; i++) {
+      const id = `cap-doc-${i}`;
+      insertedIds.push(id);
+      const at = new Date(Date.now() - i * 1000).toISOString();
+      ins.run(id, 900000 + i, `${9000 + i}/9999`, `${TAG} ${i}`, typeId, deptId, registrarUser.id, at, at);
+    }
+    db.exec('COMMIT');
+  });
+  after(() => {
+    db.exec('BEGIN IMMEDIATE');
+    const del = db.prepare('DELETE FROM documents WHERE id = ?');
+    for (const id of insertedIds) del.run(id);
+    db.exec('COMMIT');
+    insertedIds = [];
+  });
+
+  const registerPage = () => dispatchGet(loadUserForTest(seed.userIds.admin), '/documents/register',
+    { direction: 'incoming', year: '9999' });
+
+  test('หน้าพิมพ์ทะเบียนต้องไม่พ่นทุกฉบับออกมาไม่จำกัด', async () => {
+    const res = await registerPage();
+    assert.equal(res.status, 200);
+    const printed = (res.body.match(/<tr>\s*<td class="num">/g) || []).length;
+    assert.ok(printed <= CAP, `พิมพ์ออกมา ${printed} แถว เกินเพดาน ${CAP}`);
+    assert.ok(printed >= CAP - 5, `ตัดมากเกินไป เหลือแค่ ${printed} แถว`);
+  });
+
+  // กระดาษที่พิมพ์ออกมาเก็บเข้าแฟ้มเป็นหลักฐาน ถ้าไม่ครบแล้วไม่บอก คนที่หยิบไปใช้จะเข้าใจว่าครบ
+  test('เมื่อถูกตัด ต้องเตือนบนกระดาษที่พิมพ์ออกมาด้วย ไม่ใช่เห็นแค่บนจอ', async () => {
+    const res = await registerPage();
+    assert.match(res.body, /ทะเบียนนี้ยังไม่ครบ/, 'ไม่มีคำเตือนว่าทะเบียนถูกตัด');
+    assert.match(res.body, /class="cut-warn"/, 'คำเตือนไม่ได้ใช้บล็อกที่ตั้งใจให้พิมพ์ติดไปด้วย');
+    // ต้องไม่ถูกซ่อนตอนพิมพ์ — ถ้าเผลอใส่ .cut-warn ลงใน @media print { display: none } จะเห็นแค่บนจอ
+    const printCss = /@media print \{([^}]*\{[^}]*\})*[^}]*\}/.exec(res.body)?.[0] || '';
+    assert.ok(!printCss.includes('cut-warn'), `คำเตือนถูกซ่อนตอนพิมพ์: ${printCss}`);
+  });
+
+  // บรรทัด "รวม X ฉบับ" บนหัวกระดาษคือการระบุจำนวนหนังสือในทะเบียน ถ้าบอกเลขที่ถูกตัดแล้ว
+  // ว่าเป็นยอดทั้งหมด เท่ากับทะเบียนที่เก็บเข้าแฟ้มระบุจำนวนผิด
+  test('หัวกระดาษต้องบอกยอดจริงทั้งหมด ไม่ใช่ยอดที่ถูกตัดแล้ว', async () => {
+    const res = await registerPage();
+    assert.match(res.body, new RegExp(`แสดง[^<]*${CAP.toLocaleString('en-US')}[^<]*จากทั้งหมด[^<]*${(CAP + 1).toLocaleString('en-US')}`),
+      'หัวกระดาษไม่ได้บอกว่ายอดจริงมีเท่าไร');
+  });
+
+  test('ทะเบียนที่ไม่เกินเพดาน ต้องไม่มีคำเตือนและต้องครบทุกฉบับ', async () => {
+    const res = await dispatchGet(loadUserForTest(seed.userIds.admin), '/documents/register',
+      { direction: 'incoming', year: String(beYear()) });
+    assert.equal(res.status, 200);
+    assert.doesNotMatch(res.body, /ทะเบียนนี้ยังไม่ครบ/, 'ทะเบียนที่ครบอยู่แล้วกลับขึ้นคำเตือนว่าถูกตัด');
+  });
+
+  describe('หน้า "งานของฉัน"', () => {
+    const MAX_TASK_ROWS = 300;
+    let stepIds = [];
+    before(() => {
+      // เรื่องค้างสะสมอยู่ที่คนเดียวได้จริง เช่นคนที่ย้ายออกไปแล้วแต่ยังมีเรื่องจ่อคิว
+      const ins = db.prepare(`INSERT INTO workflow_steps (id, document_id, step_order, assignee_id, instruction, status, created_at)
+        VALUES (?, ?, 99, ?, 'เพื่อทราบ', 'waiting', ?)`);
+      db.exec('BEGIN IMMEDIATE');
+      for (let i = 0; i <= MAX_TASK_ROWS; i++) {
+        const id = `cap-step-${i}`;
+        stepIds.push(id);
+        ins.run(id, insertedIds[i], seed.userIds.teacher001, new Date(Date.now() - i * 1000).toISOString());
+      }
+      db.exec('COMMIT');
+    });
+    after(() => {
+      db.exec('BEGIN IMMEDIATE');
+      const del = db.prepare('DELETE FROM workflow_steps WHERE id = ?');
+      for (const id of stepIds) del.run(id);
+      db.exec('COMMIT');
+      stepIds = [];
+    });
+
+    test('งานค้างเยอะเกินเพดาน ต้องตัดและบอกว่าตัด พร้อมทางไปดูทั้งหมด', async () => {
+      const res = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/tasks', {});
+      assert.equal(res.status, 200);
+      const shown = (res.body.match(/<tr data-href="\/documents\//g) || []).length;
+      assert.ok(shown <= MAX_TASK_ROWS, `แสดง ${shown} แถว เกินเพดาน ${MAX_TASK_ROWS}`);
+      assert.match(res.body, new RegExp(`มีงานค้างมากกว่า ${MAX_TASK_ROWS}`), 'ไม่ได้บอกว่างานค้างถูกตัด');
+      assert.match(res.body, /href="\/documents\?direction=all&status=in_progress"/,
+        'ตัดแล้วต้องบอกทางไปดูทั้งหมดด้วย ไม่ใช่ตัดทิ้งเฉยๆ');
+    });
   });
 });
 

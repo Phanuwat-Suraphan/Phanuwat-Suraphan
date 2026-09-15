@@ -415,9 +415,11 @@ router.get('/documents/new', requirePage((ctx) => {
             payload.fileType = mainFile.type || 'application/octet-stream';
             payload.fileDataBase64 = await window.fileToBase64(mainFile);
           }
-          var res = await fetch('/documents', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-          var data = await res.json();
-          if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
+          // ผ่าน postJson เพื่อให้กรณี "เพิ่งลงทะเบียนเรื่องนี้ไปเมื่อครู่" ถามยืนยันก่อนลงซ้ำ
+          // ฟอร์มนี้มีตัวส่งของตัวเอง (เพราะต้องแนบไฟล์เพิ่มอีกสองไฟล์ต่อจากนี้) ไม่ได้ใช้ submitWithFile
+          // จึงต้องต่อ postJson เองตรงนี้ด้วย — ถ้าลืม การกันลงซ้ำจะกลายเป็นกันตาย ธุรการไปต่อไม่ได้
+          var data = await window.postJson('/documents', payload);
+          if (data === null) { window.restoreBtn(btn); return; } // ผู้ใช้กดยกเลิกตอนถามยืนยัน
 
           // แนบไฟล์ 2 และ 3 ต่อทันที (ใช้ endpoint แนบไฟล์เพิ่มเดิมที่มีอยู่แล้ว — ไม่ต้องเพิ่ม backend ใหม่)
           var docIdMatch = data.redirect.match(/documents\\/([a-f0-9-]+)/);
@@ -529,6 +531,8 @@ router.post('/documents', requireApi(async (ctx) => {
     priority: b.priority, secretLevel: b.secretLevel, correspondentName: b.correspondentName.trim(),
     externalDocNumber: b.externalDocNumber?.trim(), externalDocDate: b.externalDocDate || null, dueDate: b.dueDate || null,
     retentionClass: b.retentionClass, customDocNumber: b.customDocNumber?.trim() || null, createdBy: ctx.user.id,
+    // ผู้ใช้ยืนยันแล้วว่าเป็นคนละฉบับ ทั้งที่ชื่อเรื่องซ้ำกับที่เพิ่งลงไป (ดู assertNotJustRegistered)
+    allowDuplicate: b.allowDuplicate === true,
   });
   const warnParts = [];
   if (doc.duplicateDocNumberWarning) warnParts.push(doc.duplicateDocNumberWarning);
@@ -763,15 +767,15 @@ router.get('/documents/bulk', requirePage((ctx) => {
           // ขั้นที่ 1 — ออกเลขทั้งชุดในคำขอเดียว (ไม่ส่งไฟล์ไปด้วย เพราะไฟล์ 20 ไฟล์รวมกันเกินขนาด
           // คำขอที่เซิร์ฟเวอร์รับได้ และถ้าล้มกลางทางจะได้เลขขาดเป็นรูโหว่ในทะเบียน)
           prog.textContent = 'กำลังออกเลขทะเบียนทั้ง ' + rows.length + ' ฉบับ...';
-          var res = await fetch('/documents/bulk', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ direction: DIRECTION, items: rows.map(function(r){
+          // ผ่าน postJson เพื่อให้กรณี "เพิ่งลงทะเบียนชุดนี้ไปเมื่อครู่" ถามยืนยันก่อนลงซ้ำ —
+          // กดพลาดสองทีตรงนี้กินเลขทะเบียนได้ถึง 20 เลขในครั้งเดียว ซึ่งเอากลับมาใช้ซ้ำไม่ได้
+          var data = await window.postJson('/documents/bulk', {
+            direction: DIRECTION, items: rows.map(function(r){
               return { title: r.title, correspondentName: r.correspondentName, departmentId: r.departmentId,
                 priority: r.priority, secretLevel: r.secretLevel, dueDate: r.dueDate, retentionClass: r.retentionClass };
-            }) }),
+            }),
           });
-          var data = await res.json();
-          if (!res.ok) throw new Error(data.error || 'ออกเลขไม่สำเร็จ');
+          if (data === null) { window.restoreBtn(btn); return; } // ผู้ใช้กดยกเลิกตอนถามยืนยัน
 
           // ขั้นที่ 2 — แนบไฟล์ทีละฉบับ ถ้าฉบับไหนแนบไม่สำเร็จ เลขรับยังอยู่ ธุรการเข้าไปแนบเองทีหลังได้
           // เก็บผลเป็นรายแถว ไม่ใช่รายชื่อไฟล์ — ไฟล์สแกนชื่อซ้ำกัน (scan0001.pdf) เกิดขึ้นบ่อยมาก
@@ -837,7 +841,7 @@ router.post('/documents/bulk', requireApi((ctx) => {
     direction, docTypeId,
     title: it.title, correspondentName: it.correspondentName, departmentId: it.departmentId,
     priority: it.priority, secretLevel: it.secretLevel, dueDate: it.dueDate, retentionClass: it.retentionClass,
-  })), ctx.user.id);
+  })), ctx.user.id, { allowDuplicate: ctx.body.allowDuplicate === true });
   json(ctx, 201, {
     documents: docs.map((d) => ({ id: d.id, docNumberDisplay: d.docNumberDisplay })),
   });
@@ -916,9 +920,28 @@ router.get('/documents/export.xlsx', requirePage((ctx) => {
 // "บันทึกเป็น PDF" แทน เพราะ (1) ทุกเบราว์เซอร์ทำได้อยู่แล้วทั้งบนเครื่องและมือถือ (2) ฟอนต์ไทยที่ใช้
 // เป็นฟอนต์ในเครื่องผู้ใช้เอง ไม่ต้องพึ่ง chromium บนเซิร์ฟเวอร์ที่อาจไม่มีฟอนต์ไทยติดตั้ง และ
 // (3) ทะเบียนพันแถวไม่ต้องไปเบียดเวลาประมวลผลกับการประทับตราลงไฟล์ PDF ซึ่งใช้ chromium ตัวเดียวกัน
+/**
+ * เพดานจำนวนแถวของหน้าพิมพ์ทะเบียน
+ *
+ * หน้านี้ตั้งใจให้พิมพ์ "ทั้งเล่ม" จึงไม่มีการแบ่งหน้า แต่เดิมไม่มีเพดานเลย — วัดจริงด้วยข้อมูล
+ * เท่าสามปี (5,000 ฉบับ) ได้หน้าเว็บขนาด 2.2 MB ต่อการเปิดหนึ่งครั้ง และระบบเก็บหนังสือไว้ 10 ปี
+ * ตามระเบียบ ซึ่งจะกลายเป็นราว 7 MB บนเครื่องที่มีหน่วยความจำ 512 MB (แพ็กฟรีของ Render)
+ * การประกอบสตริงขนาดนั้นพร้อมกับถือแถวข้อมูลทั้งหมดไว้ อาจทำให้ทั้งระบบล่มสำหรับทุกคน
+ * ไม่ใช่แค่ช้าสำหรับคนที่กดพิมพ์
+ *
+ * ตั้งไว้ 3,000 แถว = สูงกว่าหนึ่งปีการศึกษา (ราว 1,200-1,600 ฉบับ) เกือบเท่าตัว ซึ่งเป็นหน่วยที่
+ * ทะเบียนใช้จริงตามระเบียบ (เลขรับเริ่มที่ 1 ใหม่ทุกปี ทะเบียนจึงเป็นเล่มต่อปี)
+ */
+const MAX_REGISTER_PRINT_ROWS = 3000;
+
 router.get('/documents/register', requirePage((ctx) => {
   const query = buildDocumentQuery(ctx.user, ctx.query);
-  const rows = listDocuments(query).filter((d) => canUserSeeDocument(ctx.user, d));
+  // นับจากฐานข้อมูลตรงๆ ไม่ใช่นับจากแถวที่ตัดมาแล้ว — ไม่งั้นบรรทัด "รวม X ฉบับ" จะบอกเลขที่ถูกตัด
+  // ไปแล้วว่าเป็นยอดทั้งหมด ซึ่งบนกระดาษที่เก็บเข้าแฟ้มคือการบอกจำนวนหนังสือผิด
+  const totalRows = countDocuments(query);
+  const truncated = totalRows > MAX_REGISTER_PRINT_ROWS;
+  const rows = listDocuments(query, truncated ? { limit: MAX_REGISTER_PRINT_ROWS, offset: 0 } : {})
+    .filter((d) => canUserSeeDocument(ctx.user, d));
   const cols = registerColumns(query.direction);
   const filterNote = describeFilters(query);
   const title = { incoming: 'ทะเบียนหนังสือรับ', outgoing: 'ทะเบียนหนังสือส่ง', all: 'ผลการค้นหาทะเบียนหนังสือ' }[query.direction];
@@ -964,6 +987,12 @@ router.get('/documents/register', requirePage((ctx) => {
     background: #f3f3f3; color: #000; cursor: pointer; text-decoration: none;
   }
   .empty { padding: 2rem; text-align: center; color: #555; }
+  /* คำเตือนว่าทะเบียนถูกตัด ต้องติดไปกับกระดาษที่พิมพ์ออกมาด้วย ไม่ใช่เห็นแค่บนจอ —
+     ไม่งั้นคนที่หยิบกระดาษไปเก็บเข้าแฟ้มจะเข้าใจว่าเป็นทะเบียนฉบับสมบูรณ์ */
+  .cut-warn {
+    border: 2px solid #000; padding: .6rem .8rem; margin-bottom: 1rem;
+    font-size: 13px; font-weight: 700; text-align: center;
+  }
   @media print { .toolbar { display: none; } body { padding: 0; } }
 </style></head>
 <body>
@@ -975,10 +1004,17 @@ router.get('/documents/register', requirePage((ctx) => {
     <h1>${esc(title)}</h1>
     <div class="sub">${esc(schoolName())}</div>
     <div class="meta">
-      รวม ${rows.length} ฉบับ · พิมพ์เมื่อ ${esc(fmtThaiDateLong(todayInBangkok()))}
+      ${truncated
+        ? `แสดง ${fmtCount(rows.length)} จากทั้งหมด ${fmtCount(totalRows)} ฉบับ`
+        : `รวม ${fmtCount(rows.length)} ฉบับ`} · พิมพ์เมื่อ ${esc(fmtThaiDateLong(todayInBangkok()))}
       ${filterNote ? ` · เงื่อนไข: ${esc(filterNote)}` : ''}
     </div>
   </div>
+  ${truncated ? `<div class="cut-warn">
+    ⚠️ ทะเบียนนี้ยังไม่ครบ — แสดงเพียง ${fmtCount(MAX_REGISTER_PRINT_ROWS)} ฉบับแรกจากทั้งหมด ${fmtCount(totalRows)} ฉบับ<br/>
+    ทะเบียนหนังสือเป็นเล่มต่อปีตามระเบียบ (เลขรับเริ่มที่ ๑ ใหม่ทุกปี) —
+    กรุณากลับไปเลือก "ทะเบียนประจำปี" ที่หน้าทะเบียนในระบบ แล้วสั่งพิมพ์ทีละเล่ม
+  </div>` : ''}
   ${rows.length ? `<table>
     <colgroup>${colWidths.map((w) => `<col style="width:${w}%" />`).join('')}</colgroup>
     <thead><tr><th>ลำดับ</th>${cols.map((c) => `<th>${esc(c.head)}</th>`).join('')}</tr></thead>
@@ -1352,14 +1388,12 @@ router.get('/documents/:id', requirePage((ctx) => {
           function doBroadcast(btn){
             if (!confirm('ยืนยันส่งหนังสือฉบับนี้ให้บุคลากรทุกคนอ่าน?')) return;
             window.setBtnLoading(btn, 'กำลังส่ง...');
-            fetch('/documents/${doc.id}/broadcast', {
-              method: 'POST', headers: {'Content-Type':'application/json'},
-              body: JSON.stringify({ note: document.getElementById('broadcastNote').value }),
-            })
-              .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
-              .then(function(res){
-                if(!res.ok) throw new Error(res.d.error);
-                window.toast('ประชาสัมพันธ์ถึงบุคลากร ' + res.d.recipientCount + ' คนแล้ว', 'success');
+            // ผ่าน postJson เพื่อให้กรณี "เพิ่งกดประชาสัมพันธ์ไปเมื่อครู่" ถามยืนยันก่อนส่งซ้ำ
+            // ไม่งั้นกดพลาดสองทีแล้วครูทั้งโรงเรียนได้แจ้งเตือน (และข้อความไลน์) สองรอบ
+            window.postJson('/documents/${doc.id}/broadcast', { note: document.getElementById('broadcastNote').value })
+              .then(function(d){
+                if (d === null) { window.restoreBtn(btn); return; }
+                window.toast('ประชาสัมพันธ์ถึงบุคลากร ' + d.recipientCount + ' คนแล้ว', 'success');
                 setTimeout(function(){ location.reload(); }, 1200);
               })
               .catch(function(e){ toast(e.message, 'danger'); window.restoreBtn(btn); });
@@ -1877,7 +1911,10 @@ router.post('/documents/:id/workflow/:stepId/return', requireApi(async (ctx) => 
 router.post('/documents/:id/broadcast', requireApi(async (ctx) => {
   const doc = getDocument(ctx.params.id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
-  const result = broadcastDocument({ documentId: doc.id, note: ctx.body.note, actorUser: ctx.user });
+  const result = broadcastDocument({
+    documentId: doc.id, note: ctx.body.note, actorUser: ctx.user,
+    allowDuplicate: ctx.body.allowDuplicate === true,
+  });
   json(ctx, 200, { ok: true, recipientCount: result.recipientCount });
 }));
 

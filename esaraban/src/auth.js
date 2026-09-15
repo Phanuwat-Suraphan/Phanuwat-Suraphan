@@ -1,8 +1,27 @@
 import { db, uuid, nowIso, verifySecret, getUserByCode, getUserRoles, audit } from './db.js';
+import { observedHttps } from './services/publicUrl.js';
 import { createHmac, randomBytes } from 'node:crypto';
 
 const SESSION_COOKIE = 'esaraban_sid';
-const SESSION_TTL_MS = 8 * 60 * 60 * 1000; // 8 hours
+
+/**
+ * อายุเซสชันมีสองชั้น: "ไม่ได้แตะนานแค่ไหนถึงหลุด" กับ "เปิดค้างได้นานสุดเท่าไร"
+ *
+ * เดิมมีชั้นเดียว คือนับ 8 ชั่วโมงจากตอนล็อกอินแล้วตัดทิ้ง ไม่ว่าจะใช้งานอยู่หรือไม่ ผลคือธุรการที่
+ * ทำงานอยู่ทั้งวันถูกเด้งออกกลางคันพอดีตอนครบ 8 ชั่วโมง — ถ้ากำลังกรอกฟอร์มลงทะเบียนอยู่ ข้อความ
+ * ที่พิมพ์ไว้หายทั้งหมด (ทดสอบยืนยันแล้วว่าเวลาหมดอายุไม่ขยับเลยแม้จะใช้งานต่อเนื่อง)
+ *
+ * เรื่องนี้เจ็บกว่าเดิมมากตั้งแต่ครูเข้าระบบจากลิงก์ในไลน์ เพราะนั่นคือเบราว์เซอร์ในแอปซึ่งเก็บคุกกี้
+ * แยกจากเบราว์เซอร์ปกติ การล็อกอินใหม่แต่ละครั้งจึงต้องพิมพ์รหัสบนแป้นพิมพ์มือถือทุกตัว
+ *
+ * ชั้นที่สอง (เปิดค้างได้นานสุด 7 วัน) มีไว้กันไม่ให้เซสชันที่ถูกใช้เรื่อยๆ กลายเป็นถาวร ซึ่งสำคัญ
+ * เพราะเครื่องส่วนกลางในห้องธุรการมีคนใช้ร่วมกันหลายคน
+ */
+const SESSION_TTL_MS = 8 * 60 * 60 * 1000; // ไม่ได้แตะเกิน 8 ชั่วโมง = หลุด
+const SESSION_MAX_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000; // เปิดค้างได้นานสุด 7 วัน แล้วต้องล็อกอินใหม่
+// ต่ออายุอย่างมากทุกๆ 15 นาที ไม่ใช่ทุก request — ไม่งั้นการเปิดหน้าเว็บหนึ่งครั้งกลายเป็นการเขียน
+// ฐานข้อมูลหนึ่งครั้งเสมอ ซึ่งแพงโดยไม่จำเป็นและทำให้ไฟล์ WAL โตเร็ว
+const SESSION_REFRESH_AFTER_MS = 15 * 60 * 1000;
 const SECRET = process.env.SESSION_SECRET || 'dev-secret-change-me-esaraban-school';
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_MS = 15 * 60 * 1000; // 15 minutes — Security Bible §7
@@ -54,6 +73,11 @@ export function login(employeeCode, password, ip, userAgent) {
   if (user.failed_login_count > 0 || user.locked_until) {
     db.prepare('UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE id = ?').run(user.id);
   }
+  // เก็บกวาดเซสชันที่หมดอายุไปแล้วตอนนี้ — เดิมแถวที่ตายแล้วถูกลบก็ต่อเมื่อเจ้าของกลับมาใช้คุกกี้เดิม
+  // อีกครั้ง ซึ่งส่วนใหญ่ไม่เกิดขึ้น แถวจึงสะสมไปเรื่อยๆ และติดไปกับสำเนาสำรองที่ส่งขึ้น Google Drive ด้วย
+  // ทำตอนล็อกอินเพราะเกิดไม่บ่อย (วันละไม่กี่ครั้งต่อคน) ไม่ต้องมีตัวจับเวลาแยก
+  db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(nowIso());
+
   const sessionId = uuid();
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
   db.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)').run(sessionId, user.id, expiresAt, nowIso());
@@ -92,14 +116,41 @@ export function getSessionUser(cookieHeader) {
   // ไม่ได้ทันที ไม่ใช่ใช้ต่อได้จนกว่าเซสชันจะหมดอายุเอง (login() กันไว้แล้ว แต่เซสชันที่เปิดค้างอยู่รอดมาได้)
   const user = db.prepare("SELECT * FROM users WHERE id = ? AND deleted_at IS NULL AND status = 'active'").get(session.user_id);
   if (!user) return null;
+  extendSession(session);
   const roles = getUserRoles(user.id);
   return { ...user, roles, roleCodes: roles.map((r) => r.name), sessionId };
 }
 
+/** เลื่อนเวลาหมดอายุออกไปตามการใช้งาน แต่ไม่เกินอายุสูงสุดของเซสชันนั้น */
+function extendSession(session) {
+  const now = Date.now();
+  const target = now + SESSION_TTL_MS;
+  const hardLimit = Date.parse(session.created_at) + SESSION_MAX_LIFETIME_MS;
+  // created_at ที่อ่านไม่ออก (ข้อมูลเก่า/เพี้ยน) ต้องไม่ทำให้เซสชันหมดอายุทันทีหรือกลายเป็นถาวร —
+  // ถ้าคำนวณเพดานไม่ได้ ก็ใช้เพดานจากตอนนี้ไปอีกหนึ่งช่วงอายุ ซึ่งปลอดภัยทั้งสองทาง
+  const cap = Number.isNaN(hardLimit) ? target : hardLimit;
+  const next = Math.min(target, cap);
+  const current = Date.parse(session.expires_at);
+  // ยังไม่ถึงรอบต่ออายุ หรือชนเพดานอายุสูงสุดแล้ว — ไม่ต้องเขียนฐานข้อมูล
+  if (!(next - current >= SESSION_REFRESH_AFTER_MS)) return;
+  db.prepare('UPDATE sessions SET expires_at = ? WHERE id = ?').run(new Date(next).toISOString(), session.id);
+}
+
 export function sessionCookieHeader(cookieValue, { clear = false } = {}) {
-  const maxAge = clear ? 0 : Math.floor(SESSION_TTL_MS / 1000);
+  // อายุคุกกี้ในเบราว์เซอร์ต้องยาวเท่าอายุสูงสุดของเซสชัน ไม่ใช่เท่าช่วงไม่ได้แตะ — ไม่งั้นคุกกี้
+  // หายจากเครื่องก่อนที่เซสชันฝั่งเซิร์ฟเวอร์จะหมดอายุ ครูก็ต้องล็อกอินใหม่อยู่ดีทั้งที่เซสชันยังมีชีวิต
+  const maxAge = clear ? 0 : Math.floor(SESSION_MAX_LIFETIME_MS / 1000);
   const val = clear ? '' : cookieValue;
-  return `${SESSION_COOKIE}=${val}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}`;
+  // Secure = ห้ามเบราว์เซอร์ส่งคุกกี้นี้ผ่าน http ธรรมดาเด็ดขาด
+  //
+  // ระบบส่งหัว Strict-Transport-Security อยู่แล้ว แต่หัวนั้นช่วยได้ตั้งแต่ "ครั้งที่สอง" เป็นต้นไป
+  // เท่านั้น — การเปิดเว็บครั้งแรกสุดของเครื่องนั้น (หรือหลังล้างข้อมูลเบราว์เซอร์) ถ้าพิมพ์ที่อยู่
+  // ขึ้นต้นด้วย http:// คุกกี้เซสชันจะถูกส่งออกไปแบบอ่านได้ ซึ่งบนไวไฟของโรงเรียนใครก็ดักได้
+  //
+  // ใส่เฉพาะเมื่อ "รู้แน่ๆ" ว่าผู้ใช้เข้ามาด้วย https ห้ามเดาเด็ดขาด (ดู observedHttps ใน
+  // services/publicUrl.js) — เดาผิดทางนี้แปลว่าเบราว์เซอร์ทิ้งคุกกี้ทิ้ง แล้วไม่มีใครล็อกอินได้เลย
+  const secure = observedHttps() ? ' Secure;' : '';
+  return `${SESSION_COOKIE}=${val};${secure} HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}`;
 }
 
 export function parseCookie(cookieHeader, name) {
