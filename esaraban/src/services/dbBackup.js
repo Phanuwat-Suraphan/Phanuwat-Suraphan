@@ -370,6 +370,10 @@ export async function deleteBackupNode(nodeId) {
  * ทำงานเฉพาะเมื่อยังไม่มีไฟล์ฐานข้อมูลในเครื่อง เพื่อไม่ให้ไปทับข้อมูลที่ใช้งานอยู่จริง (เช่นบนเครื่อง
  * ที่มีดิสก์ถาวร ซึ่งไฟล์ยังอยู่ครบ) — ถ้าไม่มีสำเนาบน Drive เลยก็ปล่อยให้ db.js สร้างฐานข้อมูลใหม่ตามปกติ
  */
+// ฐานข้อมูลที่กำลังใช้อยู่ตอนนี้มาจากไหน — ตั้งครั้งเดียวตอนเปิดโปรเซส แล้วเอาไปแสดงให้ผู้ดูแลเห็น
+let restoredAtBoot = null; // ชื่อไฟล์สำเนาที่กู้มา, null = ไม่ได้กู้ (มีไฟล์อยู่แล้ว หรือเริ่มใหม่หมด)
+export function restoredFromBackupAtBoot() { return restoredAtBoot; }
+
 export async function restoreDatabaseIfMissing() {
   if (!isBackupEnabled()) return false;
   if (fs.existsSync(DB_PATH)) return false;
@@ -401,6 +405,7 @@ export async function restoreDatabaseIfMissing() {
     const tmp = `${DB_PATH}.restoring`;
     fs.writeFileSync(tmp, Buffer.concat(chunks));
     fs.renameSync(tmp, DB_PATH);
+    restoredAtBoot = latest.name;
     log(`กู้คืนฐานข้อมูลจากสำเนา ${latest.name} เรียบร้อย`);
     return true;
   } catch (err) {

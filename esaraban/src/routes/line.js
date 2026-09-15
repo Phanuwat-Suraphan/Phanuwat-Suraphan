@@ -2,7 +2,8 @@
 import { router, html, json, redirect } from '../router.js';
 import { layout, esc, fmtDate } from '../render.js';
 import { requireApi, requireRole, requirePage } from '../middleware.js';
-import { audit } from '../db.js';
+import { audit, DB_WAS_NEW, PROCESS_STARTED_AT } from '../db.js';
+import { restoredFromBackupAtBoot } from '../services/dbBackup.js';
 import { safeNextPath } from '../services/validate.js';
 import {
   verifyLineSignature, handleLineEvents, isLineWebhookConfigured, isLineNotifyConfigured,
@@ -170,6 +171,30 @@ const WEBHOOK_KIND_LABEL = {
   error: { text: 'เกิดข้อผิดพลาด', cls: 'badge-danger', hint: '' },
 };
 
+// "ข้อมูลชุดนี้เริ่มใช้เมื่อไหร่" — วางไว้ติดกับจำนวนคนที่เชื่อมบัญชีโดยตั้งใจ
+//
+// บนโฮสต์ที่ดิสก์หายทุกครั้งที่รีสตาร์ท (Render แบบฟรี) อาการ "เมื่อกี้เชื่อมแล้ว ตอนนี้ขึ้น 0"
+// เกิดได้จากสองเรื่องที่ไม่เกี่ยวกันเลย คือเชื่อมไม่ติดตั้งแต่แรก กับเชื่อมติดแล้วแต่ข้อมูลถูกล้างทิ้ง
+// ไปพร้อมการรีสตาร์ท — ซึ่งจากหน้าจอเห็นเป็นเลข 0 เหมือนกันเป๊ะ แยกไม่ออก
+// ถ้าเวลาที่ฐานข้อมูลชุดนี้เริ่มใช้ "หลัง" เวลาที่เพิ่งเชื่อมบัญชีไป ก็จบเลย ไม่ต้องเดาต่อ
+function dataOriginRow() {
+  if (!DB_WAS_NEW) return '';
+  const restored = restoredFromBackupAtBoot();
+  return `<tr>
+    <td class="text-muted" style="white-space:nowrap">ฐานข้อมูลชุดนี้เริ่มใช้</td>
+    <td>${esc(fmtDate(PROCESS_STARTED_AT))}
+      <div class="text-muted" style="font-size:.82rem;margin-top:.2rem">
+        ${restored
+          ? `เซิร์ฟเวอร์รีสตาร์ทและดิสก์ถูกล้าง ระบบกู้คืนจากสำเนา <code>${esc(restored)}</code> ให้แล้ว —
+             สิ่งที่ทำไว้ "หลัง" เวลาของสำเนานั้นจะไม่อยู่ รวมถึงการเชื่อมบัญชีไลน์ ต้องเชื่อมใหม่`
+          : `เริ่มจากฐานข้อมูลเปล่าใหม่หมด ไม่ได้กู้คืนจากสำเนาใดๆ —
+             <strong>ทุกอย่างที่บันทึกไว้ก่อนเวลานี้ไม่อยู่แล้ว</strong>
+             (ดู <a href="/backups">สำเนาสำรองข้อมูล</a> ว่าการสำรองขึ้น Google Drive ทำงานอยู่จริงหรือไม่)`}
+      </div>
+    </td>
+  </tr>`;
+}
+
 // การ์ด "LINE ติดต่อเข้ามาหรือยัง" — ตอบคำถามที่หน้าสถานะด้านบนตอบไม่ได้
 //
 // หน้าสถานะบอกได้แค่ว่า "เราตั้งค่าครบแล้วหรือยัง" ซึ่งขึ้นเขียวตั้งแต่ตั้งตัวแปรเสร็จ ไม่ได้แปลว่า LINE
@@ -233,7 +258,12 @@ router.get('/admin/line', ADMIN_ONLY(requirePage((ctx) => {
         ${statusRow('ลิงก์เพิ่มเพื่อน', Boolean(s.basicId), s.basicId ? esc(s.basicId) : 'ตั้งตัวแปร <code>LINE_OA_BASIC_ID</code> เช่น <code>@123abcde</code> — ไม่ตั้งก็ยังใช้ได้ แต่ครูต้องหาบัญชีทางการเอง')}
         ${statusRow('เปิดระบบในแอป LINE (LIFF)', s.liffReady, s.liffReady ? esc(s.liffId)
           : 'ตั้งตัวแปร <code>LINE_LIFF_ID</code> และ <code>LINE_LOGIN_CHANNEL_ID</code> — ไม่ตั้งก็ใช้ได้ทุกอย่าง แค่เปิดในเบราว์เซอร์ปกติแทน')}
-        <tr><td class="text-muted">เชื่อมบัญชีแล้ว</td><td><strong>${s.linked}</strong> คน (เปิดรับแจ้งเตือนอยู่ ${s.active} คน)</td></tr>
+        <tr><td class="text-muted">เชื่อมบัญชีแล้ว</td><td><strong>${s.linked}</strong> คน (เปิดรับแจ้งเตือนอยู่ ${s.active} คน)
+          ${s.linked === 0 ? `<div class="text-muted" style="font-size:.82rem;margin-top:.2rem">
+            นับจากคนที่ส่งรหัสเข้าแชทแล้วได้ข้อความตอบว่า "เชื่อมบัญชีสำเร็จ" เท่านั้น —
+            <strong>การกดเพิ่มเพื่อนอย่างเดียวยังไม่นับ</strong>
+          </div>` : ''}</td></tr>
+        ${dataOriginRow()}
         <tr><td class="text-muted">คิวที่รอส่ง</td><td>${s.pending} ฉบับ${s.givenUp ? ` · <span style="color:var(--danger)">เลิกส่งแล้ว ${s.givenUp} ฉบับ</span>` : ''}</td></tr>
         ${s.lastError ? `<tr><td class="text-muted">ข้อผิดพลาดล่าสุด</td><td style="color:var(--danger);font-size:.85rem">${esc(s.lastError)}</td></tr>` : ''}
       </table>

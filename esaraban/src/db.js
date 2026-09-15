@@ -1,10 +1,19 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, scryptSync, randomBytes } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dbPath = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'esaraban.db');
+
+// มีไฟล์ฐานข้อมูลอยู่ก่อนแล้วหรือเพิ่งสร้างใหม่ตอนเปิดโปรเซสนี้ — ต้องถามก่อนเปิดไฟล์ เพราะพอ
+// DatabaseSync เปิดแล้วไฟล์จะถูกสร้างขึ้นมาทันทีจนแยกไม่ออกอีกต่อไป
+//
+// มีไว้ตอบคำถามที่ตอบไม่ได้เลยบนโฮสต์ที่ดิสก์หายทุกครั้งที่รีสตาร์ท: "เมื่อกี้ยังอยู่ ทำไมตอนนี้หายไป"
+// ซึ่งหน้าตาเหมือนกับ "บันทึกไม่ติดตั้งแต่แรก" ทุกประการ ทั้งที่เป็นคนละเรื่องและแก้คนละทาง
+export const DB_WAS_NEW = !fs.existsSync(dbPath);
+export const PROCESS_STARTED_AT = new Date().toISOString();
 
 export const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA journal_mode = WAL;');
