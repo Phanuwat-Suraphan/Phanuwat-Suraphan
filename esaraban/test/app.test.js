@@ -15,7 +15,7 @@ process.env.DB_PATH = tmpDb;
 process.env.SESSION_SECRET = 'test-secret-not-for-production';
 
 const { db, computeRetentionUntil, beYear, todayInBangkok, hashSecret, verifySecret, isWeakPin, nowIso, migrate, uuid } = await import('../src/db.js');
-const { login, getSessionUser, revokeOtherSessions, verifyPin } = await import('../src/auth.js');
+const { login, getSessionUser, revokeOtherSessions, verifyPin, sessionCookieHeader } = await import('../src/auth.js');
 const { contentDispositionHeader } = await import('../src/router.js');
 const { daysUntil, fmtDate, fmtThaiDateShort, fmtThaiDateLong, stampDateThai, stampTimeThai, bangkokHour } = await import('../src/render.js');
 const {
@@ -6186,6 +6186,138 @@ describe('กดปุ่มซ้ำต้องไม่ได้ของซ�
     // และตัวช่วยกลางที่ฟอร์มอื่นๆ ใช้อยู่ก็ต้องผ่าน postJson ด้วย
     assert.match(app, /const data = await window\.postJson\(endpoint, payload\)/,
       'submitWithFile ยังไม่ได้ส่งผ่าน postJson');
+  });
+});
+
+// ตั้งแต่ครูเข้าระบบจากลิงก์ในไลน์ การถูกเด้งออกเจ็บกว่าเดิมมาก — นั่นคือเบราว์เซอร์ในแอปซึ่งเก็บ
+// คุกกี้แยกจากเบราว์เซอร์ปกติ ล็อกอินใหม่ทีต้องพิมพ์รหัสบนแป้นพิมพ์มือถือทุกตัว
+describe('อายุเซสชันและความปลอดภัยของคุกกี้', () => {
+  const sessionRow = (id) => db.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
+  // ตั้งรหัสผ่านและปลดล็อกบัญชีเองทุกครั้ง — เทสต์ก่อนหน้านี้เปลี่ยนรหัสและยิงรหัสผิดจนบัญชีถูกล็อก
+  // ถ้าพึ่งสถานะที่เทสต์อื่นทิ้งไว้ เทสต์ชุดนี้จะแดงด้วยเหตุผลที่ไม่เกี่ยวกับสิ่งที่กำลังตรวจเลย
+  const SESSION_TEST_PW = 'SessionTest@2569';
+  const loginFresh = () => {
+    db.prepare('UPDATE users SET password_hash = ?, failed_login_count = 0, locked_until = NULL, must_change_password = 0 WHERE id = ?')
+      .run(hashSecret(SESSION_TEST_PW), seed.userIds.reg001);
+    const res = login('reg001', SESSION_TEST_PW, '127.0.0.1', 'test');
+    assert.ok(res.ok, `ต้องล็อกอินได้ก่อน: ${res.error || ''}`);
+    return { cookieHeader: `esaraban_sid=${encodeURIComponent(res.cookie)}`, user: res.user };
+  };
+  const sessionIdOf = (cookieHeader) => getSessionUser(cookieHeader).sessionId;
+
+  // เดิมนับ 8 ชั่วโมงจากตอนล็อกอินแล้วตัดทิ้ง ไม่ว่าจะใช้งานอยู่หรือไม่ — ธุรการที่ทำงานทั้งวันถูกเด้ง
+  // ออกกลางคันพอดีตอนครบ ถ้ากำลังกรอกฟอร์มลงทะเบียนอยู่ ข้อความที่พิมพ์ไว้หายทั้งหมด
+  test('ใช้งานอยู่แล้วอายุเซสชันต้องขยับตาม ไม่ใช่ตัดตายที่ 8 ชั่วโมงจากตอนล็อกอิน', () => {
+    const { cookieHeader } = loginFresh();
+    const id = sessionIdOf(cookieHeader);
+    // ย้อนเวลาหมดอายุไป 20 นาที เสมือนว่าผ่านไป 20 นาทีนับจากล็อกอิน
+    const shifted = new Date(Date.parse(sessionRow(id).expires_at) - 20 * 60000).toISOString();
+    db.prepare('UPDATE sessions SET expires_at = ? WHERE id = ?').run(shifted, id);
+
+    assert.ok(getSessionUser(cookieHeader), 'ยังต้องใช้งานได้');
+    assert.ok(sessionRow(id).expires_at > shifted,
+      'ใช้งานแล้วเวลาหมดอายุไม่ขยับเลย — ครูที่ใช้งานอยู่จะถูกเด้งออกกลางคัน');
+  });
+
+  // ถ้าต่ออายุทุก request การเปิดหน้าเว็บหนึ่งครั้งจะกลายเป็นการเขียนฐานข้อมูลหนึ่งครั้งเสมอ
+  // ซึ่งแพงโดยไม่จำเป็นและทำให้ไฟล์ WAL โตเร็ว
+  test('ยังไม่ถึงรอบต่ออายุ ต้องไม่เขียนฐานข้อมูลซ้ำทุกครั้งที่เปิดหน้า', () => {
+    const { cookieHeader } = loginFresh();
+    const id = sessionIdOf(cookieHeader);
+    const before = sessionRow(id).expires_at;
+    for (let i = 0; i < 5; i++) getSessionUser(cookieHeader);
+    assert.equal(sessionRow(id).expires_at, before, 'เขียนฐานข้อมูลทุก request');
+  });
+
+  // เครื่องส่วนกลางในห้องธุรการมีคนใช้ร่วมกัน เซสชันที่ถูกใช้เรื่อยๆ ต้องไม่กลายเป็นถาวร
+  test('ต่ออายุได้ แต่ต้องไม่เกินอายุสูงสุดของเซสชันนั้น', () => {
+    const { cookieHeader } = loginFresh();
+    const id = sessionIdOf(cookieHeader);
+    // เซสชันนี้เปิดมาแล้ว 7 วันเกือบเต็ม และกำลังจะหมดอายุในอีก 10 นาที
+    const createdLongAgo = new Date(Date.now() - (7 * 24 * 60 - 30) * 60000).toISOString();
+    const nearlyDone = new Date(Date.now() + 10 * 60000).toISOString();
+    db.prepare('UPDATE sessions SET created_at = ?, expires_at = ? WHERE id = ?').run(createdLongAgo, nearlyDone, id);
+
+    assert.ok(getSessionUser(cookieHeader), 'ยังไม่หมดอายุ ต้องใช้งานได้');
+    const extended = Date.parse(sessionRow(id).expires_at);
+    const hardLimit = Date.parse(createdLongAgo) + 7 * 24 * 60 * 60 * 1000;
+    assert.ok(extended <= hardLimit + 1000,
+      'ต่ออายุเลยเพดาน 7 วันไปแล้ว — เซสชันจะไม่มีวันหมดอายุตราบใดที่ยังมีคนใช้');
+  });
+
+  test('เซสชันที่หมดอายุแล้วต้องใช้ไม่ได้ และถูกเก็บกวาดตอนมีคนล็อกอิน', () => {
+    const { cookieHeader } = loginFresh();
+    const id = sessionIdOf(cookieHeader);
+    db.prepare('UPDATE sessions SET expires_at = ? WHERE id = ?').run(new Date(Date.now() - 1000).toISOString(), id);
+    assert.equal(getSessionUser(cookieHeader), null, 'หมดอายุแล้วยังใช้ได้');
+
+    // แถวที่ตายแล้วเดิมถูกลบก็ต่อเมื่อเจ้าของกลับมาใช้คุกกี้เดิมอีกครั้ง ซึ่งส่วนใหญ่ไม่เกิดขึ้น
+    // แถวจึงสะสมไปเรื่อยๆ และติดไปกับสำเนาสำรองที่ส่งขึ้น Google Drive ด้วย
+    const deadIds = [];
+    for (let i = 0; i < 4; i++) {
+      const deadId = `dead-session-${Date.now()}-${i}`;
+      db.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)')
+        .run(deadId, seed.userIds.reg001, new Date(Date.now() - 86400000).toISOString(), new Date(Date.now() - 172800000).toISOString());
+      deadIds.push(deadId);
+    }
+    loginFresh();
+    const left = deadIds.filter((d) => sessionRow(d));
+    assert.deepEqual(left, [], `เซสชันที่ตายแล้วยังค้างอยู่ ${left.length} แถว`);
+  });
+
+  describe('ธงความปลอดภัยของคุกกี้', () => {
+    let urlSvc; let savedBase;
+    before(async () => {
+      urlSvc = await import('../src/services/publicUrl.js');
+      savedBase = process.env.PUBLIC_BASE_URL;
+    });
+    after(() => {
+      if (savedBase === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = savedBase;
+      urlSvc._resetRememberedBaseUrl();
+    });
+
+    test('เว็บจริง (https) ต้องมี Secure, HttpOnly และ SameSite=Lax ครบ', () => {
+      process.env.PUBLIC_BASE_URL = 'https://saraban.example.ac.th';
+      const header = sessionCookieHeader('abc');
+      // Secure — หัว Strict-Transport-Security ช่วยได้ตั้งแต่ครั้งที่สองเป็นต้นไปเท่านั้น
+      // การเปิดเว็บครั้งแรกสุดของเครื่องนั้นด้วย http:// จะส่งคุกกี้ออกไปแบบอ่านได้
+      assert.match(header, /;\s*Secure\s*;/, 'ไม่มี Secure — คุกกี้เซสชันหลุดออกไปทาง http ได้');
+      assert.match(header, /HttpOnly/, 'ไม่มี HttpOnly — JavaScript อ่านคุกกี้ได้');
+      // ต้องเป็น Lax ไม่ใช่ Strict — Strict จะไม่ส่งคุกกี้เมื่อกดลิงก์มาจากไลน์
+      // ครูจะเห็นหน้าเข้าสู่ระบบทุกครั้งที่กดลิงก์จากกลุ่ม ทั้งที่ล็อกอินค้างอยู่
+      assert.match(header, /SameSite=Lax/, 'SameSite ต้องเป็น Lax เพื่อให้ลิงก์จากไลน์ยังล็อกอินอยู่');
+    });
+
+    // ธง Secure "เดาไม่ได้" ต่างจากที่อยู่เว็บที่ใช้ทำลิงก์ ซึ่งเดาเป็น https ได้เพราะเดาผิดเสียหายน้อย
+    // ถ้าเดาผิดทางนี้ เบราว์เซอร์ทิ้งคุกกี้ทิ้งทั้งใบ แล้วไม่มีใครล็อกอินได้เลยทั้งโรงเรียน
+    test('ไม่มีหลักฐานว่าเป็น https ต้องไม่ใส่ Secure — ไม่งั้นล็อกอินไม่ได้เลยทั้งโรงเรียน', () => {
+      delete process.env.PUBLIC_BASE_URL;
+      for (const [label, headers] of [
+        ['รันบนเครื่องตัวเอง', { host: '127.0.0.1:3000' }],
+        // เคสที่เกิดจริง: โรงเรียนติดตั้งระบบบนเครื่องในโรงเรียน เข้าผ่าน http://192.168.x.x
+        // ไม่มี x-forwarded-proto และเบราว์เซอร์ก็ไม่ยกเว้นให้เหมือน localhost
+        ['เครื่องในโรงเรียนผ่านเลขไอพี', { host: '192.168.1.50:3000' }],
+        ['หลังพร็อกซีที่ผู้ใช้เข้ามาด้วย http', { host: 'saraban.school', 'x-forwarded-proto': 'http' }],
+      ]) {
+        urlSvc._resetRememberedBaseUrl();
+        urlSvc.rememberBaseUrl(headers);
+        assert.doesNotMatch(sessionCookieHeader('abc'), /Secure/,
+          `${label}: ใส่ Secure ทั้งที่ไม่ใช่ https — เบราว์เซอร์จะทิ้งคุกกี้ แล้วล็อกอินไม่ได้เลย`);
+      }
+
+      // แต่พอเห็นหลักฐานจริง (หัวจากพร็อกซีของ Render) ต้องใส่ ไม่ใช่ปิดไว้เฉยๆ แล้วเทสต์เขียว
+      urlSvc._resetRememberedBaseUrl();
+      urlSvc.rememberBaseUrl({ host: 'saraban.school', 'x-forwarded-proto': 'https' });
+      assert.match(sessionCookieHeader('abc'), /Secure/, 'เข้ามาด้วย https จริงแล้วยังไม่ใส่ Secure');
+    });
+
+    test('คุกกี้ต้องอยู่ในเครื่องได้นานเท่าอายุสูงสุดของเซสชัน ไม่ใช่สั้นกว่า', () => {
+      process.env.PUBLIC_BASE_URL = 'https://saraban.example.ac.th';
+      const maxAge = Number(/Max-Age=(\d+)/.exec(sessionCookieHeader('abc'))?.[1]);
+      assert.ok(maxAge >= 7 * 24 * 3600 - 60,
+        `คุกกี้หมดอายุในเครื่องก่อนเซสชันฝั่งเซิร์ฟเวอร์ (${maxAge} วินาที) — ครูต้องล็อกอินใหม่ทั้งที่เซสชันยังมีชีวิต`);
+      assert.match(sessionCookieHeader('', { clear: true }), /Max-Age=0/, 'ออกจากระบบต้องล้างคุกกี้ทันที');
+    });
   });
 });
 
