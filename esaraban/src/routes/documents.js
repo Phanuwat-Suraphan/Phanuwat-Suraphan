@@ -920,9 +920,28 @@ router.get('/documents/export.xlsx', requirePage((ctx) => {
 // "บันทึกเป็น PDF" แทน เพราะ (1) ทุกเบราว์เซอร์ทำได้อยู่แล้วทั้งบนเครื่องและมือถือ (2) ฟอนต์ไทยที่ใช้
 // เป็นฟอนต์ในเครื่องผู้ใช้เอง ไม่ต้องพึ่ง chromium บนเซิร์ฟเวอร์ที่อาจไม่มีฟอนต์ไทยติดตั้ง และ
 // (3) ทะเบียนพันแถวไม่ต้องไปเบียดเวลาประมวลผลกับการประทับตราลงไฟล์ PDF ซึ่งใช้ chromium ตัวเดียวกัน
+/**
+ * เพดานจำนวนแถวของหน้าพิมพ์ทะเบียน
+ *
+ * หน้านี้ตั้งใจให้พิมพ์ "ทั้งเล่ม" จึงไม่มีการแบ่งหน้า แต่เดิมไม่มีเพดานเลย — วัดจริงด้วยข้อมูล
+ * เท่าสามปี (5,000 ฉบับ) ได้หน้าเว็บขนาด 2.2 MB ต่อการเปิดหนึ่งครั้ง และระบบเก็บหนังสือไว้ 10 ปี
+ * ตามระเบียบ ซึ่งจะกลายเป็นราว 7 MB บนเครื่องที่มีหน่วยความจำ 512 MB (แพ็กฟรีของ Render)
+ * การประกอบสตริงขนาดนั้นพร้อมกับถือแถวข้อมูลทั้งหมดไว้ อาจทำให้ทั้งระบบล่มสำหรับทุกคน
+ * ไม่ใช่แค่ช้าสำหรับคนที่กดพิมพ์
+ *
+ * ตั้งไว้ 3,000 แถว = สูงกว่าหนึ่งปีการศึกษา (ราว 1,200-1,600 ฉบับ) เกือบเท่าตัว ซึ่งเป็นหน่วยที่
+ * ทะเบียนใช้จริงตามระเบียบ (เลขรับเริ่มที่ 1 ใหม่ทุกปี ทะเบียนจึงเป็นเล่มต่อปี)
+ */
+const MAX_REGISTER_PRINT_ROWS = 3000;
+
 router.get('/documents/register', requirePage((ctx) => {
   const query = buildDocumentQuery(ctx.user, ctx.query);
-  const rows = listDocuments(query).filter((d) => canUserSeeDocument(ctx.user, d));
+  // นับจากฐานข้อมูลตรงๆ ไม่ใช่นับจากแถวที่ตัดมาแล้ว — ไม่งั้นบรรทัด "รวม X ฉบับ" จะบอกเลขที่ถูกตัด
+  // ไปแล้วว่าเป็นยอดทั้งหมด ซึ่งบนกระดาษที่เก็บเข้าแฟ้มคือการบอกจำนวนหนังสือผิด
+  const totalRows = countDocuments(query);
+  const truncated = totalRows > MAX_REGISTER_PRINT_ROWS;
+  const rows = listDocuments(query, truncated ? { limit: MAX_REGISTER_PRINT_ROWS, offset: 0 } : {})
+    .filter((d) => canUserSeeDocument(ctx.user, d));
   const cols = registerColumns(query.direction);
   const filterNote = describeFilters(query);
   const title = { incoming: 'ทะเบียนหนังสือรับ', outgoing: 'ทะเบียนหนังสือส่ง', all: 'ผลการค้นหาทะเบียนหนังสือ' }[query.direction];
@@ -968,6 +987,12 @@ router.get('/documents/register', requirePage((ctx) => {
     background: #f3f3f3; color: #000; cursor: pointer; text-decoration: none;
   }
   .empty { padding: 2rem; text-align: center; color: #555; }
+  /* คำเตือนว่าทะเบียนถูกตัด ต้องติดไปกับกระดาษที่พิมพ์ออกมาด้วย ไม่ใช่เห็นแค่บนจอ —
+     ไม่งั้นคนที่หยิบกระดาษไปเก็บเข้าแฟ้มจะเข้าใจว่าเป็นทะเบียนฉบับสมบูรณ์ */
+  .cut-warn {
+    border: 2px solid #000; padding: .6rem .8rem; margin-bottom: 1rem;
+    font-size: 13px; font-weight: 700; text-align: center;
+  }
   @media print { .toolbar { display: none; } body { padding: 0; } }
 </style></head>
 <body>
@@ -979,10 +1004,17 @@ router.get('/documents/register', requirePage((ctx) => {
     <h1>${esc(title)}</h1>
     <div class="sub">${esc(schoolName())}</div>
     <div class="meta">
-      รวม ${rows.length} ฉบับ · พิมพ์เมื่อ ${esc(fmtThaiDateLong(todayInBangkok()))}
+      ${truncated
+        ? `แสดง ${fmtCount(rows.length)} จากทั้งหมด ${fmtCount(totalRows)} ฉบับ`
+        : `รวม ${fmtCount(rows.length)} ฉบับ`} · พิมพ์เมื่อ ${esc(fmtThaiDateLong(todayInBangkok()))}
       ${filterNote ? ` · เงื่อนไข: ${esc(filterNote)}` : ''}
     </div>
   </div>
+  ${truncated ? `<div class="cut-warn">
+    ⚠️ ทะเบียนนี้ยังไม่ครบ — แสดงเพียง ${fmtCount(MAX_REGISTER_PRINT_ROWS)} ฉบับแรกจากทั้งหมด ${fmtCount(totalRows)} ฉบับ<br/>
+    ทะเบียนหนังสือเป็นเล่มต่อปีตามระเบียบ (เลขรับเริ่มที่ ๑ ใหม่ทุกปี) —
+    กรุณากลับไปเลือก "ทะเบียนประจำปี" ที่หน้าทะเบียนในระบบ แล้วสั่งพิมพ์ทีละเล่ม
+  </div>` : ''}
   ${rows.length ? `<table>
     <colgroup>${colWidths.map((w) => `<col style="width:${w}%" />`).join('')}</colgroup>
     <thead><tr><th>ลำดับ</th>${cols.map((c) => `<th>${esc(c.head)}</th>`).join('')}</tr></thead>

@@ -6321,6 +6321,109 @@ describe('อายุเซสชันและความปลอดภั�
   });
 });
 
+// โรงเรียนเก็บหนังสือไว้ 10 ปีตามระเบียบ หน้าที่ไม่มีเพดานจึงโตขึ้นเรื่อยๆ ทุกปีโดยไม่มีใครสังเกต
+// จนกว่าจะสายเกินไป — วัดจริงด้วยข้อมูลเท่าสามปี (5,000 ฉบับ) หน้าพิมพ์ทะเบียนหนักถึง 2.2 MB
+// ต่อการเปิดหนึ่งครั้ง และแพ็กฟรีของ Render มีหน่วยความจำแค่ 512 MB
+describe('หน้าที่แสดงรายการยาวต้องมีเพดาน และบอกตรงๆ เมื่อถูกตัด', () => {
+  const TAG = 'เอกสารทดสอบเพดานหน้าพิมพ์';
+  const CAP = 3000;
+  let insertedIds = [];
+
+  before(() => {
+    const ins = db.prepare(`INSERT INTO documents (id, direction, running_number, year_be, doc_number_display,
+      title, doc_type_id, department_id, priority, secret_level, correspondent_name, status,
+      retention_class, retention_until, created_by, created_at, updated_at)
+      VALUES (?, 'incoming', ?, 9999, ?, ?, ?, ?, 'normal', 'normal', 'สพป.ทดสอบ', 'completed',
+        'normal_10y', '2579-12-31', ?, ?, ?)`);
+    db.exec('BEGIN IMMEDIATE');
+    // year_be = 9999 เพื่อให้ตัวกรอง "ทะเบียนประจำปี" แยกชุดนี้ออกจากข้อมูลของเทสต์อื่นได้สนิท
+    for (let i = 1; i <= CAP + 1; i++) {
+      const id = `cap-doc-${i}`;
+      insertedIds.push(id);
+      const at = new Date(Date.now() - i * 1000).toISOString();
+      ins.run(id, 900000 + i, `${9000 + i}/9999`, `${TAG} ${i}`, typeId, deptId, registrarUser.id, at, at);
+    }
+    db.exec('COMMIT');
+  });
+  after(() => {
+    db.exec('BEGIN IMMEDIATE');
+    const del = db.prepare('DELETE FROM documents WHERE id = ?');
+    for (const id of insertedIds) del.run(id);
+    db.exec('COMMIT');
+    insertedIds = [];
+  });
+
+  const registerPage = () => dispatchGet(loadUserForTest(seed.userIds.admin), '/documents/register',
+    { direction: 'incoming', year: '9999' });
+
+  test('หน้าพิมพ์ทะเบียนต้องไม่พ่นทุกฉบับออกมาไม่จำกัด', async () => {
+    const res = await registerPage();
+    assert.equal(res.status, 200);
+    const printed = (res.body.match(/<tr>\s*<td class="num">/g) || []).length;
+    assert.ok(printed <= CAP, `พิมพ์ออกมา ${printed} แถว เกินเพดาน ${CAP}`);
+    assert.ok(printed >= CAP - 5, `ตัดมากเกินไป เหลือแค่ ${printed} แถว`);
+  });
+
+  // กระดาษที่พิมพ์ออกมาเก็บเข้าแฟ้มเป็นหลักฐาน ถ้าไม่ครบแล้วไม่บอก คนที่หยิบไปใช้จะเข้าใจว่าครบ
+  test('เมื่อถูกตัด ต้องเตือนบนกระดาษที่พิมพ์ออกมาด้วย ไม่ใช่เห็นแค่บนจอ', async () => {
+    const res = await registerPage();
+    assert.match(res.body, /ทะเบียนนี้ยังไม่ครบ/, 'ไม่มีคำเตือนว่าทะเบียนถูกตัด');
+    assert.match(res.body, /class="cut-warn"/, 'คำเตือนไม่ได้ใช้บล็อกที่ตั้งใจให้พิมพ์ติดไปด้วย');
+    // ต้องไม่ถูกซ่อนตอนพิมพ์ — ถ้าเผลอใส่ .cut-warn ลงใน @media print { display: none } จะเห็นแค่บนจอ
+    const printCss = /@media print \{([^}]*\{[^}]*\})*[^}]*\}/.exec(res.body)?.[0] || '';
+    assert.ok(!printCss.includes('cut-warn'), `คำเตือนถูกซ่อนตอนพิมพ์: ${printCss}`);
+  });
+
+  // บรรทัด "รวม X ฉบับ" บนหัวกระดาษคือการระบุจำนวนหนังสือในทะเบียน ถ้าบอกเลขที่ถูกตัดแล้ว
+  // ว่าเป็นยอดทั้งหมด เท่ากับทะเบียนที่เก็บเข้าแฟ้มระบุจำนวนผิด
+  test('หัวกระดาษต้องบอกยอดจริงทั้งหมด ไม่ใช่ยอดที่ถูกตัดแล้ว', async () => {
+    const res = await registerPage();
+    assert.match(res.body, new RegExp(`แสดง[^<]*${CAP.toLocaleString('en-US')}[^<]*จากทั้งหมด[^<]*${(CAP + 1).toLocaleString('en-US')}`),
+      'หัวกระดาษไม่ได้บอกว่ายอดจริงมีเท่าไร');
+  });
+
+  test('ทะเบียนที่ไม่เกินเพดาน ต้องไม่มีคำเตือนและต้องครบทุกฉบับ', async () => {
+    const res = await dispatchGet(loadUserForTest(seed.userIds.admin), '/documents/register',
+      { direction: 'incoming', year: String(beYear()) });
+    assert.equal(res.status, 200);
+    assert.doesNotMatch(res.body, /ทะเบียนนี้ยังไม่ครบ/, 'ทะเบียนที่ครบอยู่แล้วกลับขึ้นคำเตือนว่าถูกตัด');
+  });
+
+  describe('หน้า "งานของฉัน"', () => {
+    const MAX_TASK_ROWS = 300;
+    let stepIds = [];
+    before(() => {
+      // เรื่องค้างสะสมอยู่ที่คนเดียวได้จริง เช่นคนที่ย้ายออกไปแล้วแต่ยังมีเรื่องจ่อคิว
+      const ins = db.prepare(`INSERT INTO workflow_steps (id, document_id, step_order, assignee_id, instruction, status, created_at)
+        VALUES (?, ?, 99, ?, 'เพื่อทราบ', 'waiting', ?)`);
+      db.exec('BEGIN IMMEDIATE');
+      for (let i = 0; i <= MAX_TASK_ROWS; i++) {
+        const id = `cap-step-${i}`;
+        stepIds.push(id);
+        ins.run(id, insertedIds[i], seed.userIds.teacher001, new Date(Date.now() - i * 1000).toISOString());
+      }
+      db.exec('COMMIT');
+    });
+    after(() => {
+      db.exec('BEGIN IMMEDIATE');
+      const del = db.prepare('DELETE FROM workflow_steps WHERE id = ?');
+      for (const id of stepIds) del.run(id);
+      db.exec('COMMIT');
+      stepIds = [];
+    });
+
+    test('งานค้างเยอะเกินเพดาน ต้องตัดและบอกว่าตัด พร้อมทางไปดูทั้งหมด', async () => {
+      const res = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/tasks', {});
+      assert.equal(res.status, 200);
+      const shown = (res.body.match(/<tr data-href="\/documents\//g) || []).length;
+      assert.ok(shown <= MAX_TASK_ROWS, `แสดง ${shown} แถว เกินเพดาน ${MAX_TASK_ROWS}`);
+      assert.match(res.body, new RegExp(`มีงานค้างมากกว่า ${MAX_TASK_ROWS}`), 'ไม่ได้บอกว่างานค้างถูกตัด');
+      assert.match(res.body, /href="\/documents\?direction=all&status=in_progress"/,
+        'ตัดแล้วต้องบอกทางไปดูทั้งหมดด้วย ไม่ใช่ตัดทิ้งเฉยๆ');
+    });
+  });
+});
+
 test('cleanup: remove the throwaway test database file', () => {
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });

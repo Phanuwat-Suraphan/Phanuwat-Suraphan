@@ -270,17 +270,25 @@ router.get('/', requirePage((ctx) => {
   html(ctx, 200, layout({ user, title: 'แดชบอร์ด', path: '/', content }));
 }));
 
+// เพดานจำนวนงานค้างที่แสดงในหน้า "งานของฉัน" — ใช้ค่าเดียวกับหน้า "สรุปงานที่ต้องทำ" เพื่อความสม่ำเสมอ
+const MAX_TASK_ROWS = 300;
+
 router.get('/tasks', requirePage((ctx) => {
   const rawRows = db.prepare(`
     SELECT d.*, dt.name as type_name, ws.id as step_id, ws.created_at as assigned_at, (ws.assignee_id != :me) as is_delegated
     FROM workflow_steps ws
     JOIN documents d ON d.id = ws.document_id JOIN document_types dt ON dt.id = d.doc_type_id
     WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' ORDER BY d.priority DESC, ws.created_at ASC
+    LIMIT ${MAX_TASK_ROWS + 1}
   `).all({ me: ctx.user.id, today: todayInBangkok() });
+  // ดึงมาเกินหนึ่งแถวเพื่อรู้ว่าถูกตัดหรือเปล่า แล้วบอกผู้ใช้ตรงๆ — เหมือนหน้า "สรุปงานที่ต้องทำ"
+  // เดิมหน้านี้ไม่มีเพดานเลย ปกติไม่เป็นไรเพราะงานค้างของคนหนึ่งคนมีไม่กี่สิบฉบับ แต่ถ้าเรื่องไปค้าง
+  // สะสมอยู่ที่ใครคนหนึ่ง (เช่นคนที่ย้ายออกไปแล้วแต่ยังมีเรื่องจ่อคิว) หน้าจะโตขึ้นเรื่อยๆ ไม่มีที่สิ้นสุด
+  const tasksTruncated = rawRows.length > MAX_TASK_ROWS;
 
   // กรองชั้นความลับด้วยเสมอ เหมือนหน้าอื่นๆ — ปกติคนที่ถูกมอบหมายก็เห็นอยู่แล้ว แต่ถ้าชั้นความลับของ
   // เอกสารถูกยกระดับขึ้นทีหลัง แถวเก่าต้องหายไปจากหน้านี้ด้วย ไม่ใช่ยังโชว์ชื่อเรื่องค้างไว้
-  const rows = rawRows.filter((d) => canUserSeeDocument(ctx.user, d));
+  const rows = rawRows.slice(0, MAX_TASK_ROWS).filter((d) => canUserSeeDocument(ctx.user, d));
 
   // เรียงของที่ "เลยกำหนด/ใกล้ครบกำหนด" ขึ้นก่อนเสมอ แล้วค่อยเรียงตามความเร็วที่ต้นทางระบุ —
   // เดิมเรียงตามความเร็วอย่างเดียว ทำให้หนังสือ "ปกติ" ที่เลยกำหนดมา 5 วันไปจมอยู่ท้ายตาราง
@@ -298,12 +306,13 @@ router.get('/tasks', requirePage((ctx) => {
       <div>
         <h2 class="mt-0">📌 งานของฉัน</h2>
         <p class="text-muted" style="margin:-.3rem 0 0;font-size:.85rem">
-          ${rows.length ? `รอคุณดำเนินการ ${rows.length} ฉบับ${overdueCount ? ` · <strong style="color:var(--danger)">เลยกำหนดแล้ว ${overdueCount}</strong>` : ''} — เรียงตามวันครบกำหนด กดที่แถวเพื่อเปิดเอกสาร`
+          ${rows.length ? `รอคุณดำเนินการ${tasksTruncated ? 'มากกว่า' : ''} ${rows.length} ฉบับ${overdueCount ? ` · <strong style="color:var(--danger)">เลยกำหนดแล้ว ${overdueCount}</strong>` : ''} — เรียงตามวันครบกำหนด กดที่แถวเพื่อเปิดเอกสาร`
             : 'ไม่มีงานค้างอยู่ในมือคุณตอนนี้'}
         </p>
       </div>
     </div>
     <div class="card">
+      ${tasksTruncated ? `<div class="alert alert-warning">⚠️ มีงานค้างมากกว่า ${MAX_TASK_ROWS} ฉบับ หน้านี้แสดงเฉพาะ ${MAX_TASK_ROWS} ฉบับที่ใกล้ครบกำหนดที่สุด — ดูทั้งหมดได้ที่<a href="/documents?direction=all&status=in_progress">ทะเบียนหนังสือ</a></div>` : ''}
       ${rows.length ? `<div class="table-wrap"><table>
         <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ความเร็ว</th><th>ครบกำหนด</th><th>มอบหมายเมื่อ</th></tr></thead>
         <tbody>${rows.map((d) => {
