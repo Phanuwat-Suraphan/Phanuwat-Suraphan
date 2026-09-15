@@ -69,6 +69,10 @@ function makeDoc(overrides = {}) {
     // ธุรการเป็นผู้ลงทะเบียนหนังสือเข้าในความเป็นจริง จึงเป็นทั้งผู้บันทึกและผู้เสนอ/ยกเลิกเอง — เดิม fixture
     // ตั้งผู้บันทึกเป็นแอดมินแต่ไปเสนอ/ยกเลิกด้วยธุรการ ซึ่งเป็นสถานการณ์ที่ไม่เกิดขึ้นจริง และบังเอิญผ่านมาได้
     // เพราะตอนนั้นฝั่งเซิร์ฟเวอร์ยังไม่ได้ตรวจสิทธิ์ในสองฟังก์ชันนั้นเลย
+    // fixture สร้างหนังสือชื่อเรื่องเดียวกันรัวๆ ในวินาทีเดียว ซึ่งของจริงคือ "ธุรการกดปุ่มซ้ำ" และระบบ
+    // กันไว้โดยตั้งใจ (ดู assertNotJustRegistered) — ที่นี่คือการเตรียมข้อมูลทดสอบ ไม่ใช่การกดพลาด
+    // จึงบอกระบบไปตรงๆ ว่าตั้งใจ ส่วนตัวด่านกันการกดซ้ำมีเทสต์แยกของตัวเองที่ไม่ส่งธงนี้
+    allowDuplicate: true,
     createdBy: registrarUser.id, ...overrides,
   });
 }
@@ -1818,9 +1822,12 @@ describe('คำเตือนไฟล์ซ้ำต้องไม่บอ�
 // และไม่มีข้อความอะไรบอกเลย เพราะเงื่อนไข `if (!fileDataBase64)` กลืนกรณีนี้รวมกับ "ไม่ได้แนบไฟล์มา"
 // ซึ่งเป็นคนละเรื่องกัน กว่าธุรการจะรู้ว่าหนังสือฉบับนั้นไม่มีไฟล์สแกนก็ตอนต้องหยิบมาใช้
 describe('แนบไฟล์ที่ไม่มีข้อมูล (0 ไบต์) ต้องไม่เงียบ', () => {
+  // ชื่อเรื่องต้องไม่ซ้ำกันในแต่ละครั้ง — เส้นทางจริงกันการลงทะเบียนเรื่องเดิมซ้ำภายในหนึ่งนาที
+  // (ดู assertNotJustRegistered) ซึ่งเป็นพฤติกรรมที่ต้องการ ที่นี่แค่ต้องการหนังสือคนละฉบับจริงๆ
+  let docForSeq = 0;
   const makeDocFor = async () => {
     const res = await dispatchPost(registrarUser, '/documents', {
-      title: 'หนังสือสำหรับทดสอบไฟล์ว่าง', departmentId: deptId, correspondentName: 'ทดสอบ',
+      title: `หนังสือสำหรับทดสอบไฟล์ว่าง ${++docForSeq}`, departmentId: deptId, correspondentName: 'ทดสอบ',
     });
     return /\/documents\/([0-9a-f-]{36})/.exec(res.body)?.[1];
   };
@@ -1928,8 +1935,12 @@ describe('สิทธิ์เห็นหนังสือ: เงื่อ�
 // ใช้ซ้ำไม่ได้ตามหลักงานสารบรรณ ถ้าฉบับที่ 7 ใน 10 ฉบับกรอกผิดแล้วระบบบันทึก 6 ฉบับแรกไปก่อน ทะเบียน
 // จะมีเลขหายไปโดยอธิบายไม่ได้ตอนตรวจ — ทั้งชุดจึงต้องสำเร็จหรือไม่สำเร็จพร้อมกันเท่านั้น
 describe('ลงรับหลายฉบับรวดเดียว', () => {
+  // ชื่อเรื่องต้องไม่ซ้ำข้ามการเรียกแต่ละครั้ง — ระบบกันการลงทะเบียน "ชุดเดิม" ซ้ำภายในหนึ่งนาที
+  // โดยดูฉบับแรกของชุดเป็นตัวแทน (ดู createDocumentsBulk) ซึ่งเป็นพฤติกรรมที่ต้องการ
+  // เทสต์เหล่านี้ตรวจเรื่องการออกเลข ไม่ได้ตรวจชื่อเรื่อง จึงเติมลำดับต่อท้ายให้ไม่ชนกันเอง
+  let bulkSeq = 0;
   const bulkItem = (n, extra = {}) => ({
-    direction: 'incoming', title: `หนังสือชุด ฉบับที่ ${n}`, correspondentName: 'สพป.ทดสอบ',
+    direction: 'incoming', title: `หนังสือชุด ฉบับที่ ${n} (#${++bulkSeq})`, correspondentName: 'สพป.ทดสอบ',
     docTypeId: typeId, departmentId: deptId, ...extra,
   });
   const runningNumbers = () => db.prepare(
@@ -4063,7 +4074,14 @@ describe('ประชาสัมพันธ์: ส่งให้ทุก�
   test('แจ้งเวียนซ้ำได้ และเก็บประวัติทุกครั้ง', () => {
     const doc = makeDoc({ title: 'แจ้งย้ำอีกรอบ' });
     broadcastDocument({ documentId: doc.id, note: 'ครั้งแรก', actorUser: registrarUser });
-    broadcastDocument({ documentId: doc.id, note: 'แจ้งย้ำ', actorUser: registrarUser });
+
+    // กดซ้ำทันทีต้องถูกกันไว้ก่อน — ครูทั้งโรงเรียนจะได้แจ้งเตือน (และข้อความไลน์) สองรอบ
+    // ซึ่งเกือบทุกครั้งคือกดพลาด ไม่ใช่ตั้งใจย้ำ
+    assert.throws(() => broadcastDocument({ documentId: doc.id, note: 'กดพลาด', actorUser: registrarUser }),
+      /เพิ่งประชาสัมพันธ์/, 'กดซ้ำทันทีต้องถูกกันไว้ก่อน');
+
+    // แต่ห้ามกันตาย — การแจ้งย้ำอีกรอบเป็นเรื่องปกติของงานสารบรรณ ยืนยันแล้วต้องส่งได้จริง
+    broadcastDocument({ documentId: doc.id, note: 'แจ้งย้ำ', actorUser: registrarUser, allowDuplicate: true });
     const rows = listBroadcasts(doc.id);
     assert.equal(rows.length, 2, 'ต้องเก็บประวัติทั้งสองครั้ง');
     assert.equal(rows[0].note, 'แจ้งย้ำ', 'ครั้งล่าสุดต้องมาก่อน');
@@ -6054,6 +6072,120 @@ describe('แถวตารางที่กดแล้วเปิดรา�
     assert.match(handler, /metaKey/, 'ไม่ได้เว้นกรณีกด Cmd+คลิก (ผู้ใช้ Mac)');
     assert.match(handler, /e\.button !== 0/, 'ไม่ได้เว้นคลิกลูกกลิ้ง/ปุ่มขวา');
     assert.match(handler, /closest\('a, button/, 'ไม่ได้เว้นลิงก์/ปุ่มที่อยู่ในแถว — กดปุ่มในแถวแล้วจะเด้งไปหน้าอื่นแทน');
+  });
+});
+
+// กดปุ่มซ้ำ/เน็ตกระตุกแล้วเบราว์เซอร์ส่งซ้ำ — บนมือถือเกิดง่ายมาก และในงานสารบรรณแก้ไม่ได้
+// เลขทะเบียนที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้ตามระเบียบ ต้องยกเลิกฉบับเกินทิ้งอย่างเดียว
+// ทะเบียนจึงมีเลขที่ถูกยกเลิกคาอยู่ถาวรและต้องอธิบายตอนตรวจ
+// (ยิงทดสอบด้วยเบราว์เซอร์จริงแล้วเกิดขึ้นจริงทั้งการลงทีละฉบับ ลงหลายฉบับ และการประชาสัมพันธ์)
+describe('กดปุ่มซ้ำต้องไม่ได้ของซ้ำ', () => {
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  const create = (body) => dispatchPost(reg(), '/documents', {
+    departmentId: deptId, correspondentName: 'สพป.ทดสอบกดซ้ำ', ...body,
+  });
+
+  test('ลงทะเบียนเรื่องเดิมซ้ำทันที ต้องถูกกันไว้ก่อน และต้องไม่กินเลขทะเบียนเพิ่ม', async () => {
+    const title = `หนังสือกดซ้ำ ${Date.now()}`;
+    const first = await create({ title });
+    assert.equal(first.status, 201, first.body);
+
+    const second = await create({ title });
+    assert.equal(second.status, 409, `กดซ้ำต้องถูกกัน แต่ได้ ${second.status}`);
+    assert.match(second.json.error, /เพิ่งลงทะเบียน/);
+    const rows = db.prepare('SELECT doc_number_display FROM documents WHERE title = ? AND deleted_at IS NULL').all(title);
+    assert.equal(rows.length, 1, `กินเลขทะเบียนไป ${rows.length} เลขจากการกดครั้งเดียว: ${rows.map((r) => r.doc_number_display).join(', ')}`);
+  });
+
+  // ห้ามกันตาย — หนังสือคนละฉบับที่บังเอิญชื่อเรื่องเหมือนกันเป็นเรื่องปกติของงานสารบรรณ
+  // (เช่น "ขอความอนุเคราะห์วิทยากร" จากคนละหน่วยงานในวันเดียวกัน)
+  test('ยืนยันแล้วต้องลงซ้ำได้จริง ไม่ใช่กันตาย', async () => {
+    const title = `หนังสือชื่อซ้ำแต่คนละฉบับ ${Date.now()}`;
+    assert.equal((await create({ title })).status, 201);
+    const forced = await create({ title, allowDuplicate: true });
+    assert.equal(forced.status, 201, `ยืนยันแล้วต้องลงได้ แต่ได้ ${forced.status} ${forced.body}`);
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM documents WHERE title = ?').get(title).c, 2);
+  });
+
+  // หน้าเว็บต้องรู้ว่าต้องถามผู้ใช้แล้วส่งใหม่ด้วยธงอะไร ไม่ใช่ขึ้นข้อความแดงแล้วจบ
+  test('คำตอบต้องบอกหน้าเว็บได้ว่าจะถามยืนยันแล้วส่งใหม่อย่างไร', async () => {
+    const title = `หนังสือตรวจ confirmRetry ${Date.now()}`;
+    await create({ title });
+    const blocked = await create({ title });
+    assert.equal(blocked.json.confirmRetry?.field, 'allowDuplicate',
+      'ไม่ได้บอกชื่อธงที่ต้องส่งกลับมา — หน้าเว็บจะกันตายให้ผู้ใช้โดยไม่มีทางไปต่อ');
+    assert.ok(blocked.json.confirmRetry?.message?.includes(title), 'ข้อความยืนยันต้องบอกว่าเป็นเรื่องอะไร');
+    assert.ok(blocked.json.duplicateDocNumber, 'ต้องบอกเลขที่ของฉบับที่ลงไปแล้ว เพื่อให้ธุรการไปเปิดดูได้');
+  });
+
+  // คนละคนลงเรื่องชื่อเดียวกันคือคนละงาน ไม่ใช่การกดซ้ำ
+  test('คนละคนลงเรื่องชื่อเดียวกัน ต้องไม่ถูกกัน', async () => {
+    const title = `หนังสือคนละคนลง ${Date.now()}`;
+    assert.equal((await create({ title })).status, 201);
+    const other = await dispatchPost(loadUserForTest(seed.userIds.admin), '/documents',
+      { departmentId: deptId, correspondentName: 'สพป.ทดสอบกดซ้ำ', title });
+    assert.equal(other.status, 201, 'คนละคนลงเรื่องชื่อเดียวกันถูกกันไปด้วย');
+  });
+
+  // ลงหลายฉบับรวดเดียวเสียหายกว่าหลายเท่า — กดพลาดครั้งเดียวกินเลขทะเบียนได้ถึง 20 เลข
+  test('กดบันทึก "ลงหลายฉบับรวดเดียว" ซ้ำ ต้องไม่ได้ทั้งชุดสองรอบ', async () => {
+    const tag = `ชุดกดซ้ำ ${Date.now()}`;
+    const items = [1, 2, 3].map((i) => ({
+      direction: 'incoming', title: `${tag} ฉบับที่ ${i}`, correspondentName: 'สพป.ทดสอบกดซ้ำ', departmentId: deptId,
+    }));
+    const first = await dispatchPost(reg(), '/documents/bulk', { direction: 'incoming', items });
+    assert.equal(first.status, 201, first.body);
+
+    const second = await dispatchPost(reg(), '/documents/bulk', { direction: 'incoming', items });
+    assert.equal(second.status, 409, `กดซ้ำต้องถูกกัน แต่ได้ ${second.status}`);
+    assert.equal(second.json.confirmRetry?.field, 'allowDuplicate');
+    const n = db.prepare("SELECT COUNT(*) c FROM documents WHERE title LIKE ? AND deleted_at IS NULL").get(`${tag}%`).c;
+    assert.equal(n, 3, `กินเลขทะเบียนไป ${n} เลขจากที่กรอกไว้ 3 ฉบับ`);
+
+    // ยืนยันแล้วต้องลงชุดซ้ำได้ (เช่นได้หนังสือชุดเดิมมาอีกรอบจริงๆ)
+    const forced = await dispatchPost(reg(), '/documents/bulk', { direction: 'incoming', items, allowDuplicate: true });
+    assert.equal(forced.status, 201, `ยืนยันแล้วต้องลงได้ แต่ได้ ${forced.status} ${forced.body}`);
+  });
+
+  // ตั้งแต่ต่อกับไลน์แล้ว การกดซ้ำแปลว่าครูทั้งโรงเรียนได้ข้อความเข้าไลน์สองฉบับด้วย
+  test('กด "ประชาสัมพันธ์ให้ทุกคน" ซ้ำ ต้องไม่ส่งแจ้งเตือนถึงทุกคนสองรอบ', async () => {
+    const doc = makeDoc({ title: `หนังสือประชาสัมพันธ์กดซ้ำ ${Date.now()}`, createdBy: seed.userIds.reg001 });
+    const first = await dispatchPost(reg(), `/documents/${doc.id}/broadcast`, { note: 'โปรดทราบ' });
+    assert.equal(first.status, 200, first.body);
+    const countAfterFirst = db.prepare('SELECT COUNT(*) c FROM notifications WHERE document_id = ?').get(doc.id).c;
+    assert.ok(countAfterFirst > 0, 'ต้องมีการแจ้งเตือนจริงก่อน ไม่งั้นเทสต์นี้ไม่ได้ตรวจอะไร');
+
+    const second = await dispatchPost(reg(), `/documents/${doc.id}/broadcast`, { note: 'โปรดทราบ' });
+    assert.equal(second.status, 409, `กดซ้ำต้องถูกกัน แต่ได้ ${second.status}`);
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM notifications WHERE document_id = ?').get(doc.id).c, countAfterFirst,
+      'ครูทั้งโรงเรียนได้รับแจ้งเตือน (และข้อความไลน์) เรื่องเดียวกันสองรอบ');
+  });
+
+  // ตัวช่วยฝั่งหน้าเว็บที่ทำให้ "ถามยืนยันแล้วส่งใหม่" ใช้ได้จริง — ถ้าหายไป การกันซ้ำจะกลายเป็นกันตาย
+  test('หน้าเว็บต้องมีตัวจัดการถามยืนยันแล้วส่งใหม่ และทุกฟอร์มที่ถูกกันต้องใช้ตัวนี้', () => {
+    const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+    assert.match(app, /window\.postJson\s*=/, 'ไม่มี postJson ใน public/app.js');
+    const fn = app.slice(app.indexOf('window.postJson'), app.indexOf('window.submitWithFile'));
+    assert.match(fn, /confirmRetry/, 'postJson ไม่ได้จัดการ confirmRetry');
+    assert.match(fn, /confirm\(/, 'postJson ไม่ได้ถามผู้ใช้ก่อนส่งซ้ำ');
+
+    // ฟอร์มที่เซิร์ฟเวอร์กันซ้ำไว้ ต้องส่งผ่าน postJson ทั้งหมด ไม่งั้นผู้ใช้จะเจอข้อความแดงแล้วไปต่อไม่ได้
+    //
+    // ต้องตรวจ "ตัวฟอร์มจริง" ไม่ใช่ตัวช่วยกลาง — พลาดมาแล้วรอบแรก: เทสต์ตรวจว่า submitWithFile
+    // ใช้ postJson แล้วก็เขียว แต่ฟอร์มลงทะเบียนหนังสือมีตัวส่งของตัวเอง (เพราะต้องแนบไฟล์เพิ่ม
+    // อีกสองไฟล์ต่อจากนั้น) ไม่ได้ใช้ submitWithFile เลย ผลคือบนหน้าเว็บจริงไม่มีกล่องถามยืนยัน
+    // ขึ้นมาเลย การกันลงซ้ำจึงกลายเป็นกันตาย — จับได้ตอนยิงทดสอบด้วยเบราว์เซอร์จริงเท่านั้น
+    const docs = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
+    for (const [label, marker] of [
+      ['ลงทะเบียนหนังสือทีละฉบับ', "window.postJson('/documents', payload)"],
+      ['ลงหลายฉบับรวดเดียว', "window.postJson('/documents/bulk'"],
+      ['ประชาสัมพันธ์ให้ทุกคน', "window.postJson('/documents/${doc.id}/broadcast'"],
+    ]) {
+      assert.ok(docs.includes(marker), `ฟอร์ม "${label}" ยังไม่ได้ส่งผ่าน postJson — ผู้ใช้จะถูกกันตาย ไปต่อไม่ได้`);
+    }
+    // และตัวช่วยกลางที่ฟอร์มอื่นๆ ใช้อยู่ก็ต้องผ่าน postJson ด้วย
+    assert.match(app, /const data = await window\.postJson\(endpoint, payload\)/,
+      'submitWithFile ยังไม่ได้ส่งผ่าน postJson');
   });
 });
 

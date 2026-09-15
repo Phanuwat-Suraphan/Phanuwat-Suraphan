@@ -415,9 +415,11 @@ router.get('/documents/new', requirePage((ctx) => {
             payload.fileType = mainFile.type || 'application/octet-stream';
             payload.fileDataBase64 = await window.fileToBase64(mainFile);
           }
-          var res = await fetch('/documents', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-          var data = await res.json();
-          if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
+          // ผ่าน postJson เพื่อให้กรณี "เพิ่งลงทะเบียนเรื่องนี้ไปเมื่อครู่" ถามยืนยันก่อนลงซ้ำ
+          // ฟอร์มนี้มีตัวส่งของตัวเอง (เพราะต้องแนบไฟล์เพิ่มอีกสองไฟล์ต่อจากนี้) ไม่ได้ใช้ submitWithFile
+          // จึงต้องต่อ postJson เองตรงนี้ด้วย — ถ้าลืม การกันลงซ้ำจะกลายเป็นกันตาย ธุรการไปต่อไม่ได้
+          var data = await window.postJson('/documents', payload);
+          if (data === null) { window.restoreBtn(btn); return; } // ผู้ใช้กดยกเลิกตอนถามยืนยัน
 
           // แนบไฟล์ 2 และ 3 ต่อทันที (ใช้ endpoint แนบไฟล์เพิ่มเดิมที่มีอยู่แล้ว — ไม่ต้องเพิ่ม backend ใหม่)
           var docIdMatch = data.redirect.match(/documents\\/([a-f0-9-]+)/);
@@ -529,6 +531,8 @@ router.post('/documents', requireApi(async (ctx) => {
     priority: b.priority, secretLevel: b.secretLevel, correspondentName: b.correspondentName.trim(),
     externalDocNumber: b.externalDocNumber?.trim(), externalDocDate: b.externalDocDate || null, dueDate: b.dueDate || null,
     retentionClass: b.retentionClass, customDocNumber: b.customDocNumber?.trim() || null, createdBy: ctx.user.id,
+    // ผู้ใช้ยืนยันแล้วว่าเป็นคนละฉบับ ทั้งที่ชื่อเรื่องซ้ำกับที่เพิ่งลงไป (ดู assertNotJustRegistered)
+    allowDuplicate: b.allowDuplicate === true,
   });
   const warnParts = [];
   if (doc.duplicateDocNumberWarning) warnParts.push(doc.duplicateDocNumberWarning);
@@ -763,15 +767,15 @@ router.get('/documents/bulk', requirePage((ctx) => {
           // ขั้นที่ 1 — ออกเลขทั้งชุดในคำขอเดียว (ไม่ส่งไฟล์ไปด้วย เพราะไฟล์ 20 ไฟล์รวมกันเกินขนาด
           // คำขอที่เซิร์ฟเวอร์รับได้ และถ้าล้มกลางทางจะได้เลขขาดเป็นรูโหว่ในทะเบียน)
           prog.textContent = 'กำลังออกเลขทะเบียนทั้ง ' + rows.length + ' ฉบับ...';
-          var res = await fetch('/documents/bulk', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ direction: DIRECTION, items: rows.map(function(r){
+          // ผ่าน postJson เพื่อให้กรณี "เพิ่งลงทะเบียนชุดนี้ไปเมื่อครู่" ถามยืนยันก่อนลงซ้ำ —
+          // กดพลาดสองทีตรงนี้กินเลขทะเบียนได้ถึง 20 เลขในครั้งเดียว ซึ่งเอากลับมาใช้ซ้ำไม่ได้
+          var data = await window.postJson('/documents/bulk', {
+            direction: DIRECTION, items: rows.map(function(r){
               return { title: r.title, correspondentName: r.correspondentName, departmentId: r.departmentId,
                 priority: r.priority, secretLevel: r.secretLevel, dueDate: r.dueDate, retentionClass: r.retentionClass };
-            }) }),
+            }),
           });
-          var data = await res.json();
-          if (!res.ok) throw new Error(data.error || 'ออกเลขไม่สำเร็จ');
+          if (data === null) { window.restoreBtn(btn); return; } // ผู้ใช้กดยกเลิกตอนถามยืนยัน
 
           // ขั้นที่ 2 — แนบไฟล์ทีละฉบับ ถ้าฉบับไหนแนบไม่สำเร็จ เลขรับยังอยู่ ธุรการเข้าไปแนบเองทีหลังได้
           // เก็บผลเป็นรายแถว ไม่ใช่รายชื่อไฟล์ — ไฟล์สแกนชื่อซ้ำกัน (scan0001.pdf) เกิดขึ้นบ่อยมาก
@@ -837,7 +841,7 @@ router.post('/documents/bulk', requireApi((ctx) => {
     direction, docTypeId,
     title: it.title, correspondentName: it.correspondentName, departmentId: it.departmentId,
     priority: it.priority, secretLevel: it.secretLevel, dueDate: it.dueDate, retentionClass: it.retentionClass,
-  })), ctx.user.id);
+  })), ctx.user.id, { allowDuplicate: ctx.body.allowDuplicate === true });
   json(ctx, 201, {
     documents: docs.map((d) => ({ id: d.id, docNumberDisplay: d.docNumberDisplay })),
   });
@@ -1352,14 +1356,12 @@ router.get('/documents/:id', requirePage((ctx) => {
           function doBroadcast(btn){
             if (!confirm('ยืนยันส่งหนังสือฉบับนี้ให้บุคลากรทุกคนอ่าน?')) return;
             window.setBtnLoading(btn, 'กำลังส่ง...');
-            fetch('/documents/${doc.id}/broadcast', {
-              method: 'POST', headers: {'Content-Type':'application/json'},
-              body: JSON.stringify({ note: document.getElementById('broadcastNote').value }),
-            })
-              .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
-              .then(function(res){
-                if(!res.ok) throw new Error(res.d.error);
-                window.toast('ประชาสัมพันธ์ถึงบุคลากร ' + res.d.recipientCount + ' คนแล้ว', 'success');
+            // ผ่าน postJson เพื่อให้กรณี "เพิ่งกดประชาสัมพันธ์ไปเมื่อครู่" ถามยืนยันก่อนส่งซ้ำ
+            // ไม่งั้นกดพลาดสองทีแล้วครูทั้งโรงเรียนได้แจ้งเตือน (และข้อความไลน์) สองรอบ
+            window.postJson('/documents/${doc.id}/broadcast', { note: document.getElementById('broadcastNote').value })
+              .then(function(d){
+                if (d === null) { window.restoreBtn(btn); return; }
+                window.toast('ประชาสัมพันธ์ถึงบุคลากร ' + d.recipientCount + ' คนแล้ว', 'success');
                 setTimeout(function(){ location.reload(); }, 1200);
               })
               .catch(function(e){ toast(e.message, 'danger'); window.restoreBtn(btn); });
@@ -1877,7 +1879,10 @@ router.post('/documents/:id/workflow/:stepId/return', requireApi(async (ctx) => 
 router.post('/documents/:id/broadcast', requireApi(async (ctx) => {
   const doc = getDocument(ctx.params.id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
-  const result = broadcastDocument({ documentId: doc.id, note: ctx.body.note, actorUser: ctx.user });
+  const result = broadcastDocument({
+    documentId: doc.id, note: ctx.body.note, actorUser: ctx.user,
+    allowDuplicate: ctx.body.allowDuplicate === true,
+  });
   json(ctx, 200, { ok: true, recipientCount: result.recipientCount });
 }));
 

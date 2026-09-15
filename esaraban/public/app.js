@@ -62,6 +62,29 @@
     if (preview) preview.textContent = input.files[0] ? input.files[0].name + ' (' + Math.round(input.files[0].size / 1024) + ' KB)' : '';
   };
 
+  /**
+   * ส่ง JSON ไปที่เซิร์ฟเวอร์ — จัดการกรณี "ต้องถามยืนยันแล้วส่งใหม่" ให้ที่เดียว
+   *
+   * บางอย่างระบบกันไว้ก่อนเพราะไม่แน่ใจว่าผู้ใช้ตั้งใจหรือกดพลาด (เช่นเพิ่งลงทะเบียนเรื่องชื่อเดียวกัน
+   * ไปเมื่อครู่ หรือเพิ่งกดประชาสัมพันธ์ไปแล้ว) เซิร์ฟเวอร์จะตอบ 409 พร้อม confirmRetry มาให้
+   * — กันไว้ก่อนแต่ห้ามกันตาย เพราะบางทีก็เป็นคนละเรื่องกันจริงๆ (ดู services/validate.js)
+   *
+   * คืน null ถ้าผู้ใช้กดยกเลิกตอนถามยืนยัน / โยน Error ถ้าเซิร์ฟเวอร์ปฏิเสธจริง
+   */
+  window.postJson = async function (endpoint, payload) {
+    const send = (body) => fetch(endpoint, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }).then(async (r) => ({ ok: r.ok, data: await r.json().catch(() => ({})) }));
+
+    let { ok, data } = await send(payload);
+    if (!ok && data.confirmRetry && data.confirmRetry.field) {
+      if (!confirm(data.confirmRetry.message)) return null;
+      ({ ok, data } = await send(Object.assign({}, payload, { [data.confirmRetry.field]: true })));
+    }
+    if (!ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
+    return data;
+  };
+
   window.submitWithFile = async function (formEl, fileInputId, endpoint, opts) {
     opts = opts || {};
     const fileInput = document.getElementById(fileInputId);
@@ -83,13 +106,8 @@
         payload.fileDataBase64 = await fileToBase64(fileInput.files[0]);
       }
 
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
+      const data = await window.postJson(endpoint, payload);
+      if (data === null) { if (btn) window.restoreBtn(btn); return; } // ผู้ใช้กดยกเลิกตอนถามยืนยัน
       window.location.href = data.redirect || window.location.href;
     } catch (err) {
       window.toast(err.message || 'เกิดข้อผิดพลาด', 'danger');

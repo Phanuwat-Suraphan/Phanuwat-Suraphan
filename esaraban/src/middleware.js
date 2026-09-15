@@ -40,7 +40,9 @@ export function requireApi(handler) {
     try {
       await handler(ctx);
     } catch (err) {
-      json(ctx, err.statusCode || 500, { error: err.message || 'เกิดข้อผิดพลาด' });
+      // err.details ส่งต่อไปให้หน้าเว็บด้วย — ใช้กับกรณีที่ต้องถามผู้ใช้ยืนยันแล้วส่งใหม่
+      // (เช่น "เพิ่งลงทะเบียนเรื่องนี้ไปแล้ว ต้องการลงซ้ำอีกฉบับหรือไม่") ดู services/validate.js
+      json(ctx, err.statusCode || 500, { error: err.message || 'เกิดข้อผิดพลาด', ...(err.details || {}) });
     }
   };
 }

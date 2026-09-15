@@ -48,11 +48,50 @@ function assertLength(value, field, label) {
 // 0001/2569 อย่างเดียวเสมอไป — บางครั้งต้องต่อเลขจากทะเบียนกระดาษเดิม/มีเลขเฉพาะจากหน่วยงานอื่นกำกับ) —
 // running_number/year_be ยังนับเดินหน้าตามปกติเบื้องหลังเสมอ (ใช้คำนวณอายุการเก็บ/นับสถิติ) ไม่ผูกกับ
 // เลขที่กำหนดเอง เฉพาะ doc_number_display (เลขที่ที่แสดง/พิมพ์/ประทับตราจริง) เท่านั้นที่ถูกแทนที่
+/**
+ * ช่วงเวลาที่ถือว่า "เรื่องเดิมที่เพิ่งลงไป" ไม่ใช่เรื่องใหม่
+ *
+ * ทำไมต้องมี: ยิงทดสอบแล้วพบว่าการกดปุ่มบันทึกสองทีติดกัน (ซึ่งบนมือถือเกิดง่ายมาก และเน็ตกระตุก
+ * แล้วเบราว์เซอร์ส่งซ้ำเองก็ให้ผลเดียวกัน) ได้หนังสือ 2 ฉบับกินเลขทะเบียน 2 เลข โดยธุรการไม่รู้ตัว
+ * ซึ่งในงานสารบรรณแก้ไม่ได้ — เลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้ ต้องยกเลิกฉบับเกินทิ้งอย่างเดียว
+ * ทะเบียนจึงมีเลขที่ถูกยกเลิกคาอยู่ถาวร และต้องอธิบายตอนตรวจ
+ *
+ * หนึ่งนาทีพอสำหรับดักการกดซ้ำ/ส่งซ้ำ (เกิดในหลักมิลลิวินาทีถึงไม่กี่วินาที) แต่สั้นพอที่การพิมพ์
+ * ฟอร์มใหม่ทั้งชุดสำหรับหนังสือคนละฉบับที่บังเอิญชื่อเรื่องเหมือนกันจะใช้เวลานานกว่านั้นอยู่แล้ว
+ * และถึงชนจริงก็ไม่ได้กันตาย — ระบบถามยืนยันแล้วลงให้ได้
+ */
+const DUPLICATE_REGISTER_WINDOW_SECONDS = 60;
+
+// ต้องเรียกอยู่ภายใน transaction เดียวกับการ INSERT เสมอ — ถ้าตรวจนอก transaction คำขอสองอันที่มา
+// พร้อมกันจะผ่านการตรวจทั้งคู่ก่อนที่อันไหนจะได้เขียน แล้วก็ได้หนังสือสองฉบับเหมือนเดิม
+// (SQLite กันได้เพราะ BEGIN IMMEDIATE บังคับให้ผู้เขียนเข้าคิวทีละราย)
+function findJustRegistered({ direction, title, correspondentName, createdBy }) {
+  const since = new Date(Date.now() - DUPLICATE_REGISTER_WINDOW_SECONDS * 1000).toISOString();
+  return db.prepare(`
+    SELECT id, doc_number_display FROM documents
+    WHERE created_by = :createdBy AND direction = :direction AND title = :title
+      AND correspondent_name IS :correspondentName AND deleted_at IS NULL AND created_at >= :since
+    ORDER BY created_at DESC LIMIT 1
+  `).get({ createdBy, direction, title, correspondentName: correspondentName || null, since });
+}
+
+function assertNotJustRegistered(clean) {
+  const { title } = clean;
+  const recent = findJustRegistered(clean);
+  if (!recent) return;
+  throw httpError(409,
+    `เพิ่งลงทะเบียนเรื่องนี้ไปแล้วเมื่อครู่ เป็นเลขที่ ${recent.doc_number_display} — ถ้ากดพลาดสองครั้ง ไม่ต้องทำอะไรต่อ`,
+    { duplicateOf: recent.id, duplicateDocNumber: recent.doc_number_display,
+      confirmRetry: { field: 'allowDuplicate',
+        message: `เรื่อง "${title}" เพิ่งถูกลงทะเบียนไปแล้วเป็นเลขที่ ${recent.doc_number_display} เมื่อครู่นี้\n\nถ้าเป็นหนังสือคนละฉบับที่บังเอิญชื่อเรื่องเหมือนกัน กด "ตกลง" เพื่อลงทะเบียนเพิ่มอีกฉบับ\nถ้ากดพลาดสองครั้ง กด "ยกเลิก"` } });
+}
+
 export function createDocument(input) {
   const clean = normalizeDocumentInput(input);
   let result;
   db.exec('BEGIN IMMEDIATE');
   try {
+    if (!input.allowDuplicate) assertNotJustRegistered(clean);
     result = insertDocumentRow(clean);
     db.exec('COMMIT');
   } catch (e) {
@@ -137,7 +176,7 @@ export const MAX_BULK_DOCUMENTS = 50;
  * ลงรับหนังสือหลายฉบับรวดเดียว — ตรวจครบทุกฉบับก่อน แล้วออกเลขรับให้ทั้งชุดใน transaction เดียว
  * ถ้าฉบับใดฉบับหนึ่งบันทึกไม่สำเร็จ จะไม่มีฉบับไหนถูกบันทึกเลย และตัวนับเลขรับไม่ขยับ
  */
-export function createDocumentsBulk(items, createdBy) {
+export function createDocumentsBulk(items, createdBy, { allowDuplicate } = {}) {
   if (!Array.isArray(items) || items.length === 0) throw httpError(400, 'ยังไม่ได้กรอกรายการหนังสือที่จะลงรับ');
   if (items.length > MAX_BULK_DOCUMENTS) {
     throw httpError(400, `ลงรับได้ครั้งละไม่เกิน ${MAX_BULK_DOCUMENTS} ฉบับ (ส่งมา ${items.length} ฉบับ) — กรุณาแบ่งเป็นหลายรอบ`);
@@ -153,6 +192,18 @@ export function createDocumentsBulk(items, createdBy) {
   let results;
   db.exec('BEGIN IMMEDIATE');
   try {
+    // กดซ้ำตรงนี้เสียหายกว่าการลงทีละฉบับหลายเท่า — หนึ่งครั้งกินเลขทะเบียนได้ถึง 20 เลข
+    // (ยิงทดสอบแล้วเกิดขึ้นจริง: กดสองทีได้ 6 ฉบับจากที่กรอกไว้ 3) ดูฉบับแรกของชุดเป็นตัวแทน
+    // ถ้าฉบับแรกเพิ่งลงไปเมื่อครู่โดยคนเดียวกัน แปลว่าทั้งชุดนี้เพิ่งถูกส่งไปแล้ว
+    if (!allowDuplicate) {
+      const recent = findJustRegistered(cleaned[0]);
+      if (recent) {
+        throw httpError(409,
+          `เพิ่งลงทะเบียนชุดนี้ไปแล้วเมื่อครู่ (เริ่มที่เลขที่ ${recent.doc_number_display}) — ถ้ากดพลาดสองครั้ง ไม่ต้องทำอะไรต่อ`,
+          { confirmRetry: { field: 'allowDuplicate',
+            message: `ชุดนี้เพิ่งถูกลงทะเบียนไปแล้วเมื่อครู่นี้ เริ่มที่เลขที่ ${recent.doc_number_display}\n\nกด "ตกลง" เพื่อลงทะเบียนซ้ำอีกชุด (จะกินเลขทะเบียนเพิ่มอีก ${cleaned.length} เลข)\nถ้ากดพลาดสองครั้ง กด "ยกเลิก"` } });
+      }
+    }
     results = cleaned.map(insertDocumentRow);
     db.exec('COMMIT');
   } catch (e) {
@@ -380,7 +431,7 @@ export function listBroadcasts(documentId) {
  * ใช้กับหนังสือประชาสัมพันธ์/หนังสือเวียน ซึ่งตามระเบียบงานสารบรรณเป็นเรื่องที่ "แจ้งให้ทราบทั่วกัน"
  * ไม่ใช่เรื่องที่ต้องมอบหมายให้ใครไปดำเนินการแล้วลงนามกลับมา
  */
-export function broadcastDocument({ documentId, note, actorUser }) {
+export function broadcastDocument({ documentId, note, actorUser, allowDuplicate }) {
   note = asTextOrNull(note);
   assertMaxLength(note, MAX_BROADCAST_NOTE, 'ข้อความประชาสัมพันธ์');
   const doc = getDocument(documentId);
@@ -406,6 +457,21 @@ export function broadcastDocument({ documentId, note, actorUser }) {
   const now = nowIso();
   db.exec('BEGIN IMMEDIATE');
   try {
+    // กดซ้ำ = ครูทั้งโรงเรียนได้แจ้งเตือนเรื่องเดียวกันสองรอบ (ยิงทดสอบแล้วเกิดขึ้นจริง 5 คน 2 รอบ)
+    // และตั้งแต่ต่อกับไลน์แล้วก็แปลว่าได้ข้อความเข้าไลน์สองฉบับด้วย — ต้องตรวจในธุรกรรมเดียวกับการเขียน
+    // ไม่งั้นคำขอสองอันที่มาพร้อมกันจะผ่านการตรวจทั้งคู่ (เหตุผลเดียวกับ assertNotJustRegistered)
+    // การประชาสัมพันธ์ซ้ำเพื่อ "ย้ำเตือน" ทีหลังยังทำได้ตามปกติ เพราะพ้นช่วงเวลานี้ไปแล้ว
+    if (!allowDuplicate) {
+      const since = new Date(Date.now() - DUPLICATE_REGISTER_WINDOW_SECONDS * 1000).toISOString();
+      const recent = db.prepare(`
+        SELECT id FROM document_broadcasts WHERE document_id = ? AND sent_by = ? AND created_at >= ? LIMIT 1
+      `).get(doc.id, actorUser.id, since);
+      if (recent) {
+        throw httpError(409, 'เพิ่งประชาสัมพันธ์หนังสือฉบับนี้ไปเมื่อครู่ — ถ้ากดพลาดสองครั้ง ไม่ต้องทำอะไรต่อ',
+          { confirmRetry: { field: 'allowDuplicate',
+            message: 'หนังสือฉบับนี้เพิ่งถูกประชาสัมพันธ์ไปเมื่อครู่นี้\n\nกด "ตกลง" เพื่อส่งซ้ำอีกรอบ (ทุกคนจะได้รับแจ้งเตือนอีกครั้ง)\nถ้ากดพลาดสองครั้ง กด "ยกเลิก"' } });
+      }
+    }
     for (const r of recipients) {
       notifyUser({
         userId: r.id, documentId: doc.id,
