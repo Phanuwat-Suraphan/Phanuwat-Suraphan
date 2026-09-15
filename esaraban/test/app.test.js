@@ -5559,6 +5559,75 @@ describe('แจ้งเตือนเข้าไลน์', () => {
     });
   });
 
+  // ตอนติดตั้งจริงจะเจอ "ตั้งค่าขึ้นเขียวหมดแล้วแต่ส่งรหัสเข้าแชทกลับเงียบ" ซึ่งเป็นอาการเดียวกันเป๊ะของ
+  // สาเหตุที่แก้คนละที่: ยังไม่ได้เปิดสวิตช์ Use webhook (LINE ไม่ส่งมาเลย) กับ Channel secret ไม่ตรง
+  // (ส่งมาแล้วแต่เราปฏิเสธ 401) — ร่องรอยนี้คือสิ่งเดียวที่แยกสองกรณีออกจากกันได้
+  describe('ร่องรอยว่า LINE ยิงอะไรเข้ามาบ้าง (ไว้หาสาเหตุตอนตั้งค่า)', () => {
+    const logRows = () => db.prepare('SELECT kind FROM line_webhook_log ORDER BY received_at DESC, id DESC').all().map((r) => r.kind);
+
+    test('ลายเซ็นไม่ผ่านต้องทิ้งร่องรอยไว้ ไม่ใช่เงียบหายไปเฉยๆ', async () => {
+      reset();
+      db.prepare('DELETE FROM line_webhook_log').run();
+      const payload = { events: [] };
+      const raw = Buffer.from(JSON.stringify(payload), 'utf8');
+      const res = await dispatchPost(null, '/line/webhook', payload, { rawBody: raw, reqHeaders: { 'x-line-signature': 'ลายเซ็นมั่วๆ' } });
+      assert.equal(res.status, 401);
+      assert.deepEqual(logRows(), ['signature_failed'],
+        'ปฏิเสธเพราะลายเซ็นไม่ตรงแล้วไม่บันทึกอะไรไว้ = ผู้ดูแลแยกไม่ออกว่า LINE ส่งมาไหม');
+    });
+
+    test('แยกได้ว่าเป็นรหัสผิด รหัสหมดอายุ หรือเชื่อมสำเร็จ', async () => {
+      reset();
+      db.prepare('DELETE FROM line_webhook_log').run();
+      const target = seed.userIds.teacher001;
+      db.prepare('UPDATE users SET line_user_id = NULL WHERE id = ?').run(target);
+
+      const send = async (text) => {
+        const payload = { events: [{ type: 'message', message: { type: 'text', text }, source: { userId: 'U-คนเดิม' }, replyToken: 'rt' }] };
+        const raw = Buffer.from(JSON.stringify(payload), 'utf8');
+        const sig = createHmac('sha256', SECRET).update(raw).digest('base64');
+        return dispatchPost(null, '/line/webhook', payload, { rawBody: raw, reqHeaders: { 'x-line-signature': sig } });
+      };
+
+      await send(`${ln.LINK_KEYWORD} ZZZZZZZZ`);
+      const expiring = ln.createLinkCode(target).code;
+      db.prepare('UPDATE users SET line_link_code_expires_at = ? WHERE id = ?')
+        .run(new Date(Date.now() - 60000).toISOString(), target);
+      await send(`${ln.LINK_KEYWORD} ${expiring}`);
+      await send(`${ln.LINK_KEYWORD} ${ln.createLinkCode(target).code}`);
+
+      assert.deepEqual(logRows(), ['link_ok', 'link_expired', 'link_invalid'],
+        'สามกรณีนี้ต้องแยกออกจากกันได้ ไม่งั้นบอกครูไม่ได้ว่าให้ขอรหัสใหม่หรือให้พิมพ์ใหม่');
+    });
+
+    // ตารางนี้อยู่บนเครื่องที่ดิสก์เล็ก และโตตามจำนวนข้อความที่ครูส่งเข้ามา ไม่ใช่ตามจำนวนหนังสือ
+    test('เก็บแค่ 50 รายการล่าสุด ไม่โตไปเรื่อยๆ', () => {
+      db.prepare('DELETE FROM line_webhook_log').run();
+      for (let i = 0; i < 55; i += 1) ln.recordLineWebhook('no_code');
+      assert.equal(db.prepare('SELECT COUNT(*) c FROM line_webhook_log').get().c, 50);
+    });
+
+    // ผู้ดูแลระบบเปิดหน้านี้ได้ แต่แชทของครูไม่ใช่ของผู้ดูแล — และรหัสเชื่อมบัญชีที่ค้างอยู่ในบันทึก
+    // เท่ากับผู้ดูแลผูกบัญชีไลน์ตัวเองเข้ากับบัญชีครูคนไหนก็ได้โดยเจ้าตัวไม่รู้ (เหตุผลเดียวกับที่ไม่เก็บลง audit log)
+    test('ต้องไม่เก็บเนื้อข้อความที่ครูพิมพ์ และไม่เก็บรหัสเชื่อมบัญชี', async () => {
+      reset();
+      db.prepare('DELETE FROM line_webhook_log').run();
+      const target = seed.userIds.teacher001;
+      db.prepare('UPDATE users SET line_user_id = NULL WHERE id = ?').run(target);
+      const { code } = ln.createLinkCode(target);
+      const secretish = 'เรื่องส่วนตัวที่ครูพิมพ์มา';
+      const payload = { events: [{ type: 'message', message: { type: 'text', text: `${ln.LINK_KEYWORD} ${code} ${secretish}` }, source: { userId: 'U-ครู' }, replyToken: 'rt' }] };
+      const raw = Buffer.from(JSON.stringify(payload), 'utf8');
+      const sig = createHmac('sha256', SECRET).update(raw).digest('base64');
+      await dispatchPost(null, '/line/webhook', payload, { rawBody: raw, reqHeaders: { 'x-line-signature': sig } });
+
+      const dump = JSON.stringify(db.prepare('SELECT * FROM line_webhook_log').all());
+      assert.ok(!dump.includes(secretish), 'เนื้อข้อความที่ครูพิมพ์หลุดเข้าไปในบันทึกที่ผู้ดูแลอ่านได้');
+      assert.ok(!dump.includes(code), 'รหัสเชื่อมบัญชีหลุดเข้าไปในบันทึก');
+      assert.ok(!dump.includes('U-ครู'), 'รหัสผู้ใช้ฝั่งไลน์หลุดเข้าไปในบันทึก');
+    });
+  });
+
   describe('รหัสเชื่อมบัญชี', () => {
     test('รหัสใช้ได้ครั้งเดียว แล้วต้องใช้ซ้ำไม่ได้อีก', () => {
       const target = seed.userIds.teacher001;

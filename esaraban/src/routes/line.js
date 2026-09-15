@@ -1,6 +1,6 @@
 // เส้นทางที่เกี่ยวกับ LINE — ตัวรับ webhook, การเชื่อมบัญชีของแต่ละคน และหน้าตั้งค่าของผู้ดูแล
 import { router, html, json, redirect } from '../router.js';
-import { layout, esc } from '../render.js';
+import { layout, esc, fmtDate } from '../render.js';
 import { requireApi, requireRole, requirePage } from '../middleware.js';
 import { audit } from '../db.js';
 import { safeNextPath } from '../services/validate.js';
@@ -8,6 +8,7 @@ import {
   verifyLineSignature, handleLineEvents, isLineWebhookConfigured, isLineNotifyConfigured,
   createLinkCode, unlinkLineAccount, setLineNotifyEnabled, lineNotifyStatus,
   flushLineOutbox, LINK_KEYWORD, liffId, linkLineAccountByIdToken,
+  recordLineWebhook, recentLineWebhooks,
 } from '../services/lineNotify.js';
 
 // ───────────────────────────── ตัวรับ webhook จาก LINE ─────────────────────────────
@@ -26,6 +27,10 @@ router.post('/line/webhook', async (ctx) => {
   }
   const signature = ctx.req.headers['x-line-signature'];
   if (!verifyLineSignature(ctx.rawBody, signature)) {
+    // จุดนี้สำคัญที่สุดที่ต้องบันทึกไว้ — เป็นอาการของ "ออก Channel secret ใหม่แล้วลืมเอาไปแก้บนเซิร์ฟเวอร์"
+    // ซึ่งจากฝั่งผู้ใช้เห็นเป็นแค่ "ส่งรหัสไปแล้วเงียบ" เหมือนกับตอนที่ยังไม่ได้เปิดสวิตช์ Use webhook เป๊ะๆ
+    // ทั้งที่แก้คนละที่กัน ถ้าไม่บันทึกไว้ก็แยกสองกรณีนี้ออกจากกันไม่ได้เลย
+    recordLineWebhook('signature_failed', signature ? null : 'ไม่มีหัว x-line-signature มาด้วย');
     return json(ctx, 401, { error: 'ลายเซ็นไม่ถูกต้อง' });
   }
   // ตอบ 200 ก่อน แล้วค่อยทำงานต่อ — งานที่เหลือมีการยิงข้อความตอบกลับไปหา LINE ซึ่งใช้เวลาข้ามเน็ต
@@ -151,8 +156,68 @@ function statusRow(label, ok, detail) {
   </tr>`;
 }
 
+// คำอธิบายของแต่ละร่องรอย — เขียนเป็นภาษาที่คนตั้งค่าอ่านแล้วรู้ว่า "ต้องไปแก้ที่ไหน" ไม่ใช่ชื่อทางเทคนิค
+const WEBHOOK_KIND_LABEL = {
+  signature_failed: { text: 'ลายเซ็นไม่ตรง — ปฏิเสธไป', cls: 'badge-danger',
+    hint: 'ค่า <code>LINE_CHANNEL_SECRET</code> บนเซิร์ฟเวอร์ไม่ตรงกับ Channel secret ที่อยู่ใน LINE Developers ตอนนี้ (เจอบ่อยที่สุดคือกด Issue ออกค่าใหม่แล้วลืมเอามาแก้) — คัดลอกค่าปัจจุบันมาตั้งใหม่แล้ว restart' },
+  follow: { text: 'มีคนเพิ่มเพื่อน', cls: 'badge-info', hint: 'เพิ่มเพื่อนแล้วยังไม่ได้เชื่อมบัญชี ต้องส่งรหัสเข้ามาอีกทีถึงจะได้รับแจ้งเตือน' },
+  unfollow: { text: 'มีคนบล็อก/ลบบัญชีทางการ', cls: 'badge-muted', hint: '' },
+  link_ok: { text: 'เชื่อมบัญชีสำเร็จ', cls: 'badge-success', hint: '' },
+  link_expired: { text: 'รหัสหมดอายุ', cls: 'badge-warning', hint: 'รหัสมีอายุ 30 นาที — ให้เจ้าตัวกดขอรหัสใหม่ที่หน้าโปรไฟล์ของฉันแล้วส่งภายในเวลานั้น' },
+  link_invalid: { text: 'ไม่พบรหัสนี้', cls: 'badge-warning', hint: 'พิมพ์ผิด หรือรหัสถูกใช้ไปแล้ว — ให้กดขอรหัสใหม่ (ตัวอักษรในรหัสไม่มี I, L, O, 0, 1 เพื่อกันอ่านสลับ)' },
+  no_code: { text: 'ข้อความทั่วไป (ไม่มีรหัส)', cls: 'badge-muted', hint: '' },
+  ignored: { text: 'ข้อความที่ไม่ใช่ตัวหนังสือ', cls: 'badge-muted', hint: '' },
+  error: { text: 'เกิดข้อผิดพลาด', cls: 'badge-danger', hint: '' },
+};
+
+// การ์ด "LINE ติดต่อเข้ามาหรือยัง" — ตอบคำถามที่หน้าสถานะด้านบนตอบไม่ได้
+//
+// หน้าสถานะบอกได้แค่ว่า "เราตั้งค่าครบแล้วหรือยัง" ซึ่งขึ้นเขียวตั้งแต่ตั้งตัวแปรเสร็จ ไม่ได้แปลว่า LINE
+// ยิงเข้ามาถึงเครื่องเราได้จริง สองอย่างนี้ต่างกันมาก และตอนติดตั้งจริงคนตั้งค่าจะติดตรงช่องว่างนี้เสมอ:
+// เขียวหมดทุกบรรทัดแล้วแต่ส่งรหัสเข้าแชทกลับเงียบ แล้วไม่รู้จะไปดูที่ไหนต่อ
+function webhookLogCard(hooks, s) {
+  if (!s.webhookReady) return '';
+  const body = hooks.length ? `
+    <table class="table-plain">
+      ${hooks.map((h) => {
+        const k = WEBHOOK_KIND_LABEL[h.kind] || { text: h.kind, cls: 'badge-muted', hint: '' };
+        return `<tr>
+          <td class="text-muted" style="white-space:nowrap;font-size:.85rem">${esc(fmtDate(h.received_at))}</td>
+          <td><span class="badge ${k.cls}">${esc(k.text)}</span>
+            ${k.hint ? `<div class="text-muted" style="font-size:.82rem;margin-top:.2rem">${k.hint}</div>` : ''}
+            ${h.detail ? `<div class="text-muted" style="font-size:.8rem">${esc(h.detail)}</div>` : ''}</td>
+        </tr>`;
+      }).join('')}
+    </table>
+    <p class="text-muted" style="font-size:.82rem;margin-bottom:0">
+      เก็บไว้ 50 รายการล่าสุดเท่านั้น และไม่เก็บเนื้อข้อความที่ครูพิมพ์เข้ามา
+    </p>`
+    : `
+    <div class="alert alert-warning" style="margin-bottom:.8rem">
+      <strong>ยังไม่เคยมีอะไรยิงเข้ามาจาก LINE เลย</strong> — แปลว่าข้อความที่ส่งเข้าแชทยังมาไม่ถึงเซิร์ฟเวอร์นี้
+      การตั้งค่าด้านบนขึ้นเขียวหมายถึงเราพร้อมรับแล้วเท่านั้น ไม่ได้แปลว่า LINE รู้ว่าต้องส่งมาที่ไหน
+    </div>
+    <p style="margin-top:0">ไล่ตามลำดับนี้ที่ <code>developers.line.biz</code> → แท็บ Messaging API:</p>
+    <ol style="line-height:2;padding-left:1.2rem;margin-bottom:0">
+      <li>ช่อง <strong>Webhook URL</strong> ต้องเป็นที่อยู่ในกรอบถัดไปข้างล่าง และต้อง<strong>กด Update/Save</strong> แล้วจริงๆ</li>
+      <li>สวิตช์ <strong>Use webhook</strong> ต้องเปิดอยู่ (เป็นคนละอย่างกับการกรอก URL — กรอกแล้วแต่ไม่เปิดสวิตช์คือไม่ส่งมา)</li>
+      <li>กดปุ่ม <strong>Verify</strong> ข้างช่อง Webhook URL — ถ้าขึ้น Success แล้วกลับมาที่หน้านี้จะเห็นรายการโผล่ขึ้นมาทันที</li>
+      <li>ถ้า Verify ไม่ผ่าน ให้เปิดเว็บระบบสารบรรณในเบราว์เซอร์ก่อนสัก 1 ครั้งแล้วลองใหม่
+        <div class="text-muted" style="font-size:.82rem">เซิร์ฟเวอร์แบบฟรีจะหลับเองเมื่อไม่มีคนใช้ ปลุกให้ตื่นแล้วค่อย Verify</div></li>
+    </ol>`;
+  return `<div class="card">
+    <h3 class="mt-0">📡 LINE ติดต่อเข้ามาหรือยัง</h3>
+    <p class="text-muted" style="font-size:.88rem;margin-top:-.3rem">
+      ใช้ตอบคำถามว่า "ส่งรหัสเชื่อมบัญชีไปแล้วทำไมเงียบ" — ถ้ามีรายการขึ้นที่นี่แปลว่าข้อความมาถึงเราแล้ว
+      ปัญหาอยู่หลังจากนั้น ถ้าไม่มีอะไรเลยแปลว่ายังมาไม่ถึง ต้องไปแก้ที่ฝั่ง LINE
+    </p>
+    ${body}
+  </div>`;
+}
+
 router.get('/admin/line', ADMIN_ONLY(requirePage((ctx) => {
   const s = lineNotifyStatus();
+  const hooks = recentLineWebhooks(15);
   const webhookUrl = `${ctx.req.headers['x-forwarded-proto'] || 'https'}://${ctx.req.headers.host || 'ชื่อเว็บของโรงเรียน'}/line/webhook`;
   const content = `
     <h2>💬 แจ้งเตือนเข้าไลน์</h2>
@@ -176,6 +241,8 @@ router.get('/admin/line', ADMIN_ONLY(requirePage((ctx) => {
         <button class="btn btn-outline btn-sm" onclick="flushLineQueue(this)">📤 ส่งคิวที่ค้างเดี๋ยวนี้</button>
       </div>` : ''}
     </div>
+
+    ${webhookLogCard(hooks, s)}
 
     <div class="card">
       <h3 class="mt-0">ที่อยู่ Webhook ที่ต้องกรอกใน LINE Developers</h3>

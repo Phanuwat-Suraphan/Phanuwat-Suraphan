@@ -304,6 +304,37 @@ function replyToLine(replyToken, text) {
   return sender('/message/reply', { replyToken, messages: [{ type: 'text', text }] });
 }
 
+// ──────────────────────── บันทึกร่องรอยว่ามีอะไรยิงเข้ามาจาก LINE บ้าง ────────────────────────
+//
+// เก็บไว้เท่าที่จำเป็นต่อการหาสาเหตุเท่านั้น: เกิดอะไรขึ้น กับเมื่อไหร่ — ไม่เก็บเนื้อข้อความที่ครูพิมพ์
+// และไม่เก็บ userId ฝั่งไลน์ เพราะหน้านี้ผู้ดูแลระบบเปิดดูได้ แต่แชทของครูไม่ใช่ของผู้ดูแล
+// (รหัสเชื่อมบัญชีก็ห้ามเก็บด้วยเหตุผลเดียวกับที่ไม่เก็บลงใน audit log — ดู routes/line.js)
+const WEBHOOK_LOG_KEEP = 50;
+
+export function recordLineWebhook(kind, detail = null) {
+  try {
+    db.prepare('INSERT INTO line_webhook_log (id, received_at, kind, detail) VALUES (?, ?, ?, ?)')
+      .run(uuid(), nowIso(), String(kind), detail ? String(detail).slice(0, 200) : null);
+    // ตัดของเก่าทิ้งทุกครั้งที่เขียน — ตารางนี้มีไว้ตอบคำถาม "เมื่อกี้เกิดอะไรขึ้น" ไม่ใช่เก็บเป็นประวัติ
+    // และเครื่องที่รันอยู่เป็นดิสก์เล็กๆ จึงไม่ปล่อยให้โตไปเรื่อยๆ ตามจำนวนข้อความที่ครูส่งเข้ามา
+    db.prepare(`
+      DELETE FROM line_webhook_log WHERE id NOT IN (
+        SELECT id FROM line_webhook_log ORDER BY received_at DESC, id DESC LIMIT ?
+      )`).run(WEBHOOK_LOG_KEEP);
+  } catch (err) {
+    // บันทึกไม่ได้ต้องไม่ทำให้ webhook พัง — ตารางนี้เป็นเครื่องมือช่วยหาสาเหตุ ไม่ใช่ทางเดินหลัก
+    console.error('[line] บันทึกร่องรอย webhook ไม่สำเร็จ:', err?.message || err);
+  }
+}
+
+/** ร่องรอยล่าสุด ใหม่ก่อน — สำหรับหน้า /admin/line */
+export function recentLineWebhooks(limit = 15) {
+  try {
+    return db.prepare('SELECT received_at, kind, detail FROM line_webhook_log ORDER BY received_at DESC, id DESC LIMIT ?')
+      .all(Math.max(1, Math.min(WEBHOOK_LOG_KEEP, Number(limit) || 15)));
+  } catch { return []; }
+}
+
 // หารหัสในข้อความที่ครูส่งเข้ามา — รับทั้งแบบมีคำนำหน้า ("เชื่อมบัญชี ABCD2345") และแบบพิมพ์รหัส
 // มาเปล่าๆ เพราะคนที่พิมพ์เองมักลืมคำนำหน้า แล้วจะงงว่าทำไมไม่ติด
 function extractCode(text) {
@@ -330,21 +361,25 @@ export async function handleLineEvents(events) {
         // และเจ้าตัวจะเข้าใจว่ายังได้รับแจ้งเตือนอยู่
         const u = lineUserId ? db.prepare('SELECT id FROM users WHERE line_user_id = ?').get(lineUserId) : null;
         if (u) unlinkLineAccount(u.id);
+        recordLineWebhook('unfollow', u ? 'ปลดการเชื่อมบัญชีให้แล้ว' : null);
         outcomes.push({ type: 'unfollow', unlinked: Boolean(u) });
         continue;
       }
       if (ev?.type === 'follow') {
         await replyToLine(ev.replyToken, HELP_TEXT);
+        recordLineWebhook('follow');
         outcomes.push({ type: 'follow' });
         continue;
       }
       if (ev?.type !== 'message' || ev?.message?.type !== 'text') {
+        recordLineWebhook('ignored', ev?.type ? `ชนิด ${ev.type}` : null);
         outcomes.push({ type: 'ignored' });
         continue;
       }
       const code = extractCode(ev.message.text);
       if (!code) {
         await replyToLine(ev.replyToken, HELP_TEXT);
+        recordLineWebhook('no_code');
         outcomes.push({ type: 'help' });
         continue;
       }
@@ -357,9 +392,11 @@ export async function handleLineEvents(events) {
           ? '⌛ รหัสนี้หมดอายุแล้ว กรุณาขอรหัสใหม่ที่หน้าโปรไฟล์ของฉันในระบบสารบรรณ'
           : '❌ ไม่พบรหัสนี้ในระบบ กรุณาตรวจตัวอักษรอีกครั้ง หรือขอรหัสใหม่ที่หน้าโปรไฟล์ของฉัน');
       }
+      recordLineWebhook(res.ok ? 'link_ok' : res.reason === 'expired' ? 'link_expired' : 'link_invalid');
       outcomes.push({ type: 'link', ok: res.ok, reason: res.reason });
     } catch (err) {
       console.error('[line] จัดการเหตุการณ์จาก LINE ไม่สำเร็จ:', err?.message || err);
+      recordLineWebhook('error', err?.message || String(err));
       outcomes.push({ type: 'error' });
     }
   }
