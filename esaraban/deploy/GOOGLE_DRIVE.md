@@ -94,7 +94,7 @@
 | **User support email** | อีเมล Gmail ของบัญชีที่ใช้เก็บไฟล์ (เลือกจาก dropdown ได้) |
 | **Application home page** | `https://<โดเมนเว็บของคุณ>/` |
 | **Privacy policy link** | `https://<โดเมนเว็บของคุณ>/privacy` |
-| **Authorized domains** | โดเมนของเว็บ เช่น `onrender.com` |
+| **Authorized domains** | โดเมนของเว็บ**ทั้งก้อน** เช่น `ชื่อบริการของคุณ.onrender.com` — ห้ามใส่แค่ `onrender.com` เพราะ Google ต้องการ "top private domain" และโดเมนที่ผู้ให้บริการแจกจ่ายให้คนทั่วไป (onrender.com, github.io) ไม่นับ จะตอบว่า `must be a top private domain` |
 
 ระบบมีหน้านโยบายความเป็นส่วนตัวเตรียมไว้ให้แล้วที่ `/privacy` (ดู `src/routes/privacy.js`) —
 เป็น**หน้าสาธารณะ เปิดดูได้โดยไม่ต้องล็อกอิน** เพราะ Google จะเข้ามาตรวจเอง ถ้าหน้านี้ต้องล็อกอิน
