@@ -1,5 +1,12 @@
 # ระบบสารบรรณอิเล็กทรอนิกส์สำหรับโรงเรียน — MVP Prototype
 
+> 📘 **ผู้ดูแลระบบของโรงเรียน อ่าน [`deploy/คู่มือผู้ดูแลระบบ.md`](./deploy/%E0%B8%84%E0%B8%B9%E0%B9%88%E0%B8%A1%E0%B8%B7%E0%B8%AD%E0%B8%9C%E0%B8%B9%E0%B9%89%E0%B8%94%E0%B8%B9%E0%B9%81%E0%B8%A5%E0%B8%A3%E0%B8%B0%E0%B8%9A%E0%B8%9A.md) เป็นหลัก**
+> — ภาษาไทย ครอบคลุมตัวแปรตั้งค่าทั้งหมด งานประจำที่ต้องทำ และวิธีแก้ปัญหาที่เจอจริงตอนติดตั้งใช้งาน
+>
+> **ระบบนี้ไม่ต้องพึ่งเครื่องมือ AI หรือบริการของผู้พัฒนาใดๆ** — ไม่มี npm dependency แม้แต่ตัวเดียว
+> (`"dependencies": {}`) และต่อออกอินเทอร์เน็ตไปแค่ LINE กับ Google ซึ่งเป็นบัญชีของโรงเรียนเอง
+> ก๊อปโฟลเดอร์นี้ไปรันบนเครื่องที่มี Node 22 ที่ไหนก็ได้ ได้ระบบเดิมทั้งชุด
+
 > **ติดตั้งให้โรงเรียนใหม่:** ชื่อโรงเรียนไม่ได้ฝังอยู่ในโค้ด — เข้าเมนู **🏫 ตั้งค่าโรงเรียน**
 > ด้วยบัญชีแอดมินแล้วพิมพ์ชื่อได้เลย (หรือตั้ง env var `SCHOOL_NAME` ไว้ตอน deploy ครั้งแรก)
 > ชื่อนี้จะไปขึ้นบนหัวหนังสือ ตราประทับใน PDF แบบฟอร์มใบลา และชื่อแอปบนหน้าจอมือถือให้เองทั้งหมด
@@ -31,11 +38,14 @@ route handlers here map cleanly to REST endpoints, and the SQL schema maps to a 
 
 ## Deploying
 
-- **Quick demo link, no setup**: [`deploy/RENDER.md`](./deploy/RENDER.md) — free, ~2 minutes,
-  but data doesn't persist (fine for showing someone the UI, not for real use) — *unless* you also
-  set up [`deploy/GOOGLE_DRIVE.md`](./deploy/GOOGLE_DRIVE.md) (free 15GB), which moves file storage
-  off Render's ephemeral disk. The SQLite database itself still resets on Render, though — full
-  persistence still needs a VPS.
+- **Quick demo link, no setup**: [`deploy/RENDER.md`](./deploy/RENDER.md) — free, ~2 minutes.
+  Render's free tier has an ephemeral disk, so **everything is wiped on every deploy and on every
+  wake-from-sleep** (it sleeps after ~15 min idle, so this happens several times a day on its own).
+  Connecting [`deploy/GOOGLE_DRIVE.md`](./deploy/GOOGLE_DRIVE.md) (free 15GB) fixes this for real:
+  attachments move off the ephemeral disk, *and* the SQLite database is backed up every 5 minutes
+  (plus on shutdown) and **restored automatically on the next boot** — so a wipe costs at most the
+  last few minutes. Without Drive connected, Render free is a demo link only, not a place for real
+  documents. A VPS with a real disk (below) avoids the whole problem.
 - **Real deployment**: [`DEPLOY.md`](./DEPLOY.md) — cloud VPS runbook (Ubuntu + systemd + Nginx +
   Let's Encrypt, matching the Part 10 deployment architecture from the spec), with a free-forever
   option at [`deploy/ORACLE_CLOUD.md`](./deploy/ORACLE_CLOUD.md). `deploy/` also has ready-to-use
