@@ -2,6 +2,7 @@ import { router, html } from '../router.js';
 import { layout, esc, fmtDate, statusBadge, priorityBadge, illustratedEmptyState, daysUntil, dueCell, bangkokHour, rowAttrs, rowLink } from '../render.js';
 import { requirePage } from '../middleware.js';
 import { db, todayInBangkok } from '../db.js';
+import { setupChecklist } from '../services/setupChecklist.js';
 import { canUserSeeDocument, visibleDocumentsSqlFilter } from '../services/workflow.js';
 import { getBackupStatus } from '../services/dbBackup.js';
 import { appShortName } from '../services/settings.js';
@@ -204,10 +205,30 @@ router.get('/', requirePage((ctx) => {
       </ul>
     </div>` : '';
 
+  // รายการตั้งค่าที่ยังไม่เสร็จ — เฉพาะแอดมิน เพราะเป็นคนเดียวที่กดทำได้จริง และหายไปเองเมื่อครบทุกข้อ
+  const checklist = user.roleCodes.includes('admin') ? setupChecklist() : null;
+  const checklistHtml = !checklist || !checklist.items.length ? '' : `
+    <div class="card" style="border-color:${checklist.blocking ? 'var(--danger)' : 'var(--primary)'}">
+      <h3 class="mt-0">${checklist.blocking ? '🚧 ยังตั้งค่าไม่ครบ — ยังไม่ควรเอาหนังสือจริงเข้าระบบ' : '📋 ตั้งค่าเพิ่มเติมที่แนะนำ'}</h3>
+      ${checklist.blocking ? `<p class="text-muted" style="font-size:.88rem;margin-top:-.3rem">
+        มี ${checklist.blocking} ข้อที่ถ้าไม่ทำ ข้อมูลอาจหายทั้งหมด หรือใครก็เข้าเป็นใครก็ได้
+      </p>` : ''}
+      <ol style="line-height:1.7;padding-left:1.2rem;margin-bottom:0">
+        ${checklist.items.map((i) => `<li style="margin-bottom:.7rem">
+          <strong>${i.blocking ? '⚠️ ' : ''}${esc(i.title)}</strong>
+          <div class="text-muted" style="font-size:.85rem">${esc(i.detail)}</div>
+          <div style="font-size:.85rem;margin-top:.2rem">${i.href
+            ? `<a href="${esc(i.href)}">${esc(i.action)} →</a>`
+            : esc(i.action)}</div>
+        </li>`).join('')}
+      </ol>
+    </div>`;
+
   const greeting = timeGreeting();
   const content = `
     ${backupAlert}
     ${stampAlert}
+    ${checklistHtml}
     ${ctx.query.warn ? `<div class="alert alert-warning">⚠️ ${esc(ctx.query.warn)}</div>` : ''}
     <div id="installHint" class="card" hidden style="border-color:var(--primary)">
       <div class="card-header">

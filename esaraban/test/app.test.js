@@ -6852,6 +6852,45 @@ describe('ป้ายชื่อช่องกรอกต้องกดแ�
   });
 });
 
+// ตอนติดตั้งจริงมีเรื่องต้องตั้งค่าหลายอย่างกระจายคนละหน้า และไม่มีอะไรบอกว่าเหลืออะไร หรือตอนนี้
+// ปลอดภัยพอจะเอาหนังสือจริงเข้าหรือยัง — ที่เจ็บที่สุดคือลืมปิดโหมดทดสอบ และไม่รู้ว่าข้อมูลยังไม่มีที่สำรอง
+const checklistMod = await import('../src/services/setupChecklist.js');
+describe('รายการตั้งค่าก่อนเปิดใช้งานจริง', () => {
+  test('แยกข้อที่ "ห้ามข้าม" ออกจากข้อที่ "ทำแล้วดีขึ้น"', () => {
+    const res = checklistMod.setupChecklist();
+    const keys = res.items.map((i) => i.key);
+    // เครื่องที่รันเทสต์: ไม่ได้เปิดโหมดทดสอบ, ไม่ได้ต่อ Drive, ดิสก์ปกติ
+    assert.ok(keys.includes('backup'), 'ยังไม่ได้ต่อที่สำรองข้อมูล ต้องขึ้นในรายการ');
+    assert.ok(keys.includes('line'), 'ยังไม่ได้ต่อไลน์ ต้องขึ้นในรายการ');
+    const line = res.items.find((i) => i.key === 'line');
+    assert.equal(line.blocking, false, 'ไลน์ไม่ใช่ข้อบังคับ ไม่ควรกันไม่ให้เริ่มใช้งาน');
+    const backup = res.items.find((i) => i.key === 'backup');
+    assert.equal(backup.blocking, false, 'ดิสก์ปกติ การไม่มีสำรองเป็นความเสี่ยง ไม่ใช่ความแน่นอน');
+    assert.equal(res.readyForRealUse, true, 'ไม่มีข้อที่ทำให้ข้อมูลหายเหลืออยู่ ต้องถือว่าพร้อมใช้');
+  });
+
+  // ทุกข้อต้องบอกให้ครบว่า "เกิดอะไรขึ้นถ้าไม่ทำ" และ "ต้องไปทำที่ไหน" ไม่งั้นก็เป็นแค่รายการที่อ่านแล้ว
+  // ไม่รู้จะเริ่มยังไง ซึ่งไม่ได้ช่วยอะไรเลย
+  test('ทุกข้อต้องมีทั้งเหตุผลและทางไปทำต่อ', () => {
+    for (const item of checklistMod.setupChecklist().items) {
+      assert.ok(item.title && item.detail && item.action, `ข้อ ${item.key} ข้อมูลไม่ครบ`);
+      assert.equal(typeof item.blocking, 'boolean', `ข้อ ${item.key} ไม่ได้ระบุว่าห้ามข้ามหรือไม่`);
+    }
+  });
+
+  test('หน้าแรกของครูทั่วไปต้องไม่มีรายการนี้', async () => {
+    const teacher = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/');
+    assert.ok(!/ยังตั้งค่าไม่ครบ|ตั้งค่าเพิ่มเติมที่แนะนำ/.test(teacher.body),
+      'ครูเห็นแล้วกดทำอะไรไม่ได้ มีแต่ทำให้ตกใจและกลายเป็นเสียงรบกวน');
+  });
+
+  test('หน้าแรกของแอดมินต้องขึ้นรายการพร้อมลิงก์ไปหน้าที่ต้องไปตั้ง', async () => {
+    const admin = await dispatchGet(adminUser, '/');
+    assert.match(admin.body, /ตั้งค่าเพิ่มเติมที่แนะนำ|ยังตั้งค่าไม่ครบ/);
+    assert.match(admin.body, /href="\/admin\/google-drive"/, 'ต้องมีลิงก์ไปหน้าที่ต้องไปทำจริง');
+  });
+});
+
 const reg = await import('../src/services/registration.js');
 describe('ลงทะเบียนเอง + ผู้ดูแลอนุมัติ', () => {
   const rolesByName = (name) => db.prepare('SELECT id FROM roles WHERE name = ?').get(name).id;
