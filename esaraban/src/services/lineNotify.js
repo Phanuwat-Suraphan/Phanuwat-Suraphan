@@ -16,6 +16,9 @@
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 import { db, uuid, nowIso, audit } from '../db.js';
 import { absoluteUrl } from './publicUrl.js';
+// esc มาจาก render.js ซึ่งไม่ได้ import ไฟล์นี้กลับ จึงไม่เกิดวงวน — ใช้เพราะข้อความอธิบายผลการตรวจ
+// มีค่าที่ LINE ส่งกลับมาปนอยู่ (URL ที่ LINE ถืออยู่, เหตุผลที่ยิงไม่สำเร็จ) ซึ่งเป็นข้อมูลจากนอกระบบ
+import { esc } from '../render.js';
 
 const LINE_API = 'https://api.line.me/v2/bot';
 
@@ -62,6 +65,33 @@ async function httpPostToLine(pathname, payload) {
 let sender = httpPostToLine;
 /** สำหรับเทสต์เท่านั้น — สลับตัวส่งจริงออก แล้วคืนค่าเดิมด้วยการเรียกโดยไม่ส่งอะไรมา */
 export function _setLineSenderForTest(fn) { sender = fn || httpPostToLine; }
+
+// ตัวเรียก API ที่ "อ่านคำตอบกลับมาด้วย" — ต่างจาก sender ข้างบนที่สนใจแค่ส่งผ่านหรือไม่ผ่าน
+// เพราะหน้าตรวจสอบการตั้งค่าต้องใช้เนื้อคำตอบจริง (LINE ถือ URL อะไรอยู่, สวิตช์เปิดไหม, บัญชีอยู่โหมดไหน)
+async function httpCallLine(method, pathname, payload) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 10000);
+  try {
+    const res = await fetch(`${LINE_API}${pathname}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${lineAccessToken()}` },
+      body: payload === undefined ? undefined : JSON.stringify(payload),
+      signal: ac.signal,
+    });
+    const text = await res.text().catch(() => '');
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+    return { ok: res.ok, status: res.status, data, error: res.ok ? null : `LINE ตอบ ${res.status}: ${text.slice(0, 200)}` };
+  } catch (err) {
+    return { ok: false, status: 0, data: null, error: `ติดต่อ LINE ไม่ได้: ${err?.message || err}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+let apiCaller = httpCallLine;
+/** สำหรับเทสต์เท่านั้น */
+export function _setLineApiCallerForTest(fn) { apiCaller = fn || httpCallLine; }
 
 // ───────────────────────────────── เชื่อมบัญชี ─────────────────────────────────
 
@@ -249,8 +279,112 @@ export function explainLineSendError(res) {
     return 'LINE บอกว่าไม่รู้จักผู้รับคนนี้ (400) — มักเกิดเมื่อ LINE Login channel กับ Messaging API channel อยู่คนละ provider ทำให้รหัสผู้ใช้ที่เก็บไว้เป็นคนละตัวกัน ให้ยกเลิกการเชื่อมแล้วเชื่อมใหม่';
   }
   if (status === 429) return 'ส่งถี่เกินโควตาของ LINE ชั่วคราว (429) — รอสักครู่แล้วลองใหม่';
-  if (status === 0) return `ติดต่อเซิร์ฟเวอร์ของ LINE ไม่ได้ — ${raw || 'เครือข่ายมีปัญหา'}`;
-  return raw || 'ส่งไม่สำเร็จโดยไม่ทราบสาเหตุ';
+  // raw คือเนื้อคำตอบดิบจาก LINE ซึ่งไปโผล่ใน innerHTML ของหน้าผู้ดูแล จึงต้อง escape ก่อนเสมอ
+  if (status === 0) return `ติดต่อเซิร์ฟเวอร์ของ LINE ไม่ได้ — ${esc(raw || 'เครือข่ายมีปัญหา')}`;
+  return raw ? esc(raw) : 'ส่งไม่สำเร็จโดยไม่ทราบสาเหตุ';
+}
+
+// ─────────────────── ถาม LINE ตรงๆ ว่าตอนนี้การตั้งค่าฝั่งโน้นเป็นยังไง ───────────────────
+//
+// ที่ผ่านมาการหาสาเหตุ "ส่งรหัสเข้าแชทแล้วเงียบ" ต้องเดาเอาทั้งหมด เพราะเรามองเห็นแค่ฝั่งเราเอง
+// ว่า "ไม่มีอะไรวิ่งเข้ามา" แต่ไม่รู้ว่าฝั่ง LINE ตั้งค่าไว้ยังไง ซึ่งเป็นด้านที่พังจริงเกือบทุกครั้ง
+//
+// แต่ LINE มี API ให้ถามได้ด้วย Channel access token ตัวเดียวกับที่ใช้ส่งข้อความ (ซึ่งตั้งไว้แล้ว):
+//   GET  /v2/bot/info                 → บัญชีนี้อยู่โหมดไหน (chatMode = 'chat' คือโหมดตอบกลับอัตโนมัติ
+//                                       ซึ่ง LINE จะไม่ส่ง webhook มาเลย — เป็นสาเหตุที่เจอบ่อยที่สุด
+//                                       และมองไม่เห็นจากฝั่งเราเด็ดขาด)
+//   GET  /v2/bot/channel/webhook/endpoint → LINE ถือ URL อะไรอยู่ และสวิตช์เปิดหรือปิด
+//   POST /v2/bot/channel/webhook/test     → สั่งให้ LINE ยิงของจริงมาที่เราเดี๋ยวนี้ แล้วบอกว่าเราตอบอะไรกลับ
+//                                       (statusCode 401 = ลายเซ็นไม่ผ่าน = secret สองฝั่งไม่ตรงกัน)
+//
+// รวมสามอันนี้เข้าด้วยกันแล้วตอบได้เกือบทุกกรณีในคลิกเดียว แทนที่จะไล่เดาทีละอย่างเป็นชั่วโมง
+export async function checkLineSetup({ expectedWebhookUrl } = {}) {
+  const checks = [];
+  const add = (c) => { checks.push(c); return c; };
+
+  if (!isLineNotifyConfigured()) {
+    add({ key: 'token', ok: false, label: 'Channel access token',
+      detail: 'ยังไม่ได้ตั้งตัวแปร LINE_CHANNEL_ACCESS_TOKEN บนเซิร์ฟเวอร์ จึงถาม LINE ไม่ได้เลย' });
+    return { checks, reachedLine: false };
+  }
+
+  // 1) บัญชีทางการนี้เป็นของโทเคนที่เราถืออยู่จริงไหม และอยู่โหมดไหน
+  const info = await apiCaller('GET', '/info');
+  if (!info.ok) {
+    // แยก "ติดต่อ LINE ไม่ได้เลย" ออกจาก "LINE ตอบมาว่าโทเคนใช้ไม่ได้" — สองอย่างนี้ไม่เหมือนกัน
+    // ถ้าเหมารวมเป็นเรื่องโทเคน ผู้ดูแลจะไปนั่งออกโทเคนใหม่ทั้งที่ปัญหาคือเครือข่าย/ตัวกลางกั้นอยู่
+    // (เจอมากับตัวตอนทดสอบ: ตัวกลางของเครือข่ายตอบ 403 แทน LINE จนตัวตรวจฟ้องผิดจุด)
+    const unreachable = info.status === 0;
+    add({ key: unreachable ? 'reach' : 'token', ok: false,
+      label: unreachable ? 'ติดต่อเซิร์ฟเวอร์ของ LINE' : 'Channel access token',
+      detail: explainLineSendError(info),
+      fix: unreachable ? 'ตรวจว่าเซิร์ฟเวอร์ออกอินเทอร์เน็ตได้ และไม่มีตัวกลาง/ไฟร์วอลล์กั้น api.line.me อยู่' : '' });
+    return { checks, reachedLine: false };
+  }
+  // ชื่อบัญชีและ basicId มาจาก LINE และไปโผล่ใน innerHTML ของหน้าผู้ดูแล จึง escape ที่ต้นทางนี้
+  // ทุกค่าที่มาจากนอกระบบในไฟล์นี้ escape ตั้งแต่ตรงนี้ที่เดียว ฝั่งหน้าเว็บจะได้ใส่ได้ตรงๆ
+  add({ key: 'token', ok: true, label: 'Channel access token',
+    detail: `ใช้ได้ — บัญชีทางการชื่อ "${esc(info.data?.displayName || '-')}"${info.data?.basicId ? ` (${esc(info.data.basicId)})` : ''}` });
+
+  // โหมดแชท = LINE ตอบเองแล้วจบ ไม่ส่งต่อมาให้เรา ต้องไปปิดที่ manager.line.biz ไม่ใช่ที่ developers
+  const chatMode = info.data?.chatMode;
+  if (chatMode === 'chat') {
+    add({ key: 'chatMode', ok: false, label: 'โหมดการตอบกลับ',
+      detail: 'บัญชีนี้อยู่ใน<strong>โหมดแชท/ตอบกลับอัตโนมัติ</strong> — LINE จะตอบเองแล้วจบ ไม่ส่งข้อความต่อมาให้ระบบเลย นี่คือสาเหตุที่ส่งรหัสเข้าไปแล้วเงียบ',
+      fix: 'เข้า <code>manager.line.biz</code> → ตั้งค่า → การตั้งค่าการตอบกลับ → ปิด "ข้อความตอบกลับอัตโนมัติ" กับ "ข้อความทักทายเพื่อนใหม่" แล้วเปิด "Webhook"' });
+  } else {
+    add({ key: 'chatMode', ok: true, label: 'โหมดการตอบกลับ', detail: 'อยู่ในโหมด bot แล้ว ข้อความจะถูกส่งต่อมาให้ระบบ' });
+  }
+
+  // 2) LINE ถือ URL อะไรอยู่ และสวิตช์ Use webhook เปิดหรือยัง
+  const endpoint = await apiCaller('GET', '/channel/webhook/endpoint');
+  if (!endpoint.ok) {
+    add({ key: 'endpoint', ok: false, label: 'Webhook URL ที่ LINE ถืออยู่',
+      detail: endpoint.status === 404
+        ? 'ยังไม่ได้ตั้ง Webhook URL ไว้ที่ LINE เลย'
+        : explainLineSendError(endpoint),
+      fix: 'ที่ <code>developers.line.biz</code> → Messaging API → กรอก Webhook URL แล้วกด Update' });
+  } else {
+    const theirs = String(endpoint.data?.endpoint || '');
+    const matches = !expectedWebhookUrl || theirs === expectedWebhookUrl;
+    add({ key: 'endpoint', ok: matches, label: 'Webhook URL ที่ LINE ถืออยู่',
+      detail: matches ? esc(theirs) : `LINE ถือ <code>${esc(theirs)}</code> ซึ่งไม่ตรงกับของระบบนี้ (<code>${esc(expectedWebhookUrl)}</code>)`,
+      fix: matches ? '' : 'แก้ Webhook URL ที่ developers.line.biz ให้ตรงแล้วกด Update' });
+    add({ key: 'active', ok: Boolean(endpoint.data?.active), label: 'สวิตช์ Use webhook',
+      detail: endpoint.data?.active ? 'เปิดอยู่' : 'ปิดอยู่ — กรอก URL ไว้แล้วแต่ยังไม่ได้เปิดสวิตช์ คือ LINE จะไม่ส่งอะไรมาเลย',
+      fix: endpoint.data?.active ? '' : 'ที่ developers.line.biz → Messaging API → เปิดสวิตช์ "Use webhook"' });
+  }
+
+  // 3) สั่งให้ LINE ยิงของจริงมาเดี๋ยวนี้ แล้วดูว่าเราตอบอะไรกลับไป
+  const probe = await apiCaller('POST', '/channel/webhook/test', expectedWebhookUrl ? { endpoint: expectedWebhookUrl } : {});
+  add(interpretWebhookProbe(probe));
+
+  return { checks, reachedLine: true, chatMode };
+}
+
+/** แปลผลการทดสอบยิง webhook ของ LINE — รหัสตอบกลับแต่ละตัวชี้ไปคนละสาเหตุคนละวิธีแก้ */
+export function interpretWebhookProbe(probe) {
+  const base = { key: 'probe', label: 'ให้ LINE ลองยิงเข้ามาเดี๋ยวนี้' };
+  if (!probe?.ok) {
+    return { ...base, ok: false, detail: explainLineSendError(probe),
+      fix: 'ถ้าเป็น 404 แปลว่ายังไม่ได้ตั้ง Webhook URL ไว้ที่ LINE' };
+  }
+  const code = probe.data?.statusCode;
+  if (probe.data?.success === true || code === 200) {
+    return { ...base, ok: true, detail: 'LINE ยิงเข้ามาแล้วระบบตอบรับเรียบร้อย (200) — ทางเดินครบทั้งเส้น' };
+  }
+  if (code === 401) {
+    return { ...base, ok: false,
+      detail: 'ยิงมาถึงระบบแล้ว แต่ระบบปฏิเสธเพราะ<strong>ลายเซ็นไม่ตรง</strong> (401)',
+      fix: 'ค่า <code>LINE_CHANNEL_SECRET</code> บนเซิร์ฟเวอร์ไม่ตรงกับ Channel secret ปัจจุบัน — คัดลอกค่าจากหน้า Basic settings มาตั้งใหม่แล้ว restart' };
+  }
+  if (code === 503) {
+    return { ...base, ok: false, detail: 'ยิงมาถึงแล้ว แต่ระบบยังไม่ได้ตั้ง Channel secret จึงตรวจลายเซ็นไม่ได้ (503)',
+      fix: 'ตั้งตัวแปร <code>LINE_CHANNEL_SECRET</code> บนเซิร์ฟเวอร์แล้ว restart' };
+  }
+  return { ...base, ok: false,
+    detail: `LINE ยิงเข้ามาแล้วไม่สำเร็จ${code ? ` (ระบบตอบ ${code})` : ''}${probe.data?.reason ? ` — ${esc(String(probe.data.reason))}` : ''}`,
+    fix: 'ถ้าเป็น timeout หรือติดต่อไม่ได้ ให้เปิดเว็บระบบสักครั้งเพื่อปลุกเซิร์ฟเวอร์ที่หลับอยู่ แล้วตรวจใหม่' };
 }
 
 // ───────────────────────────────── ตัวส่งคิว ─────────────────────────────────

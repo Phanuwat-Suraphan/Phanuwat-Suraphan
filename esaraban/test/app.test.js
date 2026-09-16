@@ -5659,6 +5659,103 @@ describe('แจ้งเตือนเข้าไลน์', () => {
         '400 เรื่องผู้รับ มักเกิดจาก LINE Login กับ Messaging API อยู่คนละ provider');
     });
 
+    // ตัวตรวจการตั้งค่า: ถาม LINE ตรงๆ แทนที่จะให้ผู้ดูแลไล่เดาทีละอย่าง สาเหตุที่พังจริงเกือบทั้งหมด
+    // อยู่ฝั่ง LINE ซึ่งมองไม่เห็นจากฝั่งเราเลย
+    describe('ตรวจการตั้งค่าฝั่ง LINE', () => {
+      const fakeApi = (routes) => {
+        const calls = [];
+        ln._setLineApiCallerForTest(async (method, pathname, payload) => {
+          calls.push({ method, pathname, payload });
+          const r = routes[`${method} ${pathname}`];
+          if (!r) throw new Error(`เทสต์ไม่ได้เตรียมคำตอบของ ${method} ${pathname} ไว้`);
+          return r;
+        });
+        return calls;
+      };
+      const okInfo = { ok: true, status: 200, data: { displayName: 'ธุรการโรงเรียน', basicId: '@abc', chatMode: 'bot' } };
+      const byKey = (res, key) => res.checks.find((c) => c.key === key);
+      after(() => ln._setLineApiCallerForTest(null));
+
+      // สาเหตุที่เจอบ่อยที่สุดและมองไม่เห็นจากฝั่งเราเด็ดขาด — LINE ตอบเองแล้วจบ ไม่ส่งต่อมาเลย
+      test('จับได้ว่าบัญชีอยู่ในโหมดตอบกลับอัตโนมัติ ซึ่งทำให้ webhook ไม่ถูกส่งมาเลย', async () => {
+        fakeApi({
+          'GET /info': { ok: true, status: 200, data: { displayName: 'ธุรการ', basicId: '@abc', chatMode: 'chat' } },
+          'GET /channel/webhook/endpoint': { ok: true, status: 200, data: { endpoint: 'https://x.test/line/webhook', active: true } },
+          'POST /channel/webhook/test': { ok: true, status: 200, data: { success: true, statusCode: 200 } },
+        });
+        const res = await ln.checkLineSetup({ expectedWebhookUrl: 'https://x.test/line/webhook' });
+        const mode = byKey(res, 'chatMode');
+        assert.equal(mode.ok, false);
+        assert.match(mode.fix, /manager\.line\.biz/, 'ต้องชี้ไปที่ manager.line.biz ไม่ใช่ developers — คนละหน้ากัน');
+      });
+
+      test('แยกออกว่าสวิตช์ Use webhook ปิดอยู่ กับ URL ไม่ตรงกัน', async () => {
+        fakeApi({
+          'GET /info': okInfo,
+          'GET /channel/webhook/endpoint': { ok: true, status: 200, data: { endpoint: 'https://เก่า.test/line/webhook', active: false } },
+          'POST /channel/webhook/test': { ok: true, status: 200, data: { success: true, statusCode: 200 } },
+        });
+        const res = await ln.checkLineSetup({ expectedWebhookUrl: 'https://ใหม่.test/line/webhook' });
+        assert.equal(byKey(res, 'endpoint').ok, false, 'URL ที่ LINE ถืออยู่คนละอันต้องจับได้');
+        assert.equal(byKey(res, 'active').ok, false, 'สวิตช์ปิดอยู่ต้องจับได้ และเป็นคนละข้อกับเรื่อง URL');
+      });
+
+      // อาการเดียวกันเป๊ะกับตอนที่ LINE ไม่ส่งมาเลย แต่แก้คนละที่ — ตัวนี้ต้องไปแก้ค่าบนเซิร์ฟเวอร์
+      test('ยิงมาถึงแล้วแต่ลายเซ็นไม่ผ่าน ต้องชี้ไปที่ LINE_CHANNEL_SECRET', async () => {
+        fakeApi({
+          'GET /info': okInfo,
+          'GET /channel/webhook/endpoint': { ok: true, status: 200, data: { endpoint: 'https://x.test/line/webhook', active: true } },
+          'POST /channel/webhook/test': { ok: true, status: 200, data: { success: false, statusCode: 401, reason: 'UNAUTHORIZED' } },
+        });
+        const res = await ln.checkLineSetup({ expectedWebhookUrl: 'https://x.test/line/webhook' });
+        const probe = byKey(res, 'probe');
+        assert.equal(probe.ok, false);
+        assert.match(probe.fix, /LINE_CHANNEL_SECRET/);
+      });
+
+      test('ทุกอย่างถูกต้องต้องผ่านครบทุกข้อ', async () => {
+        fakeApi({
+          'GET /info': okInfo,
+          'GET /channel/webhook/endpoint': { ok: true, status: 200, data: { endpoint: 'https://x.test/line/webhook', active: true } },
+          'POST /channel/webhook/test': { ok: true, status: 200, data: { success: true, statusCode: 200 } },
+        });
+        const res = await ln.checkLineSetup({ expectedWebhookUrl: 'https://x.test/line/webhook' });
+        assert.deepEqual(res.checks.filter((c) => !c.ok), [], 'ตั้งค่าถูกหมดแล้วยังฟ้องว่าผิด = ตัวตรวจเชื่อถือไม่ได้');
+      });
+
+      test('โทเคนใช้ไม่ได้ต้องหยุดตรงนั้น ไม่ใช่ไล่ถามต่อแล้วฟ้องผิดจุด', async () => {
+        const calls = fakeApi({ 'GET /info': { ok: false, status: 401, error: 'LINE ตอบ 401: Authentication failed' } });
+        const res = await ln.checkLineSetup({ expectedWebhookUrl: 'https://x.test/line/webhook' });
+        assert.equal(res.reachedLine, false);
+        assert.equal(calls.length, 1, 'โทเคนพังแล้วยังยิงถามต่ออีก = ได้ error ซ้อน error ที่อ่านไม่รู้เรื่อง');
+        assert.match(byKey(res, 'token').detail, /LINE_CHANNEL_ACCESS_TOKEN/);
+      });
+
+      // เจอมากับตัวตอนทดสอบ: ตัวกลางของเครือข่ายตอบแทน LINE จนตัวตรวจฟ้องว่าโทเคนผิด ทั้งที่โทเคนไม่เกี่ยว
+      // ถ้าฟ้องผิดจุดแบบนี้ ผู้ดูแลจะไปนั่งออกโทเคนใหม่ซ้ำๆ แล้วก็ยังไม่หาย
+      test('ติดต่อ LINE ไม่ได้เลย ต้องไม่ฟ้องว่าโทเคนผิด', async () => {
+        fakeApi({ 'GET /info': { ok: false, status: 0, data: null, error: 'ติดต่อ LINE ไม่ได้: fetch failed' } });
+        const res = await ln.checkLineSetup({ expectedWebhookUrl: 'https://x.test/line/webhook' });
+        assert.equal(byKey(res, 'token'), undefined, 'ปัญหาเครือข่ายต้องไม่ถูกรายงานเป็นเรื่องโทเคน');
+        const reach = byKey(res, 'reach');
+        assert.equal(reach.ok, false);
+        assert.match(reach.fix, /api\.line\.me/);
+      });
+
+      // ค่าที่ LINE ตอบกลับมาไปโผล่ใน innerHTML ของหน้าผู้ดูแล — ถ้าไม่ escape ก็เป็นช่องฝังสคริปต์
+      test('ค่าที่ LINE ส่งกลับมาต้องถูก escape ก่อนเอาไปแสดง', async () => {
+        fakeApi({
+          'GET /info': { ok: true, status: 200, data: { displayName: '<img src=x onerror=alert(1)>', basicId: '@abc', chatMode: 'bot' } },
+          'GET /channel/webhook/endpoint': { ok: true, status: 200, data: { endpoint: '<script>bad()</script>', active: true } },
+          'POST /channel/webhook/test': { ok: true, status: 200, data: { success: true, statusCode: 200 } },
+        });
+        const res = await ln.checkLineSetup({ expectedWebhookUrl: 'https://x.test/line/webhook' });
+        const dump = JSON.stringify(res);
+        assert.ok(!dump.includes('<img'), 'ชื่อบัญชีจาก LINE หลุดเข้าหน้าเว็บแบบไม่ escape');
+        assert.ok(!dump.includes('<script>'), 'URL จาก LINE หลุดเข้าหน้าเว็บแบบไม่ escape');
+      });
+    });
+
     // ธุรการที่กำลังไล่ตามให้ครูเชื่อมบัญชีต้องรู้ว่า "เหลือใคร" ไม่ใช่เห็นแค่ตัวเลขรวมลอยๆ
     test('หน้าผู้ดูแลต้องบอกตัวหารและรายชื่อคนที่ยังไม่ได้เชื่อม', async () => {
       reset();

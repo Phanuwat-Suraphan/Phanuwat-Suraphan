@@ -9,7 +9,7 @@ import {
   verifyLineSignature, handleLineEvents, isLineWebhookConfigured, isLineNotifyConfigured,
   createLinkCode, unlinkLineAccount, setLineNotifyEnabled, lineNotifyStatus,
   flushLineOutbox, LINK_KEYWORD, liffId, linkLineAccountByIdToken,
-  recordLineWebhook, recentLineWebhooks, sendLineTestMessage, usersWithoutLine,
+  recordLineWebhook, recentLineWebhooks, sendLineTestMessage, usersWithoutLine, checkLineSetup,
 } from '../services/lineNotify.js';
 
 // ───────────────────────────── ตัวรับ webhook จาก LINE ─────────────────────────────
@@ -179,6 +179,12 @@ const WEBHOOK_KIND_LABEL = {
   error: { text: 'เกิดข้อผิดพลาด', cls: 'badge-danger', hint: '' },
 };
 
+// ที่อยู่ webhook ของระบบนี้ — ทั้งกล่องที่ให้คัดลอกและตัวตรวจสอบต้องใช้ค่าเดียวกันเป๊ะ ไม่งั้นตัวตรวจ
+// จะบอกว่า "URL ไม่ตรง" ทั้งที่ผู้ดูแลคัดลอกจากหน้านี้ไปวางเองกับมือ
+function webhookUrlFor(ctx) {
+  return `${ctx.req.headers['x-forwarded-proto'] || 'https'}://${ctx.req.headers.host || 'ชื่อเว็บของโรงเรียน'}/line/webhook`;
+}
+
 // รายชื่อคนที่ยังไม่ได้เชื่อม — งานจริงของธุรการตอนเริ่มใช้ระบบคือ "ไล่ตามให้ครบทุกคน"
 // ซึ่งทำไม่ได้เลยถ้าเห็นแค่ตัวเลขรวม ต้องรู้ว่าเหลือใครบ้างถึงจะเดินไปบอกถูกคน
 const PENDING_LIST_LIMIT = 50;
@@ -284,7 +290,7 @@ function webhookLogCard(hooks, s) {
 router.get('/admin/line', ADMIN_ONLY(requirePage((ctx) => {
   const s = lineNotifyStatus();
   const hooks = recentLineWebhooks(15);
-  const webhookUrl = `${ctx.req.headers['x-forwarded-proto'] || 'https'}://${ctx.req.headers.host || 'ชื่อเว็บของโรงเรียน'}/line/webhook`;
+  const webhookUrl = webhookUrlFor(ctx);
   const content = `
     <h2>💬 แจ้งเตือนเข้าไลน์</h2>
     <p class="text-muted" style="margin-top:-.5rem">
@@ -316,6 +322,16 @@ router.get('/admin/line', ADMIN_ONLY(requirePage((ctx) => {
     ${pendingPeopleCard(s)}
 
     ${webhookLogCard(hooks, s)}
+
+    <div class="card">
+      <h3 class="mt-0">🩺 ตรวจการตั้งค่าฝั่ง LINE เดี๋ยวนี้</h3>
+      <p class="text-muted" style="font-size:.88rem;margin-top:-.3rem">
+        ระบบจะถาม LINE ตรงๆ ว่าฝั่งโน้นตั้งค่าไว้ยังไง แล้วสั่งให้ LINE ลองยิงเข้ามาจริงๆ หนึ่งครั้ง —
+        ตอบได้เกือบทุกกรณีในคลิกเดียว แทนที่จะไล่เดาทีละอย่าง
+      </p>
+      <button class="btn btn-primary" onclick="runLineCheck(this)">ตรวจสอบเดี๋ยวนี้</button>
+      <div id="lineCheckResult" style="margin-top:.8rem"></div>
+    </div>
 
     <div class="card">
       <h3 class="mt-0">ที่อยู่ Webhook ที่ต้องกรอกใน LINE Developers</h3>
@@ -381,6 +397,32 @@ router.get('/admin/line', ADMIN_ONLY(requirePage((ctx) => {
         navigator.clipboard ? navigator.clipboard.writeText(el.value).then(function(){ toast('คัดลอกแล้ว', 'success'); })
           : toast('กด Ctrl+C เพื่อคัดลอก', 'info');
       }
+      // detail/fix เป็น HTML ที่เซิร์ฟเวอร์ประกอบไว้แล้ว (ค่าที่มาจาก LINE ถูก escape ตั้งแต่ต้นทาง
+      // ใน checkLineSetup) จึงใส่ด้วย innerHTML ได้ เพื่อให้ <code> กับ <strong> ในคำแนะนำอ่านง่าย
+      function runLineCheck(btn) {
+        var box = document.getElementById('lineCheckResult');
+        btn.disabled = true;
+        box.innerHTML = '<p class="text-muted">กำลังถาม LINE...</p>';
+        fetch('/admin/line/check', { method: 'POST' })
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            var rows = (d.checks || []).map(function(c){
+              return '<tr><td style="white-space:nowrap">' + (c.ok ? '✅' : '❌') + ' ' + c.label + '</td>' +
+                '<td>' + (c.detail || '') +
+                (c.fix ? '<div class="text-muted" style="font-size:.82rem;margin-top:.25rem">วิธีแก้: ' + c.fix + '</div>' : '') +
+                '</td></tr>';
+            }).join('');
+            var bad = (d.checks || []).filter(function(c){ return !c.ok; }).length;
+            box.innerHTML = '<div class="alert ' + (bad ? 'alert-warning' : 'alert-success') + '">' +
+              (bad ? 'พบ ' + bad + ' จุดที่ต้องแก้ ตามรายการข้างล่าง' : 'ผ่านครบทุกข้อ — การเชื่อมต่อกับ LINE ใช้งานได้เต็มรูปแบบ') +
+              '</div><table class="table-plain">' + rows + '</table>';
+            btn.disabled = false;
+          })
+          .catch(function(e){
+            box.innerHTML = '<div class="alert alert-danger">' + e.message + '</div>';
+            btn.disabled = false;
+          });
+      }
       function flushLineQueue(btn) {
         btn.disabled = true;
         fetch('/admin/line/flush', { method: 'POST' })
@@ -395,4 +437,10 @@ router.get('/admin/line', ADMIN_ONLY(requirePage((ctx) => {
 
 router.post('/admin/line/flush', ADMIN_ONLY(requireApi(async (ctx) => {
   json(ctx, 200, await flushLineOutbox({ limit: 100 }));
+})));
+
+// ถาม LINE ตรงๆ ว่าฝั่งโน้นตั้งค่าไว้ยังไง — ที่อยู่ webhook คิดจาก request ที่กำลังเข้ามา
+// (ที่อยู่เดียวกับที่โชว์ให้คัดลอกในหน้านี้) จะได้เทียบกับที่ LINE ถืออยู่ได้ตรงๆ
+router.post('/admin/line/check', ADMIN_ONLY(requireApi(async (ctx) => {
+  json(ctx, 200, await checkLineSetup({ expectedWebhookUrl: webhookUrlFor(ctx) }));
 })));
