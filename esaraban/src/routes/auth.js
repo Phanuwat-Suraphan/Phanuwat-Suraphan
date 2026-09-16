@@ -63,7 +63,7 @@ function testModePanel() {
   </script>`;
 }
 
-function loginPage({ error, next = '' } = {}) {
+function loginPage({ error, next = '', remember = false } = {}) {
   return `<div class="login-wrap">
     <div class="login-card">
       <div class="login-illustration">
@@ -90,6 +90,13 @@ function loginPage({ error, next = '' } = {}) {
               <button type="button" class="password-toggle" onclick="var f=document.getElementById('loginPassword');var showing=f.type==='text';f.type=showing?'password':'text';this.textContent=showing?'แสดง':'ซ่อน';">แสดง</button>
             </div>
           </div>
+          <label class="remember-row">
+            <input type="checkbox" name="remember" value="on"${remember ? ' checked' : ''} />
+            <span>
+              จำเครื่องนี้ไว้ 90 วัน
+              <span class="remember-hint">ติ๊กเฉพาะมือถือ/คอมของตัวเองเท่านั้น ห้ามติ๊กบนเครื่องส่วนกลางที่ใช้ร่วมกัน</span>
+            </span>
+          </label>
           <button class="btn btn-primary btn-block" type="submit">เข้าสู่ระบบ</button>
         </form>
         ${testModePanel()}
@@ -115,11 +122,14 @@ router.post('/login', (ctx) => {
   const { employeeCode, password } = ctx.body;
   // เส้นทางปลายทางต้องผ่านตัวตรวจเสมอ ไม่ใช่เชื่อค่าที่ส่งมากับฟอร์ม (ดู services/validate.js)
   const next = safeNextPath(ctx.body?.next);
-  const result = login((employeeCode || '').trim(), password || '', ctx.ip, ctx.req.headers['user-agent'] || '');
+  // checkbox ที่ไม่ได้ติ๊ก เบราว์เซอร์จะไม่ส่งค่ามาเลย — ค่าเริ่มต้นจึงเป็น "ไม่จำ" โดยอัตโนมัติ
+  // ซึ่งเป็นฝั่งที่ปลอดภัยกว่า และถูกต้องสำหรับเครื่องส่วนกลางในห้องธุรการ
+  const remember = ctx.body?.remember === 'on' || ctx.body?.remember === true;
+  const result = login((employeeCode || '').trim(), password || '', ctx.ip, ctx.req.headers['user-agent'] || '', { remember });
   if (!result.ok) {
-    return html(ctx, 401, layout({ user: null, title: 'เข้าสู่ระบบ', path: '/login', content: loginPage({ error: result.error, next }) }));
+    return html(ctx, 401, layout({ user: null, title: 'เข้าสู่ระบบ', path: '/login', content: loginPage({ error: result.error, next, remember }) }));
   }
-  redirect(ctx, next || '/', { 'Set-Cookie': sessionCookieHeader(result.cookie) });
+  redirect(ctx, next || '/', { 'Set-Cookie': sessionCookieHeader(result.cookie, { remembered: result.remembered }) });
 });
 
 // ---------------- ตั้งรหัสผ่าน/PIN ของตัวเองตอนเข้าใช้ครั้งแรก ----------------

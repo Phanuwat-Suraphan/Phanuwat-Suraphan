@@ -1177,6 +1177,56 @@ describe('เซสชัน: เปลี่ยนรหัสผ่าน/ร�
     return [a, b];
   }
 
+  // "จำเครื่องนี้ไว้ 90 วัน" — ครูเข้าระบบจากลิงก์ในไลน์ ซึ่งเป็นเบราว์เซอร์ในแอปที่ไม่ได้จำรหัสให้
+  // ต้องพิมพ์รหัสบนแป้นพิมพ์มือถือใหม่ทุกครั้งที่หลุด ซึ่งเป็นเหตุผลอันดับหนึ่งที่คนเลิกใช้ระบบ
+  describe('จำเครื่องนี้ไว้ 90 วัน', () => {
+    const sessionRow = (result) => db.prepare('SELECT * FROM sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1')
+      .get(seed.userIds.teacher001);
+    const lifeDays = (row) => (Date.parse(row.expires_at) - Date.parse(row.created_at)) / 86400000;
+
+    test('ไม่ติ๊ก = อายุสั้นเหมือนเดิม, ติ๊ก = 90 วัน', () => {
+      const plain = login('teacher001', pw('teacher001'), '127.0.0.1', 'ua');
+      assert.ok(plain.ok);
+      assert.equal(plain.remembered, false, 'ค่าเริ่มต้นต้องเป็น "ไม่จำ" — ฝั่งที่ปลอดภัยกว่า');
+      assert.ok(lifeDays(sessionRow(plain)) <= 1, 'เครื่องส่วนกลางต้องยังหมดอายุเร็วเหมือนเดิม');
+
+      const remembered = login('teacher001', pw('teacher001'), '127.0.0.1', 'ua', { remember: true });
+      assert.ok(remembered.ok);
+      assert.equal(remembered.remembered, true);
+      assert.ok(Math.abs(lifeDays(sessionRow(remembered)) - 90) < 0.1, 'ติ๊กแล้วต้องได้ 90 วันจริง');
+    });
+
+    // สิ่งที่ต้องได้จริงจากการติ๊ก: เปิดวันเว้นวันแล้วต้องไม่หลุด ไม่งั้นติ๊กไปก็ไม่ได้แก้อะไรเลย
+    test('เซสชันที่จำไว้ ต้องไม่หลุดเพราะไม่ได้แตะข้ามคืน', () => {
+      const res = login('teacher001', pw('teacher001'), '127.0.0.1', 'ua', { remember: true });
+      const row = sessionRow(res);
+      // ย้อนเวลาให้เหมือนไม่ได้เปิดมา 3 วัน (เกิน 8 ชั่วโมงไปไกล แต่ยังไม่ถึง 90 วัน)
+      const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString();
+      db.prepare('UPDATE sessions SET created_at = ? WHERE id = ?').run(threeDaysAgo, row.id);
+      const cookie = cookieOf(res.cookie);
+      assert.ok(getSessionUser(cookie), 'ไม่ได้แตะ 3 วันแล้วหลุด = ติ๊ก "จำเครื่องนี้ไว้" ไปก็ไม่ได้อะไร');
+    });
+
+    // คุกกี้ต้องอยู่นานเท่าเซสชัน ไม่งั้นเบราว์เซอร์ลบคุกกี้ทิ้งตั้งแต่วันที่ 7 ทั้งที่เซสชันยังอยู่อีก 83 วัน
+    test('อายุคุกกี้ต้องยาวตามด้วย ไม่ใช่ยืดแต่ฝั่งเซิร์ฟเวอร์', () => {
+      const short = sessionCookieHeader('x');
+      const long = sessionCookieHeader('x', { remembered: true });
+      assert.match(short, /Max-Age=604800\b/, 'ปกติ 7 วัน');
+      assert.match(long, /Max-Age=7776000\b/, 'จำไว้ 90 วัน');
+    });
+
+    // เครื่องหายแล้วต้องมีทางตัดทิ้งได้ ไม่ใช่ปล่อยให้คนที่ได้เครื่องไปใช้ต่อได้ 90 วัน
+    test('เปลี่ยนรหัสผ่านต้องตัดเซสชันที่จำไว้ทิ้งได้ด้วย', () => {
+      const lost = login('teacher001', pw('teacher001'), '127.0.0.1', 'เครื่องที่หาย', { remember: true });
+      const mine = login('teacher001', pw('teacher001'), '127.0.0.1', 'เครื่องที่ถืออยู่');
+      const me = getSessionUser(cookieOf(mine.cookie));
+      revokeOtherSessions(me.id, me.sessionId);
+      assert.equal(getSessionUser(cookieOf(lost.cookie)), null,
+        'เซสชัน 90 วันต้องถูกตัดได้เหมือนเซสชันปกติ ไม่งั้นเครื่องหายแล้วทำอะไรไม่ได้เลย');
+      assert.ok(getSessionUser(cookieOf(mine.cookie)), 'เครื่องที่กำลังใช้อยู่ต้องไม่หลุด');
+    });
+  });
+
   // คนเปลี่ยนรหัสผ่านเพราะกลัวรหัสรั่ว ถ้าเซสชันเดิมยังใช้ได้ต่ออีก 8 ชั่วโมงตามอายุคุกกี้
   // การเปลี่ยนรหัสก็ไม่ได้แก้ปัญหาที่ตั้งใจจะแก้ (ทดสอบกับระบบจริงแล้วว่าเซสชันเดิมยังเปิดหน้าได้จริง)
   test('เปลี่ยนรหัสผ่านแล้ว เครื่องอื่นถูกเตะออก แต่เครื่องที่กำลังใช้อยู่ยังอยู่', () => {

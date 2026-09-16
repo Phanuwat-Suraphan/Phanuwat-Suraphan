@@ -887,3 +887,27 @@ code { overflow-wrap: anywhere; }
   padding: .3rem .2rem .3rem 1.6rem; border-bottom: 1px solid var(--border); font-size: .9rem;
 }
 .backup-file:last-child { border-bottom: none; }
+
+/* "จำเครื่องนี้ไว้ 90 วัน" บนหน้าเข้าสู่ระบบ — ช่องติ๊กต้องกดโดนง่ายบนมือถือ (ทั้งแถวเป็นเป้ากด
+   เพราะ label ครอบ input ไว้) และคำเตือนต้องอ่านออกโดยไม่ต้องซูม */
+.remember-row {
+  display: flex;
+  align-items: flex-start;
+  gap: .55rem;
+  margin: .2rem 0 1rem;
+  cursor: pointer;
+  font-size: .9rem;
+  line-height: 1.45;
+}
+.remember-row input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: var(--primary);
+}
+.remember-hint {
+  display: block;
+  color: var(--text-muted);
+  font-size: .78rem;
+}

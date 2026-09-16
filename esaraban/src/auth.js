@@ -19,6 +19,19 @@ const SESSION_COOKIE = 'esaraban_sid';
  */
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000; // ไม่ได้แตะเกิน 8 ชั่วโมง = หลุด
 const SESSION_MAX_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000; // เปิดค้างได้นานสุด 7 วัน แล้วต้องล็อกอินใหม่
+
+/**
+ * "จำเครื่องนี้ไว้" — เครื่องส่วนตัวของเจ้าตัวเอง ไม่ใช่เครื่องส่วนกลางในห้องธุรการ
+ *
+ * ตัวเลขข้างบนถูกตั้งไว้เผื่อกรณีเครื่องส่วนกลางที่ครูหลายคนใช้ร่วมกัน ซึ่งถูกต้องสำหรับเครื่องนั้น
+ * แต่กับมือถือส่วนตัวมันแปลว่าต้องพิมพ์รหัสผ่านใหม่อย่างน้อยทุก 7 วัน และถ้าไม่ได้เปิดข้ามคืนก็ทุกเช้า
+ * — บนแป้นพิมพ์มือถือ ผ่านเบราว์เซอร์ในแอปไลน์ที่ไม่ได้จำรหัสให้ ซึ่งเป็นเหตุผลอันดับหนึ่งที่คนเลิกใช้
+ *
+ * ความเสี่ยงที่แลกมาคือ ถ้าเครื่องหาย คนที่ได้เครื่องไปใช้ต่อได้จนกว่าจะครบกำหนดหรือมีคนตัดเซสชันทิ้ง
+ * จึงต้องเป็นการ "ติ๊กเอง" เท่านั้น ไม่ใช่ค่าเริ่มต้น และต้องเขียนข้างช่องให้ชัดว่าห้ามติ๊กบนเครื่องส่วนกลาง
+ * ทางออกเวลาเครื่องหายมีอยู่แล้วสองทาง: เปลี่ยนรหัสผ่าน (ตัดเซสชันอื่นทิ้งหมด) หรือให้ผู้ดูแลรีเซ็ตรหัสให้
+ */
+const REMEMBERED_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 // ต่ออายุอย่างมากทุกๆ 15 นาที ไม่ใช่ทุก request — ไม่งั้นการเปิดหน้าเว็บหนึ่งครั้งกลายเป็นการเขียน
 // ฐานข้อมูลหนึ่งครั้งเสมอ ซึ่งแพงโดยไม่จำเป็นและทำให้ไฟล์ WAL โตเร็ว
 const SESSION_REFRESH_AFTER_MS = 15 * 60 * 1000;
@@ -44,7 +57,7 @@ function unsign(signed) {
   return diff === 0 ? value : null;
 }
 
-export function login(employeeCode, password, ip, userAgent) {
+export function login(employeeCode, password, ip, userAgent, { remember = false } = {}) {
   const user = getUserByCode(employeeCode);
   if (!user || user.status !== 'active') {
     audit({ action: 'login_failed', detail: { employeeCode, reason: 'no_user' }, ip });
@@ -79,10 +92,13 @@ export function login(employeeCode, password, ip, userAgent) {
   db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(nowIso());
 
   const sessionId = uuid();
-  const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
-  db.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)').run(sessionId, user.id, expiresAt, nowIso());
-  audit({ userId: user.id, action: 'login_success', ip, detail: { userAgent } });
-  return { ok: true, cookie: sign(sessionId), user };
+  const remembered = Boolean(remember);
+  const expiresAt = new Date(Date.now() + (remembered ? REMEMBERED_TTL_MS : SESSION_TTL_MS)).toISOString();
+  db.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at, remembered) VALUES (?, ?, ?, ?, ?)')
+    .run(sessionId, user.id, expiresAt, nowIso(), remembered ? 1 : 0);
+  // บันทึกไว้ใน audit ด้วย เพราะเซสชันยาว 90 วันเป็นข้อมูลที่ผู้ดูแลต้องเห็นตอนสอบสวนย้อนหลัง
+  audit({ userId: user.id, action: 'login_success', ip, detail: { userAgent, remembered } });
+  return { ok: true, cookie: sign(sessionId), user, remembered };
 }
 
 export function logout(sessionId, userId, ip, userAgent) {
@@ -125,7 +141,11 @@ export function getSessionUser(cookieHeader) {
 function extendSession(session) {
   const now = Date.now();
   const target = now + SESSION_TTL_MS;
-  const hardLimit = Date.parse(session.created_at) + SESSION_MAX_LIFETIME_MS;
+  // เครื่องที่ติ๊ก "จำเครื่องนี้ไว้" ได้อายุ 90 วันตั้งแต่ตอนล็อกอินเลย (ดู login) และเป็นช่วงตายตัว
+  // ไม่ใช่ช่วงที่ขยับตามการใช้งาน — ฟังก์ชันนี้จึงไม่มีอะไรต้องทำกับมัน เพราะเลื่อนได้แต่ไปข้างหน้า
+  // และเพดานก็เท่ากับค่าที่ตั้งไว้แล้วพอดี ตั้งใจให้เป็นช่วงตายตัวเพื่อให้ยังต้องยืนยันตัวตนใหม่ทุกไตรมาส
+  // ถ้าปล่อยให้ขยับไปเรื่อยๆ ตามการใช้งาน เครื่องที่เปิดใช้ทุกวันจะไม่มีวันหมดอายุเลย
+  const hardLimit = Date.parse(session.created_at) + (session.remembered ? REMEMBERED_TTL_MS : SESSION_MAX_LIFETIME_MS);
   // created_at ที่อ่านไม่ออก (ข้อมูลเก่า/เพี้ยน) ต้องไม่ทำให้เซสชันหมดอายุทันทีหรือกลายเป็นถาวร —
   // ถ้าคำนวณเพดานไม่ได้ ก็ใช้เพดานจากตอนนี้ไปอีกหนึ่งช่วงอายุ ซึ่งปลอดภัยทั้งสองทาง
   const cap = Number.isNaN(hardLimit) ? target : hardLimit;
@@ -136,10 +156,13 @@ function extendSession(session) {
   db.prepare('UPDATE sessions SET expires_at = ? WHERE id = ?').run(new Date(next).toISOString(), session.id);
 }
 
-export function sessionCookieHeader(cookieValue, { clear = false } = {}) {
+export function sessionCookieHeader(cookieValue, { clear = false, remembered = false } = {}) {
   // อายุคุกกี้ในเบราว์เซอร์ต้องยาวเท่าอายุสูงสุดของเซสชัน ไม่ใช่เท่าช่วงไม่ได้แตะ — ไม่งั้นคุกกี้
   // หายจากเครื่องก่อนที่เซสชันฝั่งเซิร์ฟเวอร์จะหมดอายุ ครูก็ต้องล็อกอินใหม่อยู่ดีทั้งที่เซสชันยังมีชีวิต
-  const maxAge = clear ? 0 : Math.floor(SESSION_MAX_LIFETIME_MS / 1000);
+  //
+  // เครื่องที่ติ๊ก "จำเครื่องนี้ไว้" ต้องยืดคุกกี้ตามไปด้วย ไม่งั้นเบราว์เซอร์ลบคุกกี้ทิ้งตั้งแต่วันที่ 7
+  // ทั้งที่เซสชันฝั่งเซิร์ฟเวอร์ยังอยู่อีก 83 วัน — ผู้ใช้จะเห็นว่า "ติ๊กจำไว้แล้วก็ยังหลุดอยู่ดี"
+  const maxAge = clear ? 0 : Math.floor((remembered ? REMEMBERED_TTL_MS : SESSION_MAX_LIFETIME_MS) / 1000);
   const val = clear ? '' : cookieValue;
   // Secure = ห้ามเบราว์เซอร์ส่งคุกกี้นี้ผ่าน http ธรรมดาเด็ดขาด
   //

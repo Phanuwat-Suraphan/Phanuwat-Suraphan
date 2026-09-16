@@ -500,7 +500,10 @@ export function migrate() {
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id),
     expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    -- เจ้าตัวติ๊ก "จำเครื่องนี้ไว้" ตอนล็อกอิน = เครื่องส่วนตัวของตัวเอง ให้เซสชันอยู่ได้ยาวกว่าปกติมาก
+    -- (ดูเหตุผลและตัวเลขจริงใน src/auth.js) ค่าเริ่มต้นคือ 0 = เครื่องส่วนกลาง ใช้อายุสั้นเหมือนเดิม
+    remembered INTEGER NOT NULL DEFAULT 0
   );
 
   -- สรุปงานรายวันที่ธุรการอัปโหลดมาเป็นไฟล์ Excel แล้วระบบแตกออกมาเก็บเป็นรายการ เพื่อให้แก้ไขต่อในระบบได้
@@ -676,6 +679,12 @@ export function migrate() {
     db.exec('ALTER TABLE documents ADD COLUMN stamp_x REAL');
     db.exec('ALTER TABLE documents ADD COLUMN stamp_y REAL');
   }
+  // ฐานข้อมูลที่ deploy ไปก่อนหน้านี้ยังไม่มีคอลัมน์นี้ — เซสชันเก่าทั้งหมดถือเป็นเครื่องส่วนกลาง (0)
+  const sessionCols = db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name);
+  if (!sessionCols.includes('remembered')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN remembered INTEGER NOT NULL DEFAULT 0');
+  }
+
   const attachmentCols = db.prepare("PRAGMA table_info(attachments)").all().map((c) => c.name);
   if (!attachmentCols.includes('stamped_storage_provider')) {
     db.exec('ALTER TABLE attachments ADD COLUMN stamped_storage_provider TEXT');
