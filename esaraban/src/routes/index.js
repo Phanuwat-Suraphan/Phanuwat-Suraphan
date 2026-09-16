@@ -15,3 +15,4 @@ import './backups.js';
 import './privacy.js';
 import './manifest.js';
 import './line.js';
+import './registration.js';

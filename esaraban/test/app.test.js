@@ -6821,6 +6821,100 @@ describe('ประทับลงไฟล์ไม่สำเร็จ ต้
   });
 });
 
+// ครูกดลงทะเบียนเองได้ แต่ผู้ดูแลยังเป็นคนรับรองตัวตนก่อนบัญชีจะใช้งานได้จริง
+//
+// หน้าลงทะเบียนเปิดสาธารณะ ใครเปิดเจอก็กรอกได้ ด่านที่กั้นจึงมีชั้นเดียวคือ "ต้องรออนุมัติ" — ถ้าชั้นนี้
+// รั่ว ก็เท่ากับใครก็ตามที่เจอลิงก์เข้ามาอ่านหนังสือราชการและลงนามแทนคนอื่นได้
+const reg = await import('../src/services/registration.js');
+describe('ลงทะเบียนเอง + ผู้ดูแลอนุมัติ', () => {
+  const rolesByName = (name) => db.prepare('SELECT id FROM roles WHERE name = ?').get(name).id;
+  const validReq = (over = {}) => ({
+    employeeCode: `selfreg${Math.random().toString(36).slice(2, 8)}`,
+    firstName: 'มานี', lastName: 'รักเรียน', departmentId: deptId,
+    password: 'MyOwnPassword2569', pin: '482913', ...over,
+  });
+
+  test('ยื่นคำขอแล้วยังล็อกอินไม่ได้จนกว่าจะอนุมัติ', () => {
+    const input = validReq();
+    reg.submitRegistration(input, { ip: '1.2.3.4' });
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM users WHERE employee_code = ?').get(input.employeeCode).c, 0,
+      'คำขอต้องไม่ใช่บัญชี — ถ้าสร้าง user ทันที ใครก็เข้าระบบได้เองโดยไม่มีใครรับรอง');
+    assert.equal(login(input.employeeCode, input.password, '1.2.3.4', 'ua').ok, false);
+  });
+
+  // ถ้าบทบาทที่ขอมากลายเป็นบทบาทจริง การเปิดให้ลงทะเบียนเองก็เท่ากับเปิดให้ตั้งสิทธิ์ตัวเอง
+  test('ขอเป็นแอดมินไม่ได้ และบทบาทจริงมาจากผู้ดูแลเท่านั้น', () => {
+    const input = validReq({ requestedRole: 'admin' });
+    reg.submitRegistration(input, {});
+    const row = db.prepare('SELECT requested_role FROM registration_requests WHERE employee_code = ?').get(input.employeeCode);
+    assert.equal(row.requested_role, 'teacher', 'บทบาทนอกรายการที่ขอเองได้ ต้องถูกลดเป็นครูเสมอ');
+
+    const other = validReq({ requestedRole: 'teacher' });
+    reg.submitRegistration(other, {});
+    const reqRow = db.prepare('SELECT id FROM registration_requests WHERE employee_code = ?').get(other.employeeCode);
+    // ผู้ดูแลเลือกบทบาทจริงตอนกดอนุมัติ — ในที่นี้เลือก registrar ซึ่งต่างจากที่ขอมา
+    const { userId } = reg.approveRegistration({ requestId: reqRow.id, roleId: rolesByName('registrar'), actorUser: adminUser });
+    const roles = db.prepare('SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ?').all(userId).map((r) => r.name);
+    assert.deepEqual(roles, ['registrar'], 'บทบาทจริงต้องเป็นค่าที่ผู้ดูแลเลือก ไม่ใช่ค่าที่ผู้ขอกรอกมา');
+  });
+
+  test('อนุมัติแล้วเข้าระบบได้ด้วยรหัสที่ตั้งเองตอนสมัคร โดยไม่ต้องขอรหัสชั่วคราวจากใคร', () => {
+    const input = validReq();
+    reg.submitRegistration(input, {});
+    const row = db.prepare('SELECT id FROM registration_requests WHERE employee_code = ?').get(input.employeeCode);
+    reg.approveRegistration({ requestId: row.id, roleId: rolesByName('teacher'), actorUser: adminUser });
+
+    const res = login(input.employeeCode, input.password, '1.2.3.4', 'ua');
+    assert.ok(res.ok, 'อนุมัติแล้วต้องเข้าได้ด้วยรหัสเดิมที่ตั้งไว้ตอนกรอกใบสมัคร');
+    const u = db.prepare('SELECT must_change_password FROM users WHERE employee_code = ?').get(input.employeeCode);
+    assert.equal(u.must_change_password, 0,
+      'รหัสนี้เจ้าตัวตั้งเองมาแต่ต้น ไม่มีใครอื่นเคยรู้ จึงไม่ต้องบังคับให้ตั้งใหม่ซ้ำอีก');
+  });
+
+  test('ปฏิเสธแล้วต้องไม่มีบัญชีเกิดขึ้น และอนุมัติซ้ำไม่ได้', () => {
+    const input = validReq();
+    reg.submitRegistration(input, {});
+    const row = db.prepare('SELECT id FROM registration_requests WHERE employee_code = ?').get(input.employeeCode);
+    reg.rejectRegistration({ requestId: row.id, reason: 'ไม่ใช่บุคลากรของโรงเรียน', actorUser: adminUser });
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM users WHERE employee_code = ?').get(input.employeeCode).c, 0);
+    assert.throws(() => reg.approveRegistration({ requestId: row.id, roleId: rolesByName('teacher'), actorUser: adminUser }),
+      /ไม่พบคำขอนี้|ตรวจไปแล้ว/, 'คำขอที่ตรวจไปแล้วต้องกดซ้ำไม่ได้');
+  });
+
+  // รหัสพนักงานซ้ำกับบัญชีที่มีอยู่ = อาจเป็นคนเดิมที่ลืมรหัสแล้วมาสมัครใหม่ ต้องไม่สร้างบัญชีซ้อน
+  test('รหัสพนักงานที่มีบัญชีอยู่แล้ว ต้องอนุมัติไม่ผ่านพร้อมบอกว่าให้ทำอะไรแทน', () => {
+    const input = validReq({ employeeCode: 'teacher001' });
+    reg.submitRegistration(input, {});
+    const row = db.prepare("SELECT id FROM registration_requests WHERE employee_code = 'teacher001' AND status = 'pending'").get();
+    assert.throws(() => reg.approveRegistration({ requestId: row.id, roleId: rolesByName('teacher'), actorUser: adminUser }),
+      /มีบัญชีอยู่แล้ว/);
+    reg.rejectRegistration({ requestId: row.id, reason: 'ซ้ำ', actorUser: adminUser });
+  });
+
+  // หน้านี้เปิดสาธารณะ ถ้าตอบต่างกันระหว่าง "รหัสนี้ว่าง" กับ "รหัสนี้มีคนใช้แล้ว" ก็ใช้ไล่เดาได้ว่า
+  // ใครเป็นบุคลากรของโรงเรียนบ้าง
+  test('กรอกซ้ำด้วยรหัสพนักงานเดิมที่รอตรวจอยู่ ต้องไม่บอกว่าซ้ำ และไม่เพิ่มแถวใหม่', () => {
+    const input = validReq();
+    reg.submitRegistration(input, {});
+    const before = db.prepare('SELECT COUNT(*) c FROM registration_requests WHERE employee_code = ?').get(input.employeeCode).c;
+    const again = reg.submitRegistration(input, {});
+    const after = db.prepare('SELECT COUNT(*) c FROM registration_requests WHERE employee_code = ?').get(input.employeeCode).c;
+    assert.equal(after, before, 'กดซ้ำต้องไม่สร้างแถวใหม่ให้ผู้ดูแลต้องมานั่งลบ');
+    assert.equal(again.ok, true, 'ต้องตอบเหมือนเดิมเสมอ ไม่โยน error ที่บอกใบ้ว่ารหัสนี้มีคนใช้แล้ว');
+  });
+
+  test('PIN ที่เดาง่ายและรหัสผ่านสั้นเกินไป ต้องถูกปฏิเสธตั้งแต่ตอนสมัคร', () => {
+    assert.throws(() => reg.submitRegistration(validReq({ pin: '123456' }), {}), /เดาง่ายเกินไป/);
+    assert.throws(() => reg.submitRegistration(validReq({ pin: '111111' }), {}), /เดาง่ายเกินไป/);
+    assert.throws(() => reg.submitRegistration(validReq({ password: 'sn' }), {}), /อย่างน้อย 8/);
+  });
+
+  test('ผู้ดูแลเท่านั้นที่เปิดหน้าคำขอได้', async () => {
+    assert.equal((await dispatchGet(adminUser, '/admin/registrations')).status, 200);
+    assert.equal((await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/admin/registrations')).status, 403);
+  });
+});
+
 test('cleanup: remove the throwaway test database file', () => {
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });

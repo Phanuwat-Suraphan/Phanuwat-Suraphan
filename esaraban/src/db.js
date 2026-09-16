@@ -506,6 +506,38 @@ export function migrate() {
     remembered INTEGER NOT NULL DEFAULT 0
   );
 
+  -- คำขอลงทะเบียนที่ครูกรอกเข้ามาเอง แล้วรอผู้ดูแลตรวจและอนุมัติ
+  --
+  -- ทำไมต้องพักไว้เป็นคำขอก่อน ไม่สร้างบัญชีให้เลย: ระบบนี้เก็บหนังสือราชการและมีการลงนามด้วย PIN
+  -- ที่ใช้แทนลายมือชื่อ ถ้าใครเปิดหน้าเว็บเจอแล้วสร้างบัญชีเป็น "ครู" ได้เอง ก็จะเห็นหนังสือของฝ่ายนั้น
+  -- และลงนามได้ทันทีโดยไม่มีใครรับรองว่าเป็นคนของโรงเรียนจริง ผู้ดูแลจึงต้องเป็นคนกดรับรองตัวตน
+  --
+  -- เก็บรหัสผ่าน/PIN ที่เจ้าตัวตั้งเองมาแต่แรก (แฮชแล้ว) แล้วยกไปใส่บัญชีจริงตอนอนุมัติ — เพื่อไม่ต้อง
+  -- วนกลับไปที่ "ผู้ดูแลออกรหัสชั่วคราวแล้วส่งให้ทางไลน์" ซึ่งเป็นขั้นตอนที่หายไปทั้งขั้นได้เลย
+  -- และแปลว่าผู้ดูแลไม่เคยรู้รหัสของใครเลยตั้งแต่ต้น ซึ่งดีกว่าเดิมด้วยซ้ำ
+  CREATE TABLE IF NOT EXISTS registration_requests (
+    id TEXT PRIMARY KEY,
+    employee_code TEXT NOT NULL,
+    prefix TEXT,
+    first_name TEXT NOT NULL,
+    last_name TEXT NOT NULL,
+    email TEXT,
+    position TEXT,
+    department_id TEXT REFERENCES departments(id),
+    requested_role TEXT,            -- บทบาทที่ขอมา เป็นเพียงคำขอ ผู้ดูแลเลือกของจริงตอนอนุมัติ
+    password_hash TEXT NOT NULL,
+    pin_hash TEXT NOT NULL,
+    note TEXT,                      -- ข้อความจากผู้ขอ เช่น "ครูประจำชั้น ป.4 เพิ่งย้ายมา"
+    status TEXT NOT NULL DEFAULT 'pending', -- pending | approved | rejected
+    reviewed_by TEXT REFERENCES users(id),
+    reviewed_at TEXT,
+    reject_reason TEXT,
+    created_user_id TEXT REFERENCES users(id), -- บัญชีที่สร้างจากคำขอนี้ (เมื่ออนุมัติแล้ว)
+    ip TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_regreq_status ON registration_requests(status, created_at DESC);
+
   -- สรุปงานรายวันที่ธุรการอัปโหลดมาเป็นไฟล์ Excel แล้วระบบแตกออกมาเก็บเป็นรายการ เพื่อให้แก้ไขต่อในระบบได้
   -- และรวมดูข้ามวันได้ — แยกเก็บทีละวัน (summary_date) เพื่อให้ย้อนหาเอกสารของวันนั้นๆ ได้ง่าย
   CREATE TABLE IF NOT EXISTS daily_summaries (

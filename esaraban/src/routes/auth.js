@@ -3,6 +3,7 @@ import { layout, esc, illustration, schoolName, schoolInitials } from '../render
 import { login, logout, sessionCookieHeader, revokeOtherSessions } from '../auth.js';
 import { db, audit, nowIso, hashSecret, verifySecret, isWeakPin, testModeCredentials, starterCredentials, TEST_MODE_ON } from '../db.js';
 import { safeNextPath } from '../services/validate.js';
+import { selfRegistrationEnabled } from '../services/registration.js';
 
 /** กล่อง "โหมดทดสอบ" บนหน้า login — บอกรหัสตรงนั้นเลยและกดเลือกบัญชีได้ทันที
  *
@@ -100,8 +101,12 @@ function loginPage({ error, next = '', remember = false } = {}) {
           <button class="btn btn-primary btn-block" type="submit">เข้าสู่ระบบ</button>
         </form>
         ${testModePanel()}
+        ${selfRegistrationEnabled() ? `<div style="text-align:center;margin-top:.9rem">
+          ยังไม่มีบัญชี? <a href="/register"><strong>ลงทะเบียนขอใช้งาน</strong></a>
+          <div class="text-muted" style="font-size:.8rem">กรอกข้อมูลเองได้เลย แล้วรอผู้ดูแลระบบอนุมัติ</div>
+        </div>` : ''}
         <div class="login-hint">
-          ยังไม่มีรหัสผ่าน หรือลืมรหัสผ่าน? ติดต่อเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบของโรงเรียน
+          ลืมรหัสผ่าน? ติดต่อเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบของโรงเรียน
           เพื่อขอรหัสผ่านชั่วคราว แล้วระบบจะให้ตั้งรหัสผ่านของตัวเองตอนเข้าใช้งานครั้งแรก
         </div>
         <div class="text-muted" style="text-align:center;margin-top:1rem;font-size:.82rem">

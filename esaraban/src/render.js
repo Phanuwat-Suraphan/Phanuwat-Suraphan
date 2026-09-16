@@ -246,6 +246,7 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
     <div class="nav-section-label">ระบบ</div>
     ${user.roleCodes.includes('admin') ? navItem('/admin/settings', '🏫', 'ตั้งค่าโรงเรียน', currentPath) : ''}
     ${user.roleCodes.includes('admin') ? navItem('/admin/users', '⚙️', 'จัดการผู้ใช้', currentPath) : ''}
+    ${user.roleCodes.includes('admin') ? navItem('/admin/registrations', '📝', 'คำขอลงทะเบียน', currentPath) : ''}
     ${user.roleCodes.includes('admin') ? navItem('/admin/audit', '🧾', 'Audit Log', currentPath) : ''}
     ${user.roleCodes.includes('admin') ? navItem('/admin/google-drive', '🗂️', 'เชื่อมต่อ Google Drive', currentPath) : ''}
     ${user.roleCodes.includes('admin') ? navItem('/admin/line', '💬', 'แจ้งเตือนเข้าไลน์', currentPath) : ''}
