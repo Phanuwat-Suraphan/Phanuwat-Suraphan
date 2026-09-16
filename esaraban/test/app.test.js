@@ -5616,6 +5616,66 @@ describe('แจ้งเตือนเข้าไลน์', () => {
       assert.ok(!/การกดเพิ่มเพื่อนอย่างเดียวยังไม่นับ/.test(one.body), 'พอมีคนเชื่อมแล้วไม่ต้องอธิบายซ้ำอีก');
     });
 
+    // เชื่อมบัญชีสำเร็จพิสูจน์แค่ "ขาเข้า" (LINE ยิง webhook มาถึงเราได้) ส่วน "ขาออก" ใช้คนละค่ากัน
+    // คือ Channel access token — เดิมไม่มีทางรู้ว่าขาออกใช้ได้จนกว่าจะมีหนังสือจริงแล้วครูไม่ได้รับ
+    test('ปุ่มทดสอบต้องยิงหาบัญชีไลน์ของตัวเองจริง และบอกผลตรงๆ', async () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-ทดสอบขาออก');
+      const res = await ln.sendLineTestMessage(target);
+      assert.equal(res.ok, true);
+      assert.equal(outbound.length, 1, 'ต้องยิงออกทันที ไม่ใช่เข้าคิว — ไม่งั้นได้แค่ "เข้าคิวแล้ว" ซึ่งไม่ตอบอะไรเลย');
+      assert.equal(outbound[0].pathname, '/message/push');
+      assert.equal(outbound[0].payload.to, 'U-ทดสอบขาออก');
+    });
+
+    test('ยังไม่ได้เชื่อมบัญชีต้องบอกตรงๆ ไม่ใช่เงียบแล้วเข้าใจว่าส่งไปแล้ว', async () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      db.prepare('UPDATE users SET line_user_id = NULL WHERE id = ?').run(target);
+      const res = await ln.sendLineTestMessage(target);
+      assert.equal(res.ok, false);
+      assert.match(res.error, /ยังไม่ได้เชื่อม/);
+      assert.equal(outbound.length, 0);
+    });
+
+    // LINE ตอบเป็นภาษาอังกฤษสั้นๆ ที่คนตั้งค่าอ่านแล้วไปต่อไม่ถูก และ 401/403/400 ชี้คนละสาเหตุกัน
+    test('ข้อความผิดพลาดจาก LINE ต้องถูกแปลเป็นคำที่บอกว่าไปแก้ที่ไหน', async () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-โทเคนพัง');
+
+      nextReply = { ok: false, status: 401, error: 'LINE ตอบ 401: {"message":"Authentication failed"}' };
+      const unauthorized = await ln.sendLineTestMessage(target);
+      assert.equal(unauthorized.ok, false);
+      assert.match(unauthorized.error, /LINE_CHANNEL_ACCESS_TOKEN/, 'ต้องชี้ไปที่ตัวแปรที่ต้องแก้');
+
+      nextReply = { ok: false, status: 403, error: 'LINE ตอบ 403: {"message":"Forbidden"}' };
+      assert.match((await ln.sendLineTestMessage(target)).error, /channel/,
+        '403 คือโทเคนมาจาก channel คนละอัน ไม่ใช่โทเคนผิด — คนละวิธีแก้กับ 401');
+
+      nextReply = { ok: false, status: 400, error: "LINE ตอบ 400: The property, 'to', in the request body is invalid" };
+      assert.match((await ln.sendLineTestMessage(target)).error, /provider/,
+        '400 เรื่องผู้รับ มักเกิดจาก LINE Login กับ Messaging API อยู่คนละ provider');
+    });
+
+    // ธุรการที่กำลังไล่ตามให้ครูเชื่อมบัญชีต้องรู้ว่า "เหลือใคร" ไม่ใช่เห็นแค่ตัวเลขรวมลอยๆ
+    test('หน้าผู้ดูแลต้องบอกตัวหารและรายชื่อคนที่ยังไม่ได้เชื่อม', async () => {
+      reset();
+      db.prepare('UPDATE users SET line_user_id = NULL, line_linked_at = NULL').run();
+      const total = db.prepare("SELECT COUNT(*) c FROM users WHERE deleted_at IS NULL AND status = 'active'").get().c;
+      const page = await dispatchGet(adminUser, '/admin/line');
+      assert.match(page.body, new RegExp(`<strong>0</strong> จาก ${total} คน`),
+        'บอกแค่ "0 คน" โดยไม่มีตัวหาร = ไม่รู้ว่าเหลืออีกกี่คนต้องไล่ตาม');
+      assert.match(page.body, /ใครยังไม่ได้เชื่อมบัญชี/);
+      assert.match(page.body, /สอนดี/, 'ต้องเห็นชื่อคนที่ยังไม่ได้เชื่อม ไม่ใช่เห็นแต่จำนวน');
+
+      db.prepare('UPDATE users SET line_user_id = ? WHERE id = ?').run('U-ครบแล้ว', seed.userIds.teacher001);
+      const after = await dispatchGet(adminUser, '/admin/line');
+      assert.ok(!/สอนดี/.test(after.body.split('ใครยังไม่ได้เชื่อมบัญชี')[1] || ''),
+        'เชื่อมแล้วต้องหลุดออกจากรายชื่อคนที่ยังไม่ได้เชื่อม');
+    });
+
     // ตารางนี้อยู่บนเครื่องที่ดิสก์เล็ก และโตตามจำนวนข้อความที่ครูส่งเข้ามา ไม่ใช่ตามจำนวนหนังสือ
     test('เก็บแค่ 50 รายการล่าสุด ไม่โตไปเรื่อยๆ', () => {
       db.prepare('DELETE FROM line_webhook_log').run();
@@ -5875,7 +5935,8 @@ describe('แจ้งเตือนเข้าไลน์', () => {
       assert.equal(res.status, 200);
       assert.ok(res.body.includes('/line/webhook'), 'ไม่บอกที่อยู่ webhook ที่ต้องเอาไปกรอกใน LINE Developers');
       const linked = db.prepare('SELECT COUNT(*) c FROM users WHERE line_user_id IS NOT NULL AND deleted_at IS NULL').get().c;
-      assert.ok(res.body.includes(`<strong>${linked}</strong> คน`), 'จำนวนคนที่เชื่อมบัญชีแล้วไม่ตรงกับความจริง');
+      const total = db.prepare("SELECT COUNT(*) c FROM users WHERE deleted_at IS NULL AND status = 'active'").get().c;
+      assert.ok(res.body.includes(`<strong>${linked}</strong> จาก ${total} คน`), 'จำนวนคนที่เชื่อมบัญชีแล้วไม่ตรงกับความจริง');
     });
 
     test('ครูธรรมดาเปิดหน้าตั้งค่าไลน์ของผู้ดูแลไม่ได้', async () => {

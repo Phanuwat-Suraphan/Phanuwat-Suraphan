@@ -4,12 +4,12 @@ import { layout, esc, fmtDate } from '../render.js';
 import { requireApi, requireRole, requirePage } from '../middleware.js';
 import { audit, DB_WAS_NEW, PROCESS_STARTED_AT } from '../db.js';
 import { restoredFromBackupAtBoot } from '../services/dbBackup.js';
-import { safeNextPath } from '../services/validate.js';
+import { safeNextPath, httpError } from '../services/validate.js';
 import {
   verifyLineSignature, handleLineEvents, isLineWebhookConfigured, isLineNotifyConfigured,
   createLinkCode, unlinkLineAccount, setLineNotifyEnabled, lineNotifyStatus,
   flushLineOutbox, LINK_KEYWORD, liffId, linkLineAccountByIdToken,
-  recordLineWebhook, recentLineWebhooks,
+  recordLineWebhook, recentLineWebhooks, sendLineTestMessage, usersWithoutLine,
 } from '../services/lineNotify.js';
 
 // ───────────────────────────── ตัวรับ webhook จาก LINE ─────────────────────────────
@@ -55,6 +55,14 @@ router.post('/profile/line/code', requireApi((ctx) => {
   // ไม่ส่งรหัสลงใน audit detail โดยตั้งใจ — ผู้ดูแลอ่าน audit log ได้ ถ้ารหัสอยู่ในนั้นก็เท่ากับ
   // ผู้ดูแลผูกบัญชีไลน์ของตัวเองเข้ากับบัญชีครูคนไหนก็ได้โดยที่เจ้าตัวไม่รู้
   json(ctx, 200, info);
+}));
+
+// ทดสอบได้เฉพาะกับบัญชีไลน์ของตัวเองเท่านั้น (ctx.user.id ไม่รับ userId จาก body) — ถ้ายิงหาคนอื่นได้
+// ก็กลายเป็นช่องส่งข้อความกวนใครก็ได้ในโรงเรียน และยังใช้ไล่เช็คได้ว่าใครผูกบัญชีไลน์ไว้บ้าง
+router.post('/profile/line/test', requireApi(async (ctx) => {
+  const res = await sendLineTestMessage(ctx.user.id);
+  if (!res.ok) throw httpError(400, res.error);
+  json(ctx, 200, { ok: true });
 }));
 
 router.post('/profile/line/unlink', requireApi((ctx) => {
@@ -171,6 +179,39 @@ const WEBHOOK_KIND_LABEL = {
   error: { text: 'เกิดข้อผิดพลาด', cls: 'badge-danger', hint: '' },
 };
 
+// รายชื่อคนที่ยังไม่ได้เชื่อม — งานจริงของธุรการตอนเริ่มใช้ระบบคือ "ไล่ตามให้ครบทุกคน"
+// ซึ่งทำไม่ได้เลยถ้าเห็นแค่ตัวเลขรวม ต้องรู้ว่าเหลือใครบ้างถึงจะเดินไปบอกถูกคน
+const PENDING_LIST_LIMIT = 50;
+
+function pendingPeopleCard(s) {
+  if (!s.configured) return '';
+  const waiting = usersWithoutLine(PENDING_LIST_LIMIT);
+  if (!waiting.length) {
+    return `<div class="card">
+      <h3 class="mt-0">👥 ใครยังไม่ได้เชื่อมบัญชี</h3>
+      <p style="margin-bottom:0">✅ เชื่อมครบทุกคนแล้ว (${s.totalUsers} คน)</p>
+    </div>`;
+  }
+  const remaining = s.totalUsers - s.linked - waiting.length;
+  return `<div class="card">
+    <h3 class="mt-0">👥 ใครยังไม่ได้เชื่อมบัญชี <span class="badge badge-warning">${s.totalUsers - s.linked} คน</span></h3>
+    <p class="text-muted" style="font-size:.88rem;margin-top:-.3rem">
+      คนเหล่านี้จะไม่ได้รับแจ้งเตือนทางไลน์เลย ยังต้องเปิดเว็บมาดูเองอยู่ —
+      บอกให้เข้า <strong>โปรไฟล์ของฉัน → แจ้งเตือนเข้าไลน์ → ขอรหัสเชื่อมบัญชี</strong> แล้วทำตามปุ่ม 1️⃣ และ 2️⃣
+    </p>
+    <table class="table-plain">
+      ${waiting.map((u) => `<tr>
+        <td>${esc(u.prefix || '')}${esc(u.first_name)} ${esc(u.last_name)}</td>
+        <td class="text-muted" style="font-size:.85rem">${esc(u.role_names || '')}</td>
+        <td class="text-muted" style="font-size:.85rem;white-space:nowrap">${esc(u.employee_code || '')}</td>
+      </tr>`).join('')}
+    </table>
+    ${remaining > 0 ? `<p class="text-muted" style="font-size:.82rem;margin-bottom:0">
+      แสดง ${PENDING_LIST_LIMIT} คนแรก ยังเหลืออีก ${remaining} คน — ดูรายชื่อทั้งหมดที่ <a href="/admin/users">จัดการผู้ใช้</a>
+    </p>` : ''}
+  </div>`;
+}
+
 // "ข้อมูลชุดนี้เริ่มใช้เมื่อไหร่" — วางไว้ติดกับจำนวนคนที่เชื่อมบัญชีโดยตั้งใจ
 //
 // บนโฮสต์ที่ดิสก์หายทุกครั้งที่รีสตาร์ท (Render แบบฟรี) อาการ "เมื่อกี้เชื่อมแล้ว ตอนนี้ขึ้น 0"
@@ -258,7 +299,7 @@ router.get('/admin/line', ADMIN_ONLY(requirePage((ctx) => {
         ${statusRow('ลิงก์เพิ่มเพื่อน', Boolean(s.basicId), s.basicId ? esc(s.basicId) : 'ตั้งตัวแปร <code>LINE_OA_BASIC_ID</code> เช่น <code>@123abcde</code> — ไม่ตั้งก็ยังใช้ได้ แต่ครูต้องหาบัญชีทางการเอง')}
         ${statusRow('เปิดระบบในแอป LINE (LIFF)', s.liffReady, s.liffReady ? esc(s.liffId)
           : 'ตั้งตัวแปร <code>LINE_LIFF_ID</code> และ <code>LINE_LOGIN_CHANNEL_ID</code> — ไม่ตั้งก็ใช้ได้ทุกอย่าง แค่เปิดในเบราว์เซอร์ปกติแทน')}
-        <tr><td class="text-muted">เชื่อมบัญชีแล้ว</td><td><strong>${s.linked}</strong> คน (เปิดรับแจ้งเตือนอยู่ ${s.active} คน)
+        <tr><td class="text-muted">เชื่อมบัญชีแล้ว</td><td><strong>${s.linked}</strong> จาก ${s.totalUsers} คน (เปิดรับแจ้งเตือนอยู่ ${s.active} คน)
           ${s.linked === 0 ? `<div class="text-muted" style="font-size:.82rem;margin-top:.2rem">
             นับจากคนที่ส่งรหัสเข้าแชทแล้วได้ข้อความตอบว่า "เชื่อมบัญชีสำเร็จ" เท่านั้น —
             <strong>การกดเพิ่มเพื่อนอย่างเดียวยังไม่นับ</strong>
@@ -271,6 +312,8 @@ router.get('/admin/line', ADMIN_ONLY(requirePage((ctx) => {
         <button class="btn btn-outline btn-sm" onclick="flushLineQueue(this)">📤 ส่งคิวที่ค้างเดี๋ยวนี้</button>
       </div>` : ''}
     </div>
+
+    ${pendingPeopleCard(s)}
 
     ${webhookLogCard(hooks, s)}
 

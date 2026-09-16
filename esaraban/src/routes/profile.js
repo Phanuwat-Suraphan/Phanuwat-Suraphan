@@ -35,8 +35,15 @@ function lineSection(ctx) {
         <input type="checkbox" id="lineNotifyToggle" ${st.enabled ? 'checked' : ''} onchange="toggleLineNotify(this)" />
         ส่งการแจ้งเตือนเข้าไลน์ให้ฉัน
       </label>
-      <button type="button" class="btn btn-outline btn-sm" onclick="unlinkLine(this)">ยกเลิกการเชื่อมบัญชีไลน์</button>
-      <div class="help-text">หนังสือชั้นความลับจะไม่ส่งเลขที่และชื่อเรื่องเข้าไลน์ ส่งแค่ว่ามีเรื่องรออยู่พร้อมลิงก์ให้เข้ามาอ่านในระบบ</div>`;
+      <div class="chip-row">
+        <button type="button" class="btn btn-primary btn-sm" onclick="testLine(this)">📨 ส่งข้อความทดสอบหาตัวเอง</button>
+        <button type="button" class="btn btn-outline btn-sm" onclick="unlinkLine(this)">ยกเลิกการเชื่อมบัญชีไลน์</button>
+      </div>
+      <div class="help-text">
+        เชื่อมบัญชีสำเร็จพิสูจน์แค่ว่าไลน์ส่งเข้ามาหาระบบได้ ยังไม่ได้แปลว่าระบบส่งกลับออกไปหาคุณได้
+        (คนละค่ากัน) — กดปุ่มทดสอบแล้วถ้าข้อความเด้งเข้าไลน์จริง ถือว่าครบทั้งสองทาง<br/>
+        หนังสือชั้นความลับจะไม่ส่งเลขที่และชื่อเรื่องเข้าไลน์ ส่งแค่ว่ามีเรื่องรออยู่พร้อมลิงก์ให้เข้ามาอ่านในระบบ
+      </div>`;
   }
   return `
     <h3 style="margin-top:1.2rem">💬 แจ้งเตือนเข้าไลน์</h3>
@@ -277,6 +284,21 @@ router.get('/profile', requirePage((ctx) => {
                 btn.disabled = false;
               })
               .catch(e => { toast(e.message, 'danger'); btn.disabled = false; });
+          };
+          // ข้อความจาก LINE ถูกแปลเป็นภาษาที่บอกว่าต้องไปแก้ที่ไหนแล้วฝั่งเซิร์ฟเวอร์ (ดู explainLineSendError)
+          // จึงโชว์ทั้งบรรทัดได้เลย ไม่ต้องย่อ — คนที่กดปุ่มนี้คือคนที่กำลังหาสาเหตุอยู่พอดี
+          window.testLine = function(btn){
+            btn.disabled = true;
+            var old = btn.textContent;
+            btn.textContent = 'กำลังส่ง...';
+            fetch('/profile/line/test', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})
+              .then(r => r.json().then(d => ({ok:r.ok,d})))
+              .then(({ok,d}) => {
+                if(!ok) throw new Error(d.error);
+                toast('ส่งแล้ว — เปิดไลน์ดูได้เลย ถ้าไม่เห็นข้อความใน 1 นาที แจ้งผู้ดูแลระบบ', 'success');
+              })
+              .catch(e => toast(e.message, 'danger'))
+              .finally(() => { btn.disabled = false; btn.textContent = old; });
           };
           window.unlinkLine = function(btn){
             if (!confirm('ยกเลิกการเชื่อมบัญชีไลน์? จะไม่ได้รับแจ้งเตือนทางไลน์อีก')) return;

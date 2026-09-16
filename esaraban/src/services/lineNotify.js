@@ -207,6 +207,52 @@ export function queueLineNotification({ userId, documentId, linkUrl, title, mess
   }
 }
 
+// ─────────────────────── ทดสอบว่าส่งออกไปได้จริงไหม (ยิงทันที ไม่เข้าคิว) ───────────────────────
+//
+// การเชื่อมบัญชีสำเร็จพิสูจน์ได้แค่ "ขาเข้า" คือ LINE ยิง webhook มาถึงเราได้ แต่ "ขาออก" คือเราส่ง
+// ข้อความกลับไปหาครูได้จริงไหม เป็นคนละเรื่องและใช้คนละค่า (Channel access token คนละตัวกับ secret)
+// เดิมจึงไม่มีทางรู้ว่าขาออกใช้ได้จนกว่าจะมีหนังสือจริงเข้ามาแล้วครูไม่ได้รับ — ซึ่งสายไปแล้ว
+//
+// ยิงทันทีไม่ผ่านคิวโดยตั้งใจ เพราะจุดประสงค์คือเอา "คำตอบจาก LINE" กลับมาให้เห็นเดี๋ยวนั้น
+// ถ้าเข้าคิวจะได้แค่ "เข้าคิวแล้ว" ซึ่งไม่ได้ตอบอะไรเลย
+export async function sendLineTestMessage(userId) {
+  if (!isLineNotifyConfigured()) {
+    return { ok: false, error: 'ยังไม่ได้ตั้งตัวแปร LINE_CHANNEL_ACCESS_TOKEN บนเซิร์ฟเวอร์' };
+  }
+  const u = db.prepare('SELECT line_user_id FROM users WHERE id = ? AND deleted_at IS NULL').get(userId);
+  if (!u?.line_user_id) return { ok: false, error: 'บัญชีนี้ยังไม่ได้เชื่อมกับไลน์ — ขอรหัสแล้วส่งเข้าแชทก่อน' };
+
+  const res = await sender('/message/push', {
+    to: u.line_user_id,
+    messages: [{ type: 'text', text: `✅ ทดสอบการแจ้งเตือนจากระบบสารบรรณ\nถ้าเห็นข้อความนี้ แปลว่าการแจ้งเตือนจะส่งถึงคุณได้แน่นอน\n${absoluteUrl('/')}` }],
+  });
+  if (res?.ok) return { ok: true };
+  return { ok: false, error: explainLineSendError(res), raw: res?.error || null };
+}
+
+/**
+ * แปลคำตอบของ LINE เป็นภาษาที่บอกได้ว่า "ต้องไปแก้ที่ไหน"
+ *
+ * LINE ตอบเป็นภาษาอังกฤษสั้นๆ อย่าง "Invalid reply token" หรือรหัสตัวเลขเปล่าๆ ซึ่งคนที่นั่งตั้งค่าอยู่
+ * อ่านแล้วไปต่อไม่ถูก ที่สำคัญคือ 400 กับ 403 ชี้ไปคนละสาเหตุกันคนละเรื่อง แต่หน้าตาคล้ายกันมาก
+ */
+export function explainLineSendError(res) {
+  const status = res?.status;
+  const raw = String(res?.error || '');
+  if (status === 401) {
+    return 'LINE ปฏิเสธโทเคน (401) — ค่า LINE_CHANNEL_ACCESS_TOKEN บนเซิร์ฟเวอร์ผิดหรือถูกยกเลิกไปแล้ว ให้กด Issue ใหม่ในหน้า Messaging API แล้วเอามาตั้งใหม่';
+  }
+  if (status === 403) {
+    return 'LINE ไม่อนุญาตให้ส่ง (403) — โทเคนที่ใช้เป็นของ channel คนละอันกับบัญชีทางการที่ครูเพิ่มเพื่อนไว้ ตรวจว่าคัดลอกมาจาก channel เดียวกัน';
+  }
+  if (status === 400 && /\bto\b/i.test(raw)) {
+    return 'LINE บอกว่าไม่รู้จักผู้รับคนนี้ (400) — มักเกิดเมื่อ LINE Login channel กับ Messaging API channel อยู่คนละ provider ทำให้รหัสผู้ใช้ที่เก็บไว้เป็นคนละตัวกัน ให้ยกเลิกการเชื่อมแล้วเชื่อมใหม่';
+  }
+  if (status === 429) return 'ส่งถี่เกินโควตาของ LINE ชั่วคราว (429) — รอสักครู่แล้วลองใหม่';
+  if (status === 0) return `ติดต่อเซิร์ฟเวอร์ของ LINE ไม่ได้ — ${raw || 'เครือข่ายมีปัญหา'}`;
+  return raw || 'ส่งไม่สำเร็จโดยไม่ทราบสาเหตุ';
+}
+
 // ───────────────────────────────── ตัวส่งคิว ─────────────────────────────────
 
 const MAX_ATTEMPTS = 5;
@@ -466,6 +512,9 @@ export async function linkLineAccountByIdToken({ userId, idToken }) {
 /** ตัวเลขสำหรับหน้าผู้ดูแล — เชื่อมกันกี่คน คิวค้างเท่าไร ส่งไม่ผ่านกี่ฉบับ */
 export function lineNotifyStatus() {
   const linked = db.prepare('SELECT COUNT(*) c FROM users WHERE line_user_id IS NOT NULL AND deleted_at IS NULL').get().c;
+  // ตัวหาร — "เชื่อมแล้ว 3 คน" ไม่ได้บอกอะไรเลยถ้าไม่รู้ว่าจากทั้งหมดกี่คน ธุรการที่กำลังไล่ตาม
+  // ให้ครูเชื่อมบัญชีต้องเห็นว่าเหลืออีกกี่คน ไม่ใช่เห็นแค่ตัวเลขลอยๆ
+  const totalUsers = db.prepare("SELECT COUNT(*) c FROM users WHERE deleted_at IS NULL AND status = 'active'").get().c;
   const active = db.prepare(`
     SELECT COUNT(*) c FROM users WHERE line_user_id IS NOT NULL AND line_notify_enabled = 1 AND deleted_at IS NULL
   `).get().c;
@@ -482,9 +531,22 @@ export function lineNotifyStatus() {
     // เปิดในแอป LINE ได้ต้องมีทั้งไอดี LIFF และไอดี channel ของ LINE Login ที่ LIFF อันนั้นสังกัดอยู่
     // (ไอดี channel ใช้ตรวจว่า ID token ที่หน้าเว็บส่งมาเป็นของแอปเราจริง ไม่ใช่ของแอปคนอื่น)
     liffReady: Boolean(liffId() && lineLoginChannelId()),
-    linked, active, pending, givenUp,
+    linked, active, pending, givenUp, totalUsers,
     lastError: lastError?.last_error || null,
   };
+}
+
+/** คนที่ยังไม่ได้เชื่อมบัญชีไลน์ — สำหรับธุรการใช้ไล่ตามตอนเริ่มใช้งานระบบ */
+export function usersWithoutLine(limit = 50) {
+  return db.prepare(`
+    SELECT u.id, u.prefix, u.first_name, u.last_name, u.employee_code,
+      GROUP_CONCAT(r.name_th) AS role_names
+    FROM users u
+    LEFT JOIN user_roles ur ON ur.user_id = u.id
+    LEFT JOIN roles r ON r.id = ur.role_id
+    WHERE u.line_user_id IS NULL AND u.deleted_at IS NULL AND u.status = 'active'
+    GROUP BY u.id ORDER BY u.first_name LIMIT ?
+  `).all(limit);
 }
 
 export const _internals = { MAX_ATTEMPTS, MAX_AGE_HOURS, CODE_LENGTH, extractCode };
