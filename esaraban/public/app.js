@@ -301,6 +301,34 @@
   });
 
   // ---------- keyboard shortcuts (UI/UX Bible §28) ----------
+  /**
+   * ผูก <label> เข้ากับช่องกรอกของมันให้อัตโนมัติ
+   *
+   * ทั้งระบบเขียนฟอร์มเป็น <div class="field"><label>ชื่อช่อง</label><input ...></div> ซึ่ง "ดูเหมือน"
+   * ผูกกันแล้วแต่จริงๆ ไม่ได้ผูก เพราะ label ไม่มี for และไม่ได้ครอบ input ไว้ ผลคือแตะที่ตัวหนังสือ
+   * ชื่อช่องแล้วไม่มีอะไรเกิดขึ้น — ซึ่งบนมือถือเป็นสิ่งที่คนทำโดยสัญชาตญาณ เพราะตัวหนังสือเป็นเป้าที่
+   * ใหญ่และแม่นกว่าตัวช่องมาก (วัดด้วยเบราว์เซอร์จริงแล้วพบว่าไม่มีช่องไหนในระบบผูกไว้เลยสักช่องเดียว)
+   *
+   * แก้ที่นี่ที่เดียวแทนการไล่เติม for/id ใส่ฟอร์มกว่าร้อยจุด เพราะนอกจากจะพลาดง่ายแล้ว ฟอร์มที่เพิ่ม
+   * เข้ามาใหม่วันหลังก็จะลืมอีก — วิธีนี้ครอบคลุมของที่มีอยู่และของใหม่ไปพร้อมกัน
+   */
+  (function linkLabelsToFields() {
+    let seq = 0;
+    document.querySelectorAll('label:not([for])').forEach(function (label) {
+      // label ที่ครอบ input ไว้ในตัวเองอยู่แล้ว (เช่น ช่องติ๊ก) ผูกกันโดยปริยาย ไม่ต้องทำอะไร
+      if (label.querySelector('input, select, textarea')) return;
+      const box = label.closest('.field') || label.parentElement;
+      if (!box) return;
+      // ปุ่มไม่นับ (เช่นปุ่ม "แสดง/ซ่อน" ข้างช่องรหัสผ่าน) และช่องที่ซ่อนอยู่ก็ไม่ใช่เป้าของ label
+      const control = box.querySelector('input:not([type=hidden]), select, textarea');
+      if (!control || control.disabled) return;
+      // ต้องเป็นช่องที่อยู่ "หลัง" label ในเอกสารเท่านั้น — กัน .field ที่มีหลาย label ไม่ให้ผูกข้ามกัน
+      if (!(label.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING)) return;
+      if (!control.id) control.id = 'f_auto_' + (seq += 1);
+      label.htmlFor = control.id;
+    });
+  })();
+
   // Ctrl/Cmd+K -> focus search. Ctrl/Cmd+N -> new document (note: some browsers reserve
   // Ctrl+N for "new window" and never deliver the keydown event to the page at all — no
   // workaround exists for that case, it's a browser-level reservation, not a bug here).

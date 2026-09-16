@@ -160,10 +160,10 @@ router.get('/documents', requirePage((ctx) => {
       <input type="hidden" name="direction" value="${direction}" />
       <div class="flex gap-2 flex-wrap items-center">
         <!-- ช่องนี้ค้นได้มากกว่าที่คนเดาเอง (เลขที่ต้นทาง และชื่อไฟล์แนบ) ถ้าไม่บอกไว้ตรงนี้ก็ไม่มีใครลอง -->
-        <input type="text" name="q" value="${esc(q)}" placeholder="ค้นเลขทะเบียน / เรื่อง / ที่ต้นทาง / ชื่อไฟล์แนบ"
+        <input type="text" name="q" value="${esc(q)}" aria-label="ค้นหาในทะเบียน" placeholder="ค้นเลขทะเบียน / เรื่อง / ที่ต้นทาง / ชื่อไฟล์แนบ"
           title="ค้นได้จาก: เลขทะเบียน, ชื่อเรื่อง, สาระสำคัญ, หน่วยงานต้นทาง/ปลายทาง, เลขที่หนังสือต้นทาง และชื่อไฟล์ที่แนบไว้"
           style="max-width:320px" />
-        <select name="status" style="max-width:180px">
+        <select name="status" aria-label="กรองตามสถานะ" style="max-width:180px">
           <option value="">ทุกสถานะ</option>
           ${Object.entries(LABELS.STATUS_LABEL).map(([k, v]) => opt(k, v, statusFilter)).join('')}
         </select>

@@ -202,7 +202,7 @@ ${user ? renderAppShell({ user, currentPath, content, flash, initials }) : conte
     <h3 id="pinModalTitle">ยืนยันตัวตนด้วย PIN</h3>
     <p class="text-muted" style="font-size:.82rem">กรอกรหัส PIN 6 หลักของคุณเพื่อยืนยันการทำรายการนี้ (ตาม Business Rule: ต้องยืนยันตัวตนก่อนรับทราบ/ลงนามทุกครั้ง)</p>
     <div class="field">
-      <input type="text" inputmode="numeric" maxlength="6" id="pinInput" placeholder="••••••" style="text-align:center;font-size:1.4rem;letter-spacing:.4em" autocomplete="off" />
+      <input type="text" inputmode="numeric" maxlength="6" id="pinInput" aria-label="รหัส PIN 6 หลัก" placeholder="••••••" style="text-align:center;font-size:1.4rem;letter-spacing:.4em" autocomplete="off" />
     </div>
     <div class="flex gap-2">
       <button class="btn btn-outline btn-block" onclick="closePinModal(false)">ยกเลิก</button>
@@ -264,7 +264,7 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
           <!-- ค้นรวมทั้งหนังสือเข้าและหนังสือออก — เดิมไม่ได้ส่ง direction ไปด้วย เส้นทางจึง default เป็น
                incoming เสมอ ค้นเลขหนังสือออกจากแถบนี้แล้วไม่เจออะไรเลยทั้งที่มีอยู่จริง -->
           <input type="hidden" name="direction" value="all" />
-          <input type="text" id="globalSearchInput" name="q" placeholder="ค้นหา... (Ctrl+K)" />
+          <input type="text" id="globalSearchInput" name="q" aria-label="ค้นหาหนังสือ" placeholder="ค้นหา... (Ctrl+K)" />
         </form>
       </div>
       <div class="topbar-spacer"></div>

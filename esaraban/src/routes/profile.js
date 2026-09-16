@@ -149,7 +149,7 @@ router.get('/profile', requirePage((ctx) => {
         <div id="sigUploadPanel" style="display:none">
           <form id="signatureForm" class="stack">
             <div class="field">
-              <input type="file" id="signatureFile" accept="image/png,image/jpeg" />
+              <input type="file" id="signatureFile" aria-label="เลือกไฟล์ลายเซ็นที่สแกนไว้" accept="image/png,image/jpeg" />
               <div class="help-text">รองรับ PNG/JPG ขนาดไม่เกิน 1MB — สแกนหรือถ่ายรูปลายเซ็นบนกระดาษขาว แนะนำพื้นหลังสีขาว/โปร่งใส</div>
             </div>
             <button class="btn btn-primary btn-sm" type="submit">บันทึกลายเซ็น</button>

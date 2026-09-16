@@ -6825,6 +6825,33 @@ describe('ประทับลงไฟล์ไม่สำเร็จ ต้
 //
 // หน้าลงทะเบียนเปิดสาธารณะ ใครเปิดเจอก็กรอกได้ ด่านที่กั้นจึงมีชั้นเดียวคือ "ต้องรออนุมัติ" — ถ้าชั้นนี้
 // รั่ว ก็เท่ากับใครก็ตามที่เจอลิงก์เข้ามาอ่านหนังสือราชการและลงนามแทนคนอื่นได้
+// ทั้งระบบเขียนฟอร์มเป็น <div class="field"><label>ชื่อช่อง</label><input></div> ซึ่ง "ดูเหมือน" ผูกกัน
+// แต่จริงๆ ไม่ได้ผูก เพราะ label ไม่มี for และไม่ได้ครอบ input — แตะที่ตัวหนังสือชื่อช่องแล้วไม่มีอะไร
+// เกิดขึ้น ซึ่งบนมือถือเป็นสิ่งที่คนทำโดยสัญชาตญาณ (ตรวจด้วยเบราว์เซอร์จริงแล้วพบว่าไม่มีช่องไหนผูกเลย)
+describe('ป้ายชื่อช่องกรอกต้องกดแล้วเข้าช่องได้', () => {
+  const appJs = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+  test('มีตัวผูก label เข้ากับช่องให้อัตโนมัติ แก้ที่เดียวครอบคลุมทุกฟอร์ม', () => {
+    assert.match(appJs, /label:not\(\[for\]\)/, 'ต้องไล่เฉพาะ label ที่ยังไม่ได้ผูก');
+    assert.match(appJs, /label\.htmlFor = control\.id/, 'ต้องผูกจริง ไม่ใช่แค่ใส่ id เฉยๆ');
+    // label ที่ครอบ input ไว้เองอยู่แล้ว (เช่นช่องติ๊ก "จำเครื่องนี้ไว้") ผูกโดยปริยาย ห้ามไปยุ่ง
+    assert.match(appJs, /label\.querySelector\('input, select, textarea'\)/,
+      'ต้องข้าม label ที่ครอบ input ไว้เองอยู่แล้ว ไม่งั้นไปผูกทับของที่ถูกอยู่แล้ว');
+    assert.match(appJs, /DOCUMENT_POSITION_FOLLOWING/,
+      'ต้องผูกกับช่องที่อยู่หลัง label เท่านั้น กัน .field ที่มีหลาย label ผูกข้ามกัน');
+  });
+
+  // ช่องที่ไม่มี label ให้เห็นบนจอเลย (ช่องค้นหา, PIN ในกล่องยืนยัน, ช่องเลือกไฟล์ลายเซ็น)
+  // ตัวผูกอัตโนมัติช่วยไม่ได้ เพราะไม่มี label ให้ผูก — ต้องมี aria-label เป็นชื่อแทน
+  test('ช่องที่ไม่มีป้ายให้เห็น ต้องมี aria-label เป็นชื่อแทน', () => {
+    const render = fs.readFileSync(new URL('../src/render.js', import.meta.url), 'utf8');
+    const docs = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
+    assert.match(render, /id="pinInput"[^>]*aria-label=/, 'ช่อง PIN ในกล่องยืนยันต้องมีชื่อ');
+    assert.match(render, /id="globalSearchInput"[^>]*aria-label=/, 'ช่องค้นหาบนแถบบนสุดต้องมีชื่อ');
+    assert.match(docs, /name="status" aria-label=/, 'ช่องกรองสถานะต้องมีชื่อ');
+  });
+});
+
 const reg = await import('../src/services/registration.js');
 describe('ลงทะเบียนเอง + ผู้ดูแลอนุมัติ', () => {
   const rolesByName = (name) => db.prepare('SELECT id FROM roles WHERE name = ?').get(name).id;
