@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>สถานะคำขอลงทะเบียน · ระบบสารบรรณอิเล็กทรอนิกส์</title>
+<link rel="stylesheet" href="/style.css" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<meta name="theme-color" content="#2059c9" />
+<meta name="mobile-web-app-capable" content="yes" />
+<link rel="apple-touch-icon" href="/icon-192.png" />
+<script>
+  (function(){ var t = localStorage.getItem('esaraban_theme'); if (t==='light'||t==='dark') document.documentElement.setAttribute('data-theme', t); })();
+  // ลงทะเบียน service worker เพื่อเปิดใช้ "แชร์ไฟล์จาก LINE/แอปอื่น เข้าระบบโดยตรง" (ดู public/sw.js)
+  // ต้องเป็น HTTPS เท่านั้น (Render ให้มาอยู่แล้ว) — ถ้าเบราว์เซอร์ไม่รองรับก็แค่ไม่มีฟีเจอร์นี้ ระบบอื่นปกติ
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); });
+  }
+</script>
+</head>
+<body>
+<div class="login-wrap"><div class="login-card"><div class="login-form-panel" style="max-width:520px">
+    <h2 style="margin-top:0">❌ คำขอลงทะเบียนไม่ผ่าน</h2>
+    
+      <p>ผู้ดูแลระบบตรวจคำขอของคุณแล้วเมื่อ 16 ก.ย. 2569 19:52 และยังไม่อนุมัติ</p>
+      <div class="alert alert-warning">เหตุผล: ไม่พบชื่อในทะเบียนบุคลากรของโรงเรียน</div>
+      <div class="callout-tip">
+        ถ้าคิดว่าเป็นความเข้าใจผิด ให้ติดต่อเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบของโรงเรียนโดยตรง
+        แล้ว<strong>ยื่นคำขอใหม่ได้เลย</strong>
+      </div>
+      <a class="btn btn-primary btn-block" href="/register">ยื่นคำขอใหม่</a>
+    
+    <div style="text-align:center;margin-top:1rem"><a href="/login">กลับไปหน้าเข้าสู่ระบบ</a></div>
+  </div></div></div>
+<div id="pinModal" class="modal-backdrop">
+  <div class="modal">
+    <h3 id="pinModalTitle">ยืนยันตัวตนด้วย PIN</h3>
+    <p class="text-muted" style="font-size:.82rem">กรอกรหัส PIN 6 หลักของคุณเพื่อยืนยันการทำรายการนี้ (ตาม Business Rule: ต้องยืนยันตัวตนก่อนรับทราบ/ลงนามทุกครั้ง)</p>
+    <div class="field">
+      <input type="text" inputmode="numeric" maxlength="6" id="pinInput" aria-label="รหัส PIN 6 หลัก" placeholder="••••••" style="text-align:center;font-size:1.4rem;letter-spacing:.4em" autocomplete="off" />
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-outline btn-block" onclick="closePinModal(false)">ยกเลิก</button>
+      <button class="btn btn-primary btn-block" onclick="confirmPin()">ยืนยัน</button>
+    </div>
+  </div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

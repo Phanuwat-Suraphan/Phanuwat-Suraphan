@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>เข้าสู่ระบบ · ระบบสารบรรณอิเล็กทรอนิกส์</title>
+<link rel="stylesheet" href="/style.css" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<meta name="theme-color" content="#2059c9" />
+<meta name="mobile-web-app-capable" content="yes" />
+<link rel="apple-touch-icon" href="/icon-192.png" />
+<script>
+  (function(){ var t = localStorage.getItem('esaraban_theme'); if (t==='light'||t==='dark') document.documentElement.setAttribute('data-theme', t); })();
+  // ลงทะเบียน service worker เพื่อเปิดใช้ "แชร์ไฟล์จาก LINE/แอปอื่น เข้าระบบโดยตรง" (ดู public/sw.js)
+  // ต้องเป็น HTTPS เท่านั้น (Render ให้มาอยู่แล้ว) — ถ้าเบราว์เซอร์ไม่รองรับก็แค่ไม่มีฟีเจอร์นี้ ระบบอื่นปกติ
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); });
+  }
+</script>
+</head>
+<body>
+<div class="login-wrap">
+    <div class="login-card">
+      <div class="login-illustration">
+        <svg viewBox="0 0 220 220" width="200" height="200" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <circle cx="110" cy="110" r="95" fill="rgba(255,255,255,0.12)"/>
+    <circle cx="150" cy="60" r="14" fill="#ffd166"/>
+    <circle cx="55" cy="150" r="10" fill="#06d6a0"/>
+    <rect x="55" y="70" width="90" height="110" rx="10" fill="#ffffff" opacity="0.95" transform="rotate(-6 100 125)"/>
+    <rect x="70" y="60" width="90" height="110" rx="10" fill="#ffffff" transform="rotate(4 115 115)"/>
+    <g transform="rotate(4 115 115)">
+      <circle cx="95" cy="85" r="10" fill="#e8effd"/>
+      <path d="M89 85 L94 90 L102 78" stroke="#2059c9" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      <line x1="115" y1="82" x2="150" y2="82" stroke="#dde3ea" stroke-width="4" stroke-linecap="round"/>
+      <line x1="80" y1="105" x2="150" y2="105" stroke="#dde3ea" stroke-width="4" stroke-linecap="round"/>
+      <line x1="80" y1="120" x2="150" y2="120" stroke="#dde3ea" stroke-width="4" stroke-linecap="round"/>
+      <line x1="80" y1="135" x2="130" y2="135" stroke="#dde3ea" stroke-width="4" stroke-linecap="round"/>
+    </g>
+    <circle cx="165" cy="150" r="6" fill="#ef476f"/>
+  </svg>
+        <h3>ระบบสารบรรณอิเล็กทรอนิกส์</h3>
+        <p>โรงเรียนวัดเสาหิน</p>
+      </div>
+      <div class="login-form-panel">
+        <div class="login-logo">
+          <div class="logo-dot" style="display:flex;align-items:center;justify-content:center;background:var(--primary);color:var(--primary-contrast);border-radius:12px;font-weight:800;">วด</div>
+          <h2 style="margin-top:.6rem">ลงชื่อเข้าใช้งาน</h2>
+        </div>
+        <div class="alert alert-danger">บัญชีผู้ใช้หรือรหัสผ่านไม่ถูกต้อง</div>
+        <form method="post" action="/login">
+          
+          <div class="field">
+            <label>รหัสพนักงาน / Username</label>
+            <input type="text" name="employeeCode" required autofocus autocomplete="username" placeholder="เช่น teacher001" />
+          </div>
+          <div class="field">
+            <label>รหัสผ่าน</label>
+            <div class="password-field">
+              <input type="password" name="password" id="loginPassword" required autocomplete="current-password" placeholder="••••••••" />
+              <button type="button" class="password-toggle" onclick="var f=document.getElementById('loginPassword');var showing=f.type==='text';f.type=showing?'password':'text';this.textContent=showing?'แสดง':'ซ่อน';">แสดง</button>
+            </div>
+          </div>
+          <label class="remember-row">
+            <input type="checkbox" name="remember" value="on" />
+            <span>
+              จำเครื่องนี้ไว้ 90 วัน
+              <span class="remember-hint">ติ๊กเฉพาะมือถือ/คอมของตัวเองเท่านั้น ห้ามติ๊กบนเครื่องส่วนกลางที่ใช้ร่วมกัน</span>
+            </span>
+          </label>
+          <button class="btn btn-primary btn-block" type="submit">เข้าสู่ระบบ</button>
+        </form>
+        <div class="testmode-box">
+    <div class="testmode-head">🧪 โหมดทดสอบ — กดเลือกบัญชีแล้วกด "เข้าสู่ระบบ" ได้เลย</div>
+    <div class="testmode-cred">รหัสผ่าน <code>test1234</code> · PIN <code>123456</code> (ทุกบัญชีใช้ชุดเดียวกัน)</div>
+    <div class="testmode-accounts"><button type="button" class="testmode-account"
+      data-code="admin" data-password="test1234" onclick="fillTestLogin(this)">
+      <strong>admin</strong>
+      <span>ผู้ดูแลระบบ · นายระบบ ผู้ดูแล</span>
+    </button><button type="button" class="testmode-account"
+      data-code="director01" data-password="test1234" onclick="fillTestLogin(this)">
+      <strong>director01</strong>
+      <span>ผู้อำนวยการ · นายสมชาย ผู้นำโรงเรียน</span>
+    </button><button type="button" class="testmode-account"
+      data-code="head_acad" data-password="test1234" onclick="fillTestLogin(this)">
+      <strong>head_acad</strong>
+      <span>หัวหน้าฝ่าย · นางวิชาการ หัวหน้าฝ่าย</span>
+    </button><button type="button" class="testmode-account"
+      data-code="reg001" data-password="test1234" onclick="fillTestLogin(this)">
+      <strong>reg001</strong>
+      <span>ธุรการ · นางสาวธุรการ ใจดี</span>
+    </button><button type="button" class="testmode-account"
+      data-code="teacher001" data-password="test1234" onclick="fillTestLogin(this)">
+      <strong>teacher001</strong>
+      <span>ครู · นายครูใหญ่ สอนดี</span>
+    </button><button type="button" class="testmode-account"
+      data-code="vicedir01" data-password="test1234" onclick="fillTestLogin(this)">
+      <strong>vicedir01</strong>
+      <span>รองผู้อำนวยการ · นางสมหญิง รองผู้อำนวยการ</span>
+    </button></div>
+    <div class="testmode-warn">⚠️ ห้ามเปิดโหมดนี้ทิ้งไว้ตอนใช้งานจริง — ลบตัวแปร <code>TEST_MODE_PASSWORD</code> บนเซิร์ฟเวอร์แล้ว restart</div>
+  </div>
+  <script>
+    function fillTestLogin(btn) {
+      document.querySelector('[name=employeeCode]').value = btn.dataset.code;
+      document.getElementById('loginPassword').value = btn.dataset.password;
+      document.querySelectorAll('.testmode-account').forEach(function (b) { b.classList.remove('is-picked'); });
+      btn.classList.add('is-picked');
+    }
+  </script>
+        <div style="text-align:center;margin-top:.9rem">
+          ยังไม่มีบัญชี? <a href="/register"><strong>ลงทะเบียนขอใช้งาน</strong></a>
+          <div class="text-muted" style="font-size:.8rem">กรอกข้อมูลเองได้เลย แล้วรอผู้ดูแลระบบอนุมัติ</div>
+        </div>
+        <div class="login-hint">
+          ลืมรหัสผ่าน? ติดต่อเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบของโรงเรียน
+          เพื่อขอรหัสผ่านชั่วคราว แล้วระบบจะให้ตั้งรหัสผ่านของตัวเองตอนเข้าใช้งานครั้งแรก
+        </div>
+        <div class="text-muted" style="text-align:center;margin-top:1rem;font-size:.82rem">
+          <a href="/privacy">นโยบายความเป็นส่วนตัว</a>
+        </div>
+      </div>
+    </div>
+  </div>
+<div id="pinModal" class="modal-backdrop">
+  <div class="modal">
+    <h3 id="pinModalTitle">ยืนยันตัวตนด้วย PIN</h3>
+    <p class="text-muted" style="font-size:.82rem">กรอกรหัส PIN 6 หลักของคุณเพื่อยืนยันการทำรายการนี้ (ตาม Business Rule: ต้องยืนยันตัวตนก่อนรับทราบ/ลงนามทุกครั้ง)</p>
+    <div class="field">
+      <input type="text" inputmode="numeric" maxlength="6" id="pinInput" aria-label="รหัส PIN 6 หลัก" placeholder="••••••" style="text-align:center;font-size:1.4rem;letter-spacing:.4em" autocomplete="off" />
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-outline btn-block" onclick="closePinModal(false)">ยกเลิก</button>
+      <button class="btn btn-primary btn-block" onclick="confirmPin()">ยืนยัน</button>
+    </div>
+  </div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

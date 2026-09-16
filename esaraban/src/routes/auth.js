@@ -1,9 +1,9 @@
 import { router, html, redirect, json } from '../router.js';
-import { layout, esc, illustration, schoolName, schoolInitials } from '../render.js';
+import { layout, esc, fmtDate, illustration, schoolName, schoolInitials } from '../render.js';
 import { login, logout, sessionCookieHeader, revokeOtherSessions } from '../auth.js';
 import { db, audit, nowIso, hashSecret, verifySecret, isWeakPin, testModeCredentials, starterCredentials, TEST_MODE_ON } from '../db.js';
 import { safeNextPath } from '../services/validate.js';
-import { selfRegistrationEnabled } from '../services/registration.js';
+import { selfRegistrationEnabled, registrationStatusFor } from '../services/registration.js';
 
 /** กล่อง "โหมดทดสอบ" บนหน้า login — บอกรหัสตรงนั้นเลยและกดเลือกบัญชีได้ทันที
  *
@@ -117,6 +117,31 @@ function loginPage({ error, next = '', remember = false } = {}) {
   </div>`;
 }
 
+// หน้าบอกสถานะคำขอ — ขึ้นเฉพาะคนที่กรอกรหัสผ่านของคำขอตัวเองมาถูกต้องเท่านั้น
+function registrationStatusPage(info) {
+  const rejected = info.status === 'rejected';
+  return `<div class="login-wrap"><div class="login-card"><div class="login-form-panel" style="max-width:520px">
+    <h2 style="margin-top:0">${rejected ? '❌ คำขอลงทะเบียนไม่ผ่าน' : '⏳ คำขอของคุณยังรอการอนุมัติ'}</h2>
+    ${rejected ? `
+      <p>ผู้ดูแลระบบตรวจคำขอของคุณแล้วเมื่อ ${esc(fmtDate(info.reviewedAt))} และยังไม่อนุมัติ</p>
+      ${info.rejectReason ? `<div class="alert alert-warning">เหตุผล: ${esc(info.rejectReason)}</div>` : ''}
+      <div class="callout-tip">
+        ถ้าคิดว่าเป็นความเข้าใจผิด ให้ติดต่อเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบของโรงเรียนโดยตรง
+        แล้ว<strong>ยื่นคำขอใหม่ได้เลย</strong>
+      </div>
+      <a class="btn btn-primary btn-block" href="/register">ยื่นคำขอใหม่</a>
+    ` : `
+      <p>ยื่นคำขอไว้เมื่อ ${esc(fmtDate(info.submittedAt))} — ผู้ดูแลระบบยังไม่ได้ตรวจ</p>
+      <div class="callout-tip">
+        ระบบแจ้งเตือนผู้ดูแลไปแล้วตั้งแต่ตอนคุณกดส่ง เมื่ออนุมัติแล้วให้เข้าสู่ระบบด้วย
+        <strong>รหัสพนักงานและรหัสผ่านชุดเดิมที่คุณเพิ่งกรอก</strong>ได้เลย
+        ถ้ารอนานผิดปกติ ให้แจ้งเจ้าหน้าที่ธุรการโดยตรง
+      </div>
+    `}
+    <div style="text-align:center;margin-top:1rem"><a href="/login">กลับไปหน้าเข้าสู่ระบบ</a></div>
+  </div></div></div>`;
+}
+
 router.get('/login', (ctx) => {
   const next = safeNextPath(ctx.query.next);
   if (ctx.user) return redirect(ctx, next || '/');
@@ -132,6 +157,15 @@ router.post('/login', (ctx) => {
   const remember = ctx.body?.remember === 'on' || ctx.body?.remember === true;
   const result = login((employeeCode || '').trim(), password || '', ctx.ip, ctx.req.headers['user-agent'] || '', { remember });
   if (!result.ok) {
+    // ยังไม่มีบัญชี แต่เคยยื่นคำขอลงทะเบียนไว้ — บอกสถานะให้รู้ แทนที่จะปล่อยให้รอเก้อไปเรื่อยๆ
+    // (ปลอดภัยเพราะต้องกรอกรหัสผ่านที่ตั้งไว้ตอนยื่นคำขอมาถูกต้องก่อน ดู registrationStatusFor)
+    const pendingReq = registrationStatusFor({ employeeCode: (employeeCode || '').trim(), password: password || '' });
+    if (pendingReq) {
+      return html(ctx, 200, layout({
+        user: null, title: 'สถานะคำขอลงทะเบียน', path: '/login',
+        content: registrationStatusPage(pendingReq),
+      }));
+    }
     return html(ctx, 401, layout({ user: null, title: 'เข้าสู่ระบบ', path: '/login', content: loginPage({ error: result.error, next, remember }) }));
   }
   redirect(ctx, next || '/', { 'Set-Cookie': sessionCookieHeader(result.cookie, { remembered: result.remembered }) });

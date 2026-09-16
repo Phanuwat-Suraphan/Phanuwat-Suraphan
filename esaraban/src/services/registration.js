@@ -10,7 +10,7 @@
 //   1. คำขอ "ไม่ใช่" บัญชี — ตราบใดที่ยังไม่อนุมัติ ต้องล็อกอินไม่ได้เด็ดขาด
 //   2. บทบาทที่ขอมาเป็นแค่คำขอ ผู้ดูแลเป็นคนเลือกของจริงตอนกดอนุมัติ ไม่งั้นใครก็ขอเป็นแอดมินได้
 //   3. หน้าลงทะเบียนเปิดสาธารณะ จึงต้องไม่คายข้อมูลว่าใครมีบัญชีอยู่แล้วบ้าง
-import { db, uuid, nowIso, hashSecret, audit, isWeakPin } from '../db.js';
+import { db, uuid, nowIso, hashSecret, verifySecret, audit, isWeakPin } from '../db.js';
 import { httpError, assertMaxLength } from './validate.js';
 import { notifyUser } from './notify.js';
 
@@ -107,6 +107,36 @@ export function submitRegistration(input, { ip } = {}) {
     });
   }
   return { ok: true, duplicate: false };
+}
+
+/**
+ * สถานะคำขอของคนที่พยายามล็อกอินแต่ยังไม่มีบัญชี
+ *
+ * ปัญหาที่ต้องแก้: ครูยื่นคำขอแล้วไม่มีทางรู้ผลเลย ถ้าถูกปฏิเสธก็รอต่อไปเรื่อยๆ ไม่มีวันรู้ และถ้ายื่นใหม่
+ * ก็ได้ข้อความ "รอผู้ดูแลอนุมัติ" เหมือนเดิมอีก กลายเป็นทางตันที่เจ้าตัวออกเองไม่ได้ (ระบบไม่มีการส่ง
+ * อีเมล เพราะโรงเรียนไม่มีเซิร์ฟเวอร์อีเมลของตัวเอง)
+ *
+ * ทำไมบอกได้โดยไม่รั่ว: ต้องกรอก "รหัสผ่านที่ตั้งไว้ตอนยื่นคำขอ" มาถูกต้องก่อน ซึ่งมีแต่เจ้าตัวที่รู้
+ * คนนอกที่ลองสุ่มรหัสพนักงานเฉยๆ จะได้ข้อความเดิมว่าบัญชีหรือรหัสผ่านไม่ถูกต้อง เหมือนตอนที่ไม่มี
+ * คำขออยู่จริงทุกประการ จึงใช้ไล่เดาว่าใครยื่นคำขอไว้บ้างไม่ได้
+ *
+ * คืน null เมื่อไม่เข้าเงื่อนไข — ตัวเรียกต้องแสดงข้อความผิดพลาดแบบเดิมต่อไป
+ */
+export function registrationStatusFor({ employeeCode, password }) {
+  const code = typeof employeeCode === 'string' ? employeeCode.trim() : '';
+  if (!code || typeof password !== 'string' || !password) return null;
+  const req = db.prepare(`
+    SELECT status, password_hash, reject_reason, created_at, reviewed_at
+    FROM registration_requests WHERE employee_code = ? ORDER BY created_at DESC LIMIT 1
+  `).get(code);
+  if (!req || req.status === 'approved') return null;
+  if (!verifySecret(password, req.password_hash)) return null;
+  return {
+    status: req.status,
+    rejectReason: req.reject_reason || '',
+    submittedAt: req.created_at,
+    reviewedAt: req.reviewed_at,
+  };
 }
 
 /** คำขอที่ยังรอตรวจ พร้อมธงว่าชนกับบัญชีที่มีอยู่แล้วหรือไม่ — ผู้ดูแลต้องเห็นก่อนกดอนุมัติ */

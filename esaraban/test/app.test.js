@@ -6936,6 +6936,43 @@ describe('ลงทะเบียนเอง + ผู้ดูแลอนุ�
     assert.throws(() => reg.submitRegistration(validReq({ password: 'sn' }), {}), /อย่างน้อย 8/);
   });
 
+  // ครูยื่นคำขอแล้วไม่มีทางรู้ผลเลย ถ้าถูกปฏิเสธก็รอต่อไปเรื่อยๆ ไม่มีวันรู้ และยื่นใหม่ก็ได้ข้อความ
+  // "รอผู้ดูแลอนุมัติ" เหมือนเดิมอีก กลายเป็นทางตันที่เจ้าตัวออกเองไม่ได้ (ระบบไม่มีการส่งอีเมล)
+  describe('ผู้ยื่นคำขอต้องรู้สถานะของตัวเองได้', () => {
+    test('กรอกรหัสที่ตั้งไว้ตอนยื่นคำขอถูก ต้องได้รู้ว่ายังรออยู่หรือถูกปฏิเสธ', () => {
+      const input = validReq();
+      reg.submitRegistration(input, {});
+
+      const waiting = reg.registrationStatusFor({ employeeCode: input.employeeCode, password: input.password });
+      assert.equal(waiting?.status, 'pending');
+
+      const row = db.prepare('SELECT id FROM registration_requests WHERE employee_code = ?').get(input.employeeCode);
+      reg.rejectRegistration({ requestId: row.id, reason: 'ไม่พบชื่อในทะเบียนบุคลากร', actorUser: adminUser });
+
+      const rejected = reg.registrationStatusFor({ employeeCode: input.employeeCode, password: input.password });
+      assert.equal(rejected?.status, 'rejected');
+      assert.match(rejected.rejectReason, /ไม่พบชื่อ/, 'ต้องบอกเหตุผลด้วย ไม่งั้นเจ้าตัวก็ยังไม่รู้ว่าต้องทำอะไรต่อ');
+    });
+
+    // ถ้าไม่ต้องรู้รหัสก่อน หน้านี้ก็กลายเป็นเครื่องมือไล่เดาว่าใครยื่นคำขอไว้บ้าง
+    test('กรอกรหัสผิด ต้องไม่บอกใบ้ว่ามีคำขออยู่จริง', () => {
+      const input = validReq();
+      reg.submitRegistration(input, {});
+      assert.equal(reg.registrationStatusFor({ employeeCode: input.employeeCode, password: 'เดาสุ่มมั่วๆ' }), null);
+      assert.equal(reg.registrationStatusFor({ employeeCode: input.employeeCode, password: '' }), null);
+      assert.equal(reg.registrationStatusFor({ employeeCode: 'ไม่มีคนนี้', password: input.password }), null);
+    });
+
+    // คนที่อนุมัติแล้วมีบัญชีจริง ต้องเข้าเส้นทางล็อกอินปกติ ไม่ใช่มาเจอหน้าสถานะคำขอ
+    test('คำขอที่อนุมัติแล้ว ต้องไม่ขึ้นหน้าสถานะอีก', () => {
+      const input = validReq();
+      reg.submitRegistration(input, {});
+      const row = db.prepare('SELECT id FROM registration_requests WHERE employee_code = ?').get(input.employeeCode);
+      reg.approveRegistration({ requestId: row.id, roleId: rolesByName('teacher'), actorUser: adminUser });
+      assert.equal(reg.registrationStatusFor({ employeeCode: input.employeeCode, password: input.password }), null);
+    });
+  });
+
   test('ผู้ดูแลเท่านั้นที่เปิดหน้าคำขอได้', async () => {
     assert.equal((await dispatchGet(adminUser, '/admin/registrations')).status, 200);
     assert.equal((await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/admin/registrations')).status, 403);
