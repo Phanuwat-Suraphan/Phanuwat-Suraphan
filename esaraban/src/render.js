@@ -284,6 +284,10 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
       ${TEST_MODE_ON ? `<div class="alert alert-warning">
         🧪 <strong>ระบบอยู่ในโหมดทดสอบ</strong> — ทุกบัญชีถูกตั้งรหัสผ่านและ PIN เหมือนกันหมด
         ห้ามใช้เก็บข้อมูลจริงจนกว่าจะปิดโหมดนี้
+        <div style="font-size:.82rem;margin-top:.25rem">
+          <strong>ระหว่างนี้ยังตั้งรหัสผ่านของตัวเองไม่ได้</strong> —
+          โหมดนี้ตั้งรหัสของทุกบัญชีใหม่ทุกครั้งที่เซิร์ฟเวอร์เริ่มทำงาน รหัสที่ตั้งเองจะถูกล้างทิ้งแล้วเข้าไม่ได้อีก
+        </div>
         <div style="font-size:.82rem;margin-top:.25rem">ปิดโดยลบตัวแปร <code>TEST_MODE_PASSWORD</code> ออกจากเซิร์ฟเวอร์แล้ว restart จากนั้นให้ทุกคนตั้งรหัสของตัวเอง</div>
       </div>` : (starterModeActive() ? `<div class="alert alert-warning">
         👋 <strong>ระบบเพิ่งติดตั้งใหม่</strong> — รหัสตั้งต้นของทุกบัญชียังแสดงอยู่บนหน้าเข้าสู่ระบบ

@@ -1,7 +1,7 @@
 import { router, html, redirect, json } from '../router.js';
 import { layout, esc, illustration, schoolName, schoolInitials } from '../render.js';
 import { login, logout, sessionCookieHeader, revokeOtherSessions } from '../auth.js';
-import { db, audit, nowIso, hashSecret, verifySecret, isWeakPin, testModeCredentials, starterCredentials } from '../db.js';
+import { db, audit, nowIso, hashSecret, verifySecret, isWeakPin, testModeCredentials, starterCredentials, TEST_MODE_ON } from '../db.js';
 import { safeNextPath } from '../services/validate.js';
 
 /** กล่อง "โหมดทดสอบ" บนหน้า login — บอกรหัสตรงนั้นเลยและกดเลือกบัญชีได้ทันที
@@ -139,6 +139,11 @@ function firstLoginPage(user, { error } = {}) {
           รหัสผ่านที่ใช้เข้ามาครั้งนี้เป็นรหัสชั่วคราวที่คนอื่นตั้งให้ กรุณาตั้งรหัสผ่านและ PIN ของตัวเอง
           ก่อนเริ่มใช้งาน — PIN 6 หลักใช้แทนการลงลายมือชื่อเวลากด "ทราบ" จึงต้องเป็นความลับเฉพาะตัวจริงๆ
         </p>
+        ${TEST_MODE_ON ? `<div class="alert alert-warning" style="font-size:.85rem">
+          🧪 <strong>ระบบอยู่ในโหมดทดสอบ</strong> — รหัสที่ตั้งตรงนี้จะใช้ได้จนกว่าเซิร์ฟเวอร์จะเริ่มทำงานใหม่
+          แล้วทุกบัญชีจะกลับไปใช้รหัสของโหมดทดสอบ ให้ผู้ดูแลลบตัวแปร <code>TEST_MODE_PASSWORD</code> ออกก่อน
+          จึงจะตั้งรหัสถาวรได้
+        </div>` : ''}
         ${error ? `<div class="alert alert-danger">${esc(error)}</div>` : ''}
         <form method="post" action="/first-login">
           <div class="field">

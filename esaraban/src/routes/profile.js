@@ -1,7 +1,7 @@
 import { router, html, json } from '../router.js';
 import { layout, esc, fmtDate, avatarContent, parseUserAgent } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
-import { db, nowIso, hashSecret, verifySecret, audit, isWeakPin } from '../db.js';
+import { db, nowIso, hashSecret, verifySecret, audit, isWeakPin, TEST_MODE_ON, TEST_MODE_PASSWORD_LOCK_MESSAGE } from '../db.js';
 import { revokeOtherSessions } from '../auth.js';
 import { positionInput } from '../services/positions.js';
 import { asText } from '../services/validate.js';
@@ -375,6 +375,8 @@ router.post('/profile/info', requireApi(async (ctx) => {
 
 router.post('/profile/password', requireApi(async (ctx) => {
   const { currentPassword, newPassword } = ctx.body;
+  // ปฏิเสธก่อนตรวจอย่างอื่น — โหมดทดสอบจะล้างรหัสที่ตั้งใหม่ทิ้งทุกครั้งที่ระบบ restart
+  if (TEST_MODE_ON) return json(ctx, 409, { error: TEST_MODE_PASSWORD_LOCK_MESSAGE });
   if (!newPassword || newPassword.length < 8) return json(ctx, 400, { error: 'รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร' });
   const row = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(ctx.user.id);
   if (!verifySecret(currentPassword, row.password_hash)) return json(ctx, 401, { error: 'รหัสผ่านปัจจุบันไม่ถูกต้อง' });
@@ -433,6 +435,8 @@ router.post('/profile/avatar', requireApi(async (ctx) => {
 
 router.post('/profile/pin', requireApi(async (ctx) => {
   const { currentPassword, newPin } = ctx.body;
+  // PIN ถูกเขียนทับพร้อมรหัสผ่านตอนระบบ start เหมือนกัน จึงต้องปฏิเสธด้วยเหตุผลเดียวกัน
+  if (TEST_MODE_ON) return json(ctx, 409, { error: TEST_MODE_PASSWORD_LOCK_MESSAGE });
   if (!/^\d{6}$/.test(newPin || '')) return json(ctx, 400, { error: 'PIN ต้องเป็นตัวเลข 6 หลัก' });
   // ต้องใช้เกณฑ์เดียวกับตอนตั้ง PIN ครั้งแรก ไม่งั้นระบบบังคับให้ตั้ง PIN ที่เดายากตอนเข้าใช้ครั้งแรก
   // แล้วเปิดให้เปลี่ยนกลับเป็น 111111 ได้ทันทีจากหน้าโปรไฟล์ — PIN ใช้แทนการลงลายมือชื่อ

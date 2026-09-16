@@ -1,7 +1,7 @@
 import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
 import { layout, esc, fmtDate, emptyState, schoolName, schoolShortName, schoolInitials } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
-import { db, uuid, nowIso, hashSecret, audit, starterModeActive, clearStarterCredentials } from '../db.js';
+import { db, uuid, nowIso, hashSecret, audit, starterModeActive, clearStarterCredentials, TEST_MODE_ON } from '../db.js';
 import { readTable, planUserImport, applyUserImport, templateCsv, generatePassword, generatePin } from '../services/userImport.js';
 import { httpError } from '../services/workflow.js';
 import { positionInput } from '../services/positions.js';
@@ -356,7 +356,11 @@ router.post('/admin/users/:id/reset-password', requireApi(async (ctx) => {
   json(ctx, 200, {
     ok: true, employeeCode: target.employee_code, password, pin,
     wasLocked: Boolean(target.locked_until),
-    message: `ออกรหัสชั่วคราวให้ ${target.employee_code} แล้ว${target.locked_until ? ' และปลดล็อกบัญชีให้ด้วย' : ''} — เจ้าตัวจะต้องตั้งรหัสผ่านและ PIN ของตัวเองทันทีที่เข้าใช้งาน`,
+    // ในโหมดทดสอบรหัสนี้อยู่ได้แค่จนกว่าระบบจะ restart แล้วจะถูกตั้งกลับเป็นรหัสของโหมดทดสอบทั้งหมด
+    // ถ้าไม่บอกไว้ ผู้ดูแลจะแจกรหัสนี้ให้ครูแล้วครูเข้าไม่ได้ในวันรุ่งขึ้นโดยไม่มีใครเข้าใจว่าทำไม
+    message: TEST_MODE_ON
+      ? `ออกรหัสชั่วคราวให้ ${target.employee_code} แล้ว แต่ตอนนี้ระบบอยู่ในโหมดทดสอบ รหัสนี้จะใช้ได้จนกว่าเซิร์ฟเวอร์จะเริ่มทำงานใหม่เท่านั้น แล้วทุกบัญชีจะกลับไปใช้รหัสของโหมดทดสอบ — ลบตัวแปร TEST_MODE_PASSWORD ออกก่อนจึงจะแจกรหัสรายคนได้จริง`
+      : `ออกรหัสชั่วคราวให้ ${target.employee_code} แล้ว${target.locked_until ? ' และปลดล็อกบัญชีให้ด้วย' : ''} — เจ้าตัวจะต้องตั้งรหัสผ่านและ PIN ของตัวเองทันทีที่เข้าใช้งาน`,
   });
 }));
 

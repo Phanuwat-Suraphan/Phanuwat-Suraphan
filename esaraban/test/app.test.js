@@ -4485,6 +4485,41 @@ describe('ด่านบังคับตั้งรหัสผ่านเ�
       }
     });
 
+    // รายงานจากการใช้งานจริง: "แก้รหัสผ่านแล้ว แต่พอ login กลับเข้าไม่ได้"
+    //
+    // สาเหตุคือโหมดทดสอบเขียนทับรหัสผ่านและ PIN ของทุกบัญชีใหม่ทุกครั้งที่ระบบ start รหัสที่ครูเพิ่งตั้งเอง
+    // จึงถูกล้างทิ้งตอนเซิร์ฟเวอร์หลับแล้วตื่น (เครื่องแบบฟรีหลับเองเมื่อไม่มีคนใช้) แต่ตอนกดเปลี่ยนหน้าจอ
+    // ขึ้นว่า "เปลี่ยนรหัสผ่านเรียบร้อยแล้ว" และล็อกอินด้วยรหัสใหม่ได้จริงในรอบนั้น จึงไม่มีใครเอะใจ
+    test('เปิดโหมดทดสอบอยู่ ต้องปฏิเสธการตั้งรหัสเอง แทนที่จะรับไว้แล้วล้างทิ้งทีหลัง', () => {
+      const src = fs.readFileSync(new URL('../src/routes/profile.js', import.meta.url), 'utf8');
+      const pwRoute = src.slice(src.indexOf("router.post('/profile/password'"), src.indexOf("router.post('/profile/pin'"));
+      assert.match(pwRoute, /if \(TEST_MODE_ON\) return json\(ctx, 409/,
+        'เปลี่ยนรหัสผ่านระหว่างเปิดโหมดทดสอบต้องถูกปฏิเสธ ไม่งั้นผู้ใช้จะเข้าไม่ได้หลังระบบ restart');
+      const pinRoute = src.slice(src.indexOf("router.post('/profile/pin'"));
+      assert.match(pinRoute.slice(0, 600), /if \(TEST_MODE_ON\) return json\(ctx, 409/,
+        'PIN ถูกเขียนทับพร้อมรหัสผ่าน จึงต้องปฏิเสธด้วยเหตุผลเดียวกัน');
+      assert.match(pwRoute, /TEST_MODE_PASSWORD_LOCK_MESSAGE/, 'ต้องใช้ข้อความกลางที่บอกวิธีแก้');
+    });
+
+    // กับดักที่เกือบพลาดเองตอนแก้บั๊กข้างบน: /first-login เป็น "ด่านบังคับ" ที่ไม่มีทางออก ถ้าปฏิเสธ
+    // การตั้งรหัสตรงนี้ ผู้ใช้จะถูกเด้งกลับมาหน้าเดิมซ้ำไปเรื่อยๆ จนใช้ระบบไม่ได้เลยจนกว่าจะ restart
+    // จึงต้องเตือนอย่างเดียว ห้ามปิดกั้น — ต่างจากการเปลี่ยนรหัสเองในหน้าโปรไฟล์ซึ่งไม่กดก็ไม่เป็นไร
+    test('ด่านบังคับตั้งรหัสครั้งแรก ต้องเตือนอย่างเดียว ห้ามปิดกั้นจนติดลูป', () => {
+      const src = fs.readFileSync(new URL('../src/routes/auth.js', import.meta.url), 'utf8');
+      const post = src.slice(src.indexOf("router.post('/first-login'"));
+      assert.ok(!/if \(TEST_MODE_ON\) return fail\(/.test(post),
+        'ปิดกั้นตรงนี้ = ผู้ใช้ถูกเด้งกลับมาหน้าเดิมไม่รู้จบ เข้าใช้ระบบไม่ได้เลย');
+      const page = src.slice(src.indexOf('function firstLoginPage'), src.indexOf("router.post('/first-login'"));
+      assert.match(page, /TEST_MODE_ON \?/, 'หน้านี้ต้องบอกให้รู้ว่ารหัสที่ตั้งจะอยู่ไม่ถาวร');
+      assert.match(page, /จะใช้ได้จนกว่าเซิร์ฟเวอร์จะเริ่มทำงานใหม่/);
+    });
+
+    test('แถบเตือนโหมดทดสอบต้องบอกด้วยว่าตั้งรหัสเองไม่ได้', () => {
+      const render = fs.readFileSync(new URL('../src/render.js', import.meta.url), 'utf8');
+      assert.match(render, /ระหว่างนี้ยังตั้งรหัสผ่านของตัวเองไม่ได้/,
+        'ถ้าไม่บอกไว้ ครูจะไปกดเปลี่ยนรหัสแล้วงงว่าทำไมระบบไม่ให้');
+    });
+
     test('พอลบตัวแปรออก ระบบต้องไม่เหลือร่องรอยโหมดทดสอบให้เห็นอีก', async () => {
       // process ของเทสต์เองไม่ได้ตั้ง TEST_MODE_PASSWORD ไว้ จึงเป็นตัวแทนของ "ระบบใช้งานจริง" ได้ตรงๆ
       const { TEST_MODE_ON, testModeCredentials } = await import('../src/db.js');
