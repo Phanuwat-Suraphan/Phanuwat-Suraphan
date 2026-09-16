@@ -438,6 +438,10 @@ export function migrate() {
     stamped_filepath TEXT,
     stamped_drive_file_id TEXT,
     stamped_at TEXT,
+    -- ประทับลงไฟล์ไม่สำเร็จครั้งล่าสุด (ดูเหตุผลเต็มที่บล็อก ALTER TABLE ด้านล่าง) — ล้างเป็น NULL
+    -- ทุกครั้งที่ประทับสำเร็จ เพราะคำเตือนที่ค้างอยู่ทั้งที่แก้ไปแล้วจะถูกมองข้ามจนไม่มีใครอ่านอีกเลย
+    stamp_failed_at TEXT,
+    stamp_failed_reason TEXT,
     -- ไฟล์ถูกทำลายตามมติคณะกรรมการแล้ว: ตัวไฟล์หายไปจากดิสก์/Drive จริง แต่ยังเก็บ "แถว" ไว้เป็นหลักฐาน
     -- ว่าหนังสือฉบับนั้นเคยมีไฟล์ชื่ออะไร ขนาดเท่าไร ค่าแฮชอะไร ซึ่งเป็นข้อมูลที่บัญชีทำลายหนังสือต้องใช้
     -- ตรวจย้อนหลังได้ (ถ้าลบแถวทิ้งไปเลยจะไม่เหลือหลักฐานว่าทำลายอะไรไปบ้าง)
@@ -678,6 +682,21 @@ export function migrate() {
     db.exec('ALTER TABLE attachments ADD COLUMN stamped_filepath TEXT');
     db.exec('ALTER TABLE attachments ADD COLUMN stamped_drive_file_id TEXT');
     db.exec('ALTER TABLE attachments ADD COLUMN stamped_at TEXT');
+  }
+  // การประทับความเห็น/ลายเซ็นลงในไฟล์ PDF จริงล้มเหลวครั้งล่าสุดเมื่อไหร่ และเพราะอะไร
+  //
+  // เดิมเวลาประทับไม่สำเร็จ ระบบบันทึกผลการตัดสินใจไว้เรียบร้อย (เรื่องเดินต่อ สถานะเป็นเสร็จสิ้น) แล้วเตือน
+  // ผ่าน ?warn= ซึ่งขึ้นเป็นแถบเหลืองบนหน้าแรก "ครั้งเดียว" พอกดไปหน้าอื่นก็หายไปตลอดกาล หน้าเอกสารเอง
+  // ไม่มีร่องรอยเลย เหลือแค่แถวใน audit log ที่ไม่มีใครเปิดอ่าน
+  //
+  // ผลที่ตามมาคือธุรการดาวน์โหลดไฟล์นั้นไปส่งออก/เก็บเข้าแฟ้มโดยที่ไฟล์ "ไม่มีความเห็นและลายเซ็นของ ผอ."
+  // อยู่บนตัวหนังสือ ซึ่งเป็นสาระสำคัญของหนังสือราชการ และไม่มีใครรู้จนกว่าจะมีคนทักกลับมา
+  //
+  // เรื่องนี้มีโอกาสเกิดจริงสูงบนเครื่องเล็ก — การประทับต้องเปิด chromium ขึ้นมาเรนเดอร์ ซึ่งกินหน่วยความจำ
+  // หลักร้อยเมกะไบต์ ถ้าเครื่องมี RAM จำกัดแล้วถูกระบบฆ่าทิ้งกลางคัน จะได้อาการนี้เป๊ะๆ
+  if (!attachmentCols.includes('stamp_failed_at')) {
+    db.exec('ALTER TABLE attachments ADD COLUMN stamp_failed_at TEXT');
+    db.exec('ALTER TABLE attachments ADD COLUMN stamp_failed_reason TEXT');
   }
   if (!attachmentCols.includes('destroyed_at')) {
     db.exec('ALTER TABLE attachments ADD COLUMN destroyed_at TEXT');

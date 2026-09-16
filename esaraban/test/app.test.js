@@ -6667,6 +6667,75 @@ describe('หน้าที่แสดงรายการยาวต้อ�
   });
 });
 
+// ประทับความเห็น/ลายเซ็นลงในไฟล์ PDF จริงไม่สำเร็จ = ไฟล์หนังสือราชการขาดสาระสำคัญไปเงียบๆ
+//
+// เดิมเตือนผ่าน ?warn= ซึ่งขึ้นบนหน้าแรกครั้งเดียวแล้วหายตลอดกาล หน้าเอกสารไม่มีร่องรอยเลย ธุรการที่มา
+// ดาวน์โหลดไฟล์ไปส่งออกทีหลังจึงไม่มีทางรู้ — และคนที่เห็นคำเตือนคือผู้ตัดสินใจ ไม่ใช่คนที่เอาไฟล์ไปใช้
+//
+// เครื่องที่รันเทสต์ไม่มี chromium/qpdf การประทับจึงล้มเหลวเสมอ ซึ่งพอดีกับที่ต้องการทดสอบ
+describe('ประทับลงไฟล์ไม่สำเร็จ ต้องเตือนค้างไว้ ไม่ใช่เตือนแวบเดียว', () => {
+  const attachmentOf = (documentId) =>
+    db.prepare('SELECT * FROM attachments WHERE document_id = ?').get(documentId);
+
+  function docWithAttachment(title) {
+    const doc = makeDoc({ title });
+    db.prepare(`
+      INSERT INTO attachments (id, document_id, filename, storage_provider, filepath, filesize, mime_type, hash_sha256, uploaded_by, created_at)
+      VALUES (?, ?, 'letter.pdf', 'local', 'letter.pdf', 1024, 'application/pdf', 'x', ?, ?)
+    `).run(uuid(), doc.id, registrarUser.id, nowIso());
+    return doc;
+  }
+
+  test('ผู้ตัดสินใจลงความเห็นแล้วประทับไม่สำเร็จ ต้องถูกจดไว้ที่ตัวไฟล์', async () => {
+    const doc = docWithAttachment('หนังสือที่ประทับไม่ผ่าน');
+    const stepId = assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, actorUser: registrarUser });
+    const res = await dispatchPost(loadUserForTest(seed.userIds.director01),
+      `/documents/${doc.id}/workflow/${stepId}/acknowledge`,
+      { pin: userPin('director01'), decisionNote: 'ทราบ อนุมัติตามเสนอ', decisionMarks: ['ทราบ'] });
+
+    assert.equal(res.status, 200, res.body);
+    assert.ok(res.body.includes('warning'), 'ต้องยังเตือนตอนกดปุ่มเหมือนเดิมด้วย');
+    const att = attachmentOf(doc.id);
+    assert.ok(att.stamp_failed_at, 'ประทับไม่สำเร็จแล้วไม่ได้จดไว้ที่ไฟล์ — พอออกจากหน้าแรกก็ไม่เหลือร่องรอยเลย');
+    assert.ok(att.stamp_failed_reason, 'ต้องเก็บสาเหตุไว้ด้วย ไม่งั้นบอกผู้ดูแลไม่ได้ว่าต้องไปแก้อะไร');
+  });
+
+  test('หน้าเอกสารต้องเตือนค้างไว้ และบอกว่าอย่าเพิ่งเอาไฟล์ไปใช้', async () => {
+    const doc = docWithAttachment('หนังสือที่ต้องเตือนค้าง');
+    const att = attachmentOf(doc.id);
+    db.prepare('UPDATE attachments SET stamp_failed_at = ?, stamp_failed_reason = ? WHERE id = ?')
+      .run(nowIso(), 'chromium ถูกระบบฆ่าทิ้งเพราะหน่วยความจำไม่พอ', att.id);
+
+    const page = await dispatchGet(registrarUser, `/documents/${doc.id}`);
+    assert.match(page.body, /ยังไม่มีความเห็น\/ลายเซ็นประทับอยู่บนตัวหนังสือ/);
+    assert.match(page.body, /อย่าเพิ่งส่งไฟล์นี้ออกไป/, 'ต้องบอกให้ชัดว่าห้ามเอาไฟล์ไปใช้ ไม่ใช่แค่แจ้งว่าพลาด');
+    assert.match(page.body, /หน่วยความจำไม่พอ/, 'ต้องบอกสาเหตุบนหน้าจอ ไม่ใช่ให้ไปเปิด log เอง');
+
+    // แก้แล้วต้องหายไป ไม่ใช่ค้างตลอดกาลจนคนชินแล้วไม่อ่าน
+    db.prepare('UPDATE attachments SET stamp_failed_at = NULL, stamp_failed_reason = NULL WHERE id = ?').run(att.id);
+    const after = await dispatchGet(registrarUser, `/documents/${doc.id}`);
+    assert.ok(!/ยังไม่มีความเห็น\/ลายเซ็นประทับอยู่บนตัวหนังสือ/.test(after.body));
+  });
+
+  // คนที่เห็นคำเตือนตอนกดปุ่มคือผู้ตัดสินใจ แต่คนที่เอาไฟล์ไปส่งออกจริงคือธุรการ ถ้าไม่รวมไว้ที่หน้าแรก
+  // ธุรการจะไม่มีทางรู้เลยว่ามีไฟล์ที่ขาดลายเซ็นค้างอยู่ในระบบกี่ฉบับ
+  test('หน้าแรกของธุรการ/แอดมินต้องรวมไว้ให้เห็น แต่ครูทั่วไปไม่ต้องเห็น', async () => {
+    const doc = docWithAttachment('หนังสือที่ต้องขึ้นหน้าแรก');
+    db.prepare('UPDATE attachments SET stamp_failed_at = ?, stamp_failed_reason = ? WHERE document_id = ?')
+      .run(nowIso(), 'ทดสอบ', doc.id);
+
+    const reg = await dispatchGet(registrarUser, '/');
+    assert.match(reg.body, /ที่ยังไม่มีความเห็น\/ลายเซ็นอยู่บนตัวไฟล์/, 'ธุรการต้องเห็น เพราะเป็นคนเอาไฟล์ไปใช้');
+    assert.match(reg.body, new RegExp(`/documents/${doc.id}`), 'ต้องมีลิงก์ไปที่ฉบับนั้นตรงๆ');
+
+    const teacher = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/');
+    assert.ok(!/ที่ยังไม่มีความเห็น\/ลายเซ็นอยู่บนตัวไฟล์/.test(teacher.body),
+      'ครูทั่วไปเห็นแล้วทำอะไรไม่ได้ มีแต่ตกใจเปล่า');
+
+    db.prepare('UPDATE attachments SET stamp_failed_at = NULL WHERE document_id = ?').run(doc.id);
+  });
+});
+
 test('cleanup: remove the throwaway test database file', () => {
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });

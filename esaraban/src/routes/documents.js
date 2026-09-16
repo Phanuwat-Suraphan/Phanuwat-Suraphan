@@ -1580,6 +1580,19 @@ router.get('/documents/:id', requirePage((ctx) => {
                   ${a.stamped_storage_provider ? `<a class="btn btn-sm btn-outline" href="/files/${a.id}?original=1" target="_blank" rel="noopener">ดูต้นฉบับ (ไม่มีตรา)</a>` : ''}
                 </div>
               </div>
+              ${a.stamp_failed_at ? `
+              <!-- เตือนค้างไว้จนกว่าจะประทับสำเร็จ — เรื่องนี้ทำให้ไฟล์หนังสือราชการขาดความเห็นและ
+                   ลายเซ็นของผู้มีอำนาจ ซึ่งเป็นสาระสำคัญ แถบเตือนชั่วคราวบนหน้าแรกจึงไม่พอ -->
+              <div class="alert alert-danger" style="margin:.5rem 0 0;font-size:.85rem">
+                <strong>⚠️ ไฟล์นี้ยังไม่มีความเห็น/ลายเซ็นประทับอยู่บนตัวหนังสือ</strong> —
+                ระบบบันทึกผลการตัดสินใจไว้ในทะเบียนเรียบร้อยแล้ว แต่ตอนเขียนลงในไฟล์ PDF จริงไม่สำเร็จ
+                เมื่อ ${fmtDate(a.stamp_failed_at)}
+                <div style="margin-top:.3rem">สาเหตุ: ${esc(a.stamp_failed_reason || 'ไม่ทราบ')}</div>
+                <div style="margin-top:.3rem">
+                  <strong>อย่าเพิ่งส่งไฟล์นี้ออกไปหรือเก็บเข้าแฟ้ม</strong> —
+                  แจ้งผู้ดูแลระบบให้แก้แล้วเสนอผู้มีอำนาจลงนามบนไฟล์ใหม่อีกครั้ง
+                </div>
+              </div>` : ''}
               <div id="preview-${a.id}" style="display:none;margin-top:.6rem"></div>
             </div>`)).join('') : emptyState('📎', 'ยังไม่มีไฟล์แนบ')}
           <script>
@@ -1973,6 +1986,19 @@ async function readAttachmentBytes(att, { preferStamped = false } = {}) {
 
 // บันทึกสำเนาที่ประทับตรา/ลงนามแล้วกลับเข้า storage provider เดียวกับไฟล์ต้นฉบับ แล้วอัปเดตคอลัมน์
 // stamped_* ของ attachments (เขียนทับของเดิม เพราะไฟล์ใหม่มีทั้งกล่องเดิม + กล่องใหม่ซ้อนกันอยู่แล้ว)
+// จำไว้ว่าประทับลงไฟล์ไม่สำเร็จ เพื่อให้หน้าเอกสารเตือนค้างไว้ได้ — คำเตือนผ่าน ?warn= ขึ้นครั้งเดียว
+// บนหน้าแรกแล้วหายไปตลอดกาล ซึ่งไม่พอสำหรับเรื่องที่ทำให้ "ไฟล์หนังสือราชการขาดความเห็นและลายเซ็น ผอ."
+// โดยไม่มีใครรู้ (ดูเหตุผลเต็มที่คอมเมนต์ของคอลัมน์ stamp_failed_at ใน db.js)
+function markStampFailed(attachmentId, reason) {
+  try {
+    db.prepare('UPDATE attachments SET stamp_failed_at = ?, stamp_failed_reason = ? WHERE id = ?')
+      .run(nowIso(), String(reason || '').slice(0, 300), attachmentId);
+  } catch (e) {
+    // จำไม่ได้ก็ไม่ควรกลืน error เดิมที่กำลังรายงานอยู่ — คำเตือนผ่าน ?warn= ยังทำงานเหมือนเดิม
+    console.error('[stamp] บันทึกสถานะประทับไม่สำเร็จไม่ได้:', e?.message || e);
+  }
+}
+
 async function saveStampedCopy(att, stampedBuffer, yearBe) {
   // อ่านสำเนาที่ประทับไว้ก่อนหน้าจากฐานข้อมูลสดๆ ไม่ใช่จาก att ที่ส่งเข้ามา
   //
@@ -1993,6 +2019,9 @@ async function saveStampedCopy(att, stampedBuffer, yearBe) {
     db.prepare(`UPDATE attachments SET stamped_storage_provider = 'local', stamped_filepath = ?, stamped_drive_file_id = NULL, stamped_at = ? WHERE id = ?`)
       .run(safeName, nowIso(), att.id);
   }
+
+  // ประทับสำเร็จแล้ว ล้างคำเตือนเก่าทิ้ง — คำเตือนที่ค้างอยู่ทั้งที่แก้ไปแล้วจะถูกมองข้ามจนไม่มีใครอ่านอีก
+  db.prepare('UPDATE attachments SET stamp_failed_at = NULL, stamp_failed_reason = NULL WHERE id = ?').run(att.id);
 
   // เก็บเฉพาะไฟล์ผลลัพธ์สุดท้าย — ทิ้งสำเนาชั้นก่อนหน้าหลังบันทึกตัวใหม่สำเร็จแล้วเท่านั้น
   //
@@ -2117,6 +2146,7 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser,
     await saveStampedCopy(att, stampedBuffer, getDocument(documentId)?.year_be);
     audit({ userId: actorUser.id, action: 'attachment_mark_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId } });
   } catch (err) {
+    markStampFailed(att.id, err.message);
     audit({ userId: actorUser.id, action: 'attachment_mark_stamp_failed', tableName: 'attachments', recordId: att.id, detail: { documentId, error: err.message } });
     return `บันทึกผลสำเร็จ แต่ลงลายเซ็น "ทราบ" ลงในไฟล์ PDF จริงไม่สำเร็จ: ${err.message}`;
   }
@@ -2171,6 +2201,7 @@ async function stampRegistrarCommentIfApplicable({ documentId, stepId, actorUser
     db.prepare('INSERT INTO comments (id, document_id, user_id, message, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(uuid(), documentId, actorUser.id, `เรียนผู้อำนวยการโรงเรียน\n${text}`, nowIso());
   } catch (err) {
+    markStampFailed(att.id, err.message);
     audit({ userId: actorUser.id, action: 'attachment_registrar_stamp_failed', tableName: 'attachments', recordId: att.id, detail: { documentId, error: err.message } });
     return `บันทึกผลสำเร็จ แต่ลงความเห็นธุรการลงในไฟล์ PDF จริงไม่สำเร็จ: ${err.message}`;
   }
@@ -2212,6 +2243,7 @@ async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser
     await saveStampedCopy(att, stampedBuffer, doc?.year_be);
     audit({ userId: actorUser.id, action: 'attachment_director_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId, decision, note, marks: marks || [], notifyTarget: notifyTarget || '' } });
   } catch (err) {
+    markStampFailed(att.id, err.message);
     audit({ userId: actorUser.id, action: 'attachment_director_stamp_failed', tableName: 'attachments', recordId: att.id, detail: { documentId, decision, error: err.message } });
     return `บันทึกผลสำเร็จ แต่ลงตราประทับ/ข้อความ "ความเห็น" ลงในไฟล์ PDF จริงไม่สำเร็จ: ${err.message}`;
   }

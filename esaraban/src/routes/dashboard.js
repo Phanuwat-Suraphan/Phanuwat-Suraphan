@@ -182,9 +182,32 @@ router.get('/', requirePage((ctx) => {
   const backup = canFixBackup ? getBackupStatus() : null;
   const backupAlert = !backup ? '' : backupWarningHtml(backup);
 
+  // หนังสือที่ประทับความเห็น/ลายเซ็นลงไฟล์ PDF ไม่สำเร็จ — ค้างไว้จนกว่าจะแก้
+  //
+  // แถบเตือนตอนกดปุ่มขึ้นครั้งเดียวแล้วหายไป และคนที่เห็นคือผู้ตัดสินใจ ไม่ใช่ธุรการซึ่งเป็นคนเอาไฟล์
+  // ไปส่งออกจริง ถ้าไม่รวมมาไว้ตรงนี้ ธุรการจะไม่มีทางรู้เลยว่ามีไฟล์ที่ขาดลายเซ็นอยู่ในระบบกี่ฉบับ
+  const stampFailed = canFixBackup ? db.prepare(`
+    SELECT a.document_id, d.doc_number_display, d.title
+    FROM attachments a JOIN documents d ON d.id = a.document_id
+    WHERE a.stamp_failed_at IS NOT NULL AND a.destroyed_at IS NULL AND d.deleted_at IS NULL
+    ORDER BY a.stamp_failed_at DESC LIMIT 5
+  `).all() : [];
+  const stampAlert = stampFailed.length ? `
+    <div class="alert alert-danger">
+      <strong>⚠️ มีไฟล์หนังสือ ${stampFailed.length === 5 ? '5 ฉบับขึ้นไป' : `${stampFailed.length} ฉบับ`} ที่ยังไม่มีความเห็น/ลายเซ็นอยู่บนตัวไฟล์</strong>
+      <div style="margin-top:.35rem;font-size:.9rem">
+        ผลการตัดสินใจถูกบันทึกในทะเบียนแล้ว แต่เขียนลงในไฟล์ PDF จริงไม่สำเร็จ —
+        <strong>อย่าเพิ่งส่งไฟล์เหล่านี้ออกไปหรือเก็บเข้าแฟ้ม</strong>
+      </div>
+      <ul style="margin:.4rem 0 0;padding-left:1.1rem;font-size:.9rem">
+        ${stampFailed.map((r) => `<li><a href="/documents/${r.document_id}">${esc(r.doc_number_display)} — ${esc(r.title)}</a></li>`).join('')}
+      </ul>
+    </div>` : '';
+
   const greeting = timeGreeting();
   const content = `
     ${backupAlert}
+    ${stampAlert}
     ${ctx.query.warn ? `<div class="alert alert-warning">⚠️ ${esc(ctx.query.warn)}</div>` : ''}
     <div id="installHint" class="card" hidden style="border-color:var(--primary)">
       <div class="card-header">
