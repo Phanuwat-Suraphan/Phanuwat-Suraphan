@@ -11,7 +11,9 @@ class Router {
         return '/([^/]+)';
       });
     const regex = new RegExp(`^${regexStr}$`);
-    this.routes.push({ method, regex, keys, handler });
+    // เก็บ pattern ต้นฉบับไว้ด้วย (ไม่ได้ใช้ตอน dispatch) — ใช้ไล่รายการเส้นทางทั้งหมดได้ ซึ่งจำเป็น
+    // สำหรับเทสต์ที่กวาดทุกหน้าเพื่อหาการรั่วของหนังสือลับ regex อย่างเดียวอ่านกลับเป็นเส้นทางไม่ได้
+    this.routes.push({ method, pattern, regex, keys, handler });
   }
 
   get(pattern, handler) { this.add('GET', pattern, handler); }

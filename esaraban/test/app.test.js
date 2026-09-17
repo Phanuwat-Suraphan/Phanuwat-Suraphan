@@ -7112,6 +7112,70 @@ describe('ลงทะเบียนเอง + ผู้ดูแลอนุ�
   });
 });
 
+// กวาดทุกหน้าในระบบเพื่อหาการรั่วของหนังสือชั้นความลับ
+//
+// บั๊กชนิดนี้เคยเกิดมาแล้วสองครั้งในระบบนี้ — หน้าแรกดึง "เอกสารล่าสุด 8 ฉบับของทั้งระบบ" มาแสดงโดย
+// ไม่กรองสิทธิ์ และปุ่ม export ดัมป์เอกสารทุกฉบับในฐานข้อมูลให้ใครก็ตามที่ล็อกอิน ทั้งสองครั้งถูกแก้
+// ไปแล้วทีละจุด แต่การแก้ทีละจุดไม่ได้กันหน้าที่จะเพิ่มเข้ามาใหม่วันหลัง
+//
+// เทสต์นี้จึงไล่ "ทุกเส้นทาง GET ที่มีอยู่จริงในระบบ" จากตัว router เอง ไม่ใช่รายการที่เขียนมือไว้ —
+// หน้าที่เพิ่มใหม่จะถูกกวาดโดยอัตโนมัติตั้งแต่วันที่เพิ่ม โดยไม่มีใครต้องนึกขึ้นได้เอง
+describe('หนังสือชั้นความลับต้องไม่รั่วออกทางหน้าไหนเลย', () => {
+  const SECRET_TITLE = 'เรื่องลับมากที่ครูธรรมดาห้ามเห็นเด็ดขาด ' + Math.random().toString(36).slice(2, 10);
+  const SECRET_CORRESPONDENT = 'หน่วยงานลับ ' + Math.random().toString(36).slice(2, 10);
+
+  test('ไล่ทุกหน้าที่ครูธรรมดาเปิดได้ ต้องไม่เจอชื่อเรื่องหนังสือลับเลยสักหน้า', async () => {
+    // หนังสือลับมากที่ธุรการเป็นผู้บันทึก ไม่ได้มอบหมายให้ครูคนนี้ และไม่ได้ให้สิทธิ์เข้าถึงไว้
+    const doc = makeDoc({
+      title: SECRET_TITLE, correspondentName: SECRET_CORRESPONDENT,
+      secretLevel: 'top_secret', createdBy: registrarUser.id,
+    });
+    // ดันให้เป็นฉบับใหม่ที่สุดแบบไม่มีทางเสมอ — หลายหน้าแสดงแค่ "ล่าสุด N ฉบับ" ถ้าฉบับทดสอบไม่ติด
+    // อยู่ในช่วงนั้น เทสต์จะผ่านทั้งที่หน้านั้นรั่วจริง (เจอมาแล้วตอนลองถอดตัวกรองสิทธิ์ออกเพื่อพิสูจน์:
+    // ตัวกวาดผ่านฉลุยทั้งที่หน้าแรกกำลังเปิดเผยหนังสือลับอยู่ เพราะเวลาสร้างชนกันจนลำดับไม่แน่นอน)
+    const future = new Date(Date.now() + 86400000).toISOString();
+    db.prepare('UPDATE documents SET created_at = ?, updated_at = ? WHERE id = ?').run(future, future, doc.id);
+
+    const teacher = loadUserForTest(seed.userIds.teacher001);
+    assert.equal(canUserSeeDocument(teacher, db.prepare('SELECT * FROM documents WHERE id = ?').get(doc.id)), false,
+      'ตั้งค่าเทสต์ผิด — ถ้าครูคนนี้มีสิทธิ์เห็นอยู่แล้ว เทสต์นี้ก็ไม่ได้ตรวจอะไรเลย');
+
+    const { router: r } = await import('../src/router.js');
+    // เส้นทางที่ไม่มี :param เท่านั้น — เส้นทางที่ต้องใส่ id มีเทสต์ตรวจสิทธิ์รายฉบับของตัวเองอยู่แล้ว
+    const paths = [...new Set(r.routes.filter((x) => x.method === 'GET' && !x.keys.length).map((x) => x.pattern))];
+    assert.ok(paths.length >= 15, `ควรกวาดได้หลายสิบหน้า แต่ได้ ${paths.length} — อาจอ่านรายการเส้นทางผิด`);
+
+    const leaked = [];
+    const skipped = [];
+    for (const path of paths) {
+      let res;
+      try {
+        res = await dispatchGet(teacher, path);
+      } catch (e) {
+        // ห้าม "ข้ามเงียบๆ" เด็ดขาด — ตอนแรกเขียน catch แล้ว continue เฉยๆ ผลคือหน้าที่โยน error
+        // ถูกข้ามไปโดยไม่มีใครรู้ แล้วตัวกวาดก็ผ่านฉลุยทั้งที่ไม่ได้ตรวจหน้านั้นเลย (พิสูจน์แล้วว่า
+        // เกิดขึ้นจริง: ถอดตัวกรองสิทธิ์ออกจากหน้าแรกแล้วเทสต์นี้ยังเขียว) จึงต้องเก็บไว้แล้วฟ้อง
+        skipped.push(`${path} (${e.message})`);
+        continue;
+      }
+      if (typeof res?.body !== 'string') { skipped.push(`${path} (ไม่ได้คืน body เป็นข้อความ)`); continue; }
+      if (res.body.includes(SECRET_TITLE) || res.body.includes(SECRET_CORRESPONDENT)) leaked.push(path);
+    }
+    assert.deepEqual(leaked, [], `หน้าเหล่านี้เปิดเผยหนังสือชั้นความลับให้ครูธรรมดาเห็น: ${leaked.join(', ')}`);
+    // หน้าหลักที่แสดงรายการเอกสารต้องถูกตรวจจริงทุกครั้ง ถ้าถูกข้ามแปลว่าตัวกวาดไม่ได้ทำงาน
+    for (const must of ['/', '/documents', '/tasks', '/reports', '/notifications']) {
+      assert.ok(!skipped.some((x) => x.startsWith(`${must} `)) && paths.includes(must),
+        `ตัวกวาดต้องตรวจ ${must} ให้ได้จริง แต่ถูกข้ามไป — ${skipped.join(' · ')}`);
+    }
+  });
+
+  // ค่าที่ระบบไม่รู้จักต้องไม่ถูกเดาว่าเป็นหนังสือทั่วไป — ถ้าเดาผิดทางนั้น หนังสือที่ตั้งใจให้ลับที่สุด
+  // จะกลายเป็นหนังสือสาธารณะทันทีโดยไม่มีอะไรฟ้อง
+  test('ชั้นความลับที่ไม่รู้จักต้องถูกปฏิเสธตั้งแต่ตอนบันทึก', () => {
+    assert.throws(() => makeDoc({ title: 'ชั้นความลับมั่ว', secretLevel: 'ลับสุดยอดพิเศษ' }));
+  });
+});
+
 test('cleanup: remove the throwaway test database file', () => {
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });
