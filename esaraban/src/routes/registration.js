@@ -41,7 +41,16 @@ function registerPage({ error, done, values = {} } = {}) {
       กรอกข้อมูลของคุณแล้วตั้งรหัสผ่านกับ PIN ของตัวเอง จากนั้นผู้ดูแลระบบจะตรวจสอบและอนุมัติ
       — <strong>ไม่มีใครเห็นรหัสผ่านของคุณเลย แม้แต่ผู้ดูแล</strong>
     </p>
-    ${error ? `<div class="alert alert-danger">${esc(error)}</div>` : ''}
+    ${error ? `<div class="alert alert-danger">
+      <div>${esc(error)}</div>
+      <!-- ต้องบอกเรื่องนี้ทุกครั้งที่ตีกลับ ไม่ใช่เฉพาะตอนที่รหัสผ่านเป็นต้นเหตุ — ระบบไม่ส่งรหัสผ่าน
+           และ PIN กลับมาหน้าเว็บ (ตั้งใจ) ถ้าไม่บอก ครูจะแก้แต่สิ่งที่ข้อความพูดถึงแล้วกดส่งอีกครั้ง
+           จากนั้นเบราว์เซอร์จะบล็อกที่ช่องรหัสผ่านที่ว่างอยู่ หน้าไม่ไปไหน กดกี่ครั้งก็เหมือนปุ่มเสีย -->
+      <div style="margin-top:.5rem;font-size:.9rem">
+        <strong>กรุณากรอกรหัสผ่านและ PIN ใหม่อีกครั้งด้วยครับ</strong> —
+        สองช่องนี้ถูกล้างทุกครั้งที่ระบบตีกลับ เพื่อไม่ให้รหัสของคุณถูกส่งกลับมาแสดงบนหน้าเว็บ
+      </div>
+    </div>` : ''}
     <form method="post" action="/register">
       <div class="form-grid cols-2">
         <div class="field"><label>คำนำหน้า</label><input type="text" name="prefix" value="${v('prefix')}" placeholder="เช่น นาง, นาย" /></div>
@@ -65,10 +74,11 @@ function registerPage({ error, done, values = {} } = {}) {
         <div class="help-text">เป็นเพียงคำขอ — ผู้ดูแลระบบเป็นผู้กำหนดบทบาทจริงตอนอนุมัติ</div>
       </div>
       <div class="field"><label>อีเมล</label><input type="email" name="email" value="${v('email')}" /></div>
-      <div class="field"><label>รหัสผ่าน (อย่างน้อย 8 ตัวอักษร) *</label>
-        <input type="password" name="password" minlength="8" required autocomplete="new-password" /></div>
-      <div class="field"><label>PIN 6 หลัก *</label>
-        <input type="text" name="pin" inputmode="numeric" maxlength="6" required />
+      <div class="field"><label for="regPassword">รหัสผ่าน (อย่างน้อย 8 ตัวอักษร) *</label>
+        <input type="password" id="regPassword" name="password" minlength="8" required autocomplete="new-password"
+          ${error ? 'autofocus' : ''} /></div>
+      <div class="field"><label for="regPin">PIN 6 หลัก *</label>
+        <input type="text" id="regPin" name="pin" inputmode="numeric" maxlength="6" required />
         <div class="help-text">ใช้แทนการลงลายมือชื่อเวลากด "ทราบ"/ลงนาม จึงต้องเป็นความลับเฉพาะตัว ห้ามใช้ 111111 หรือ 123456</div></div>
       <div class="field"><label>ข้อความถึงผู้ดูแล</label>
         <textarea name="note" rows="2" placeholder="เช่น ครูประจำชั้น ป.4 เพิ่งย้ายมาเทอมนี้">${v('note')}</textarea>

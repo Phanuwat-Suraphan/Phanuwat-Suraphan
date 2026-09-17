@@ -462,6 +462,74 @@
     });
   })();
 
+  /**
+   * ข้อความเตือนของเบราว์เซอร์เป็นภาษาไทย
+   *
+   * ฟอร์มที่ส่งแบบ <form method="post"> ธรรมดา (หน้าเข้าสู่ระบบ ตั้งรหัสครั้งแรก ลงทะเบียน) พึ่ง
+   * required/minlength ของ HTML ซึ่งเบราว์เซอร์จะบล็อกการส่งแล้วขึ้นฟองข้อความตามภาษาของ "เครื่อง"
+   * ไม่ใช่ภาษาของเว็บ เครื่องส่วนใหญ่ตั้งเป็นอังกฤษ ครูจึงเห็นแค่ "Please fill out this field."
+   * โผล่แวบเดียวแล้วหายไป — ซึ่งอ่านไม่ออกและไม่ได้บอกว่าช่องไหน
+   *
+   * อาการที่เกิดจริงและเป็นที่มาของการแก้ตรงนี้: ครูกรอกฟอร์มลงทะเบียนครบแล้วใช้ PIN 123456
+   * ระบบตีกลับมาว่า PIN เดาง่ายเกินไป ครูแก้ PIN แล้วกด "ส่งคำขอลงทะเบียน" อีกครั้ง — แต่ช่อง
+   * รหัสผ่านถูกล้างไปตอนตีกลับ (ตั้งใจ ไม่ส่งรหัสผ่านกลับมาหน้าเว็บ) ครูไม่รู้ เพราะข้อความพูดถึง
+   * แต่ PIN พอกดส่ง เบราว์เซอร์บล็อกที่ช่องรหัสผ่านพร้อมฟองภาษาอังกฤษ หน้าจึงไม่ไปไหนเลย
+   * กดกี่ครั้งก็เหมือนปุ่มเสีย = "กดส่งแล้วส่งไม่ได้" (ยืนยันด้วยเบราว์เซอร์จริงแล้วว่าเกิดขึ้นตามนี้)
+   *
+   * ใช้ทั้งระบบ ไม่เฉพาะหน้าลงทะเบียน เพราะทุกฟอร์มที่มี required เจอปัญหาเดียวกันหมด
+   */
+  (function thaiValidationMessages() {
+    function labelOf(el) {
+      const lb = el.id ? document.querySelector('label[for="' + CSS.escape(el.id) + '"]') : null;
+      // ตัด * และวงเล็บอธิบายออก — ป้ายช่องหลายอันเขียนว่า "รหัสผ่าน (อย่างน้อย 8 ตัวอักษร) *"
+      // ซึ่งพออ่านรวมกับข้อความจะกลายเป็น "กรุณากรอกรหัสผ่าน (อย่างน้อย 8 ตัวอักษร)" ที่รุงรัง
+      const text = (lb ? lb.textContent : '').replace(/\([^)]*\)/g, '').replace(/\*/g, '').trim();
+      if (!text) return 'ช่องนี้';
+      // ภาษาไทยเขียนติดกันไม่เว้นวรรค แต่ป้ายที่ขึ้นต้นด้วยอักษรโรมัน/ตัวเลข (เช่น "PIN 6 หลัก")
+      // ต้องมีช่องไฟคั่น ไม่งั้นได้ "กรุณากรอกPIN 6 หลัก" ที่อ่านติดกันเป็นคำเดียว
+      return (/^[A-Za-z0-9]/.test(text) ? ' ' : '') + text;
+    }
+    function messageFor(el) {
+      const v = el.validity;
+      const name = labelOf(el);
+      if (v.valueMissing) {
+        if (el.tagName === 'SELECT') return 'กรุณาเลือก' + name + 'จากรายการ';
+        if (el.type === 'checkbox' || el.type === 'radio') return 'กรุณาเลือก' + name;
+        if (el.type === 'file') return 'กรุณาเลือกไฟล์';
+        return 'กรุณากรอก' + name;
+      }
+      if (v.tooShort) return name + ' ต้องมีอย่างน้อย ' + el.minLength + ' ตัวอักษร (ตอนนี้ ' + el.value.length + ' ตัว)';
+      if (v.tooLong) return name + ' ยาวเกินกำหนด (ไม่เกิน ' + el.maxLength + ' ตัวอักษร)';
+      if (v.typeMismatch) return el.type === 'email' ? 'รูปแบบอีเมลไม่ถูกต้อง เช่น name@example.com' : 'รูปแบบของ' + name + 'ไม่ถูกต้อง';
+      if (v.patternMismatch) return 'รูปแบบของ' + name + 'ไม่ถูกต้อง';
+      if (v.rangeUnderflow) return name + ' ต้องไม่น้อยกว่า ' + el.min;
+      if (v.rangeOverflow) return name + ' ต้องไม่เกิน ' + el.max;
+      if (v.stepMismatch || v.badInput) return 'กรุณากรอก' + name + 'ให้ถูกต้อง';
+      return '';
+    }
+    // capture: true — invalid ไม่ bubble ขึ้นถึง document ต้องดักขาลง
+    document.addEventListener('invalid', function (e) {
+      const el = e.target;
+      if (!el || typeof el.setCustomValidity !== 'function') return;
+      const msg = messageFor(el);
+      if (msg) el.setCustomValidity(msg);
+      // เลื่อนช่องแรกที่มีปัญหาให้เห็นเต็มๆ — บนมือถือช่องที่ถูกบล็อกมักอยู่นอกจอ ฟองข้อความจึงโผล่
+      // นอกสายตาและดูเหมือนกดปุ่มแล้วไม่มีอะไรเกิดขึ้นเลย
+      if (!document.__invalidScrolled) {
+        document.__invalidScrolled = true;
+        try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) { /* เบราว์เซอร์เก่า */ }
+        window.setTimeout(function () { document.__invalidScrolled = false; }, 300);
+      }
+    }, true);
+    // ต้องล้างทุกครั้งที่ผู้ใช้แก้ ไม่งั้น customValidity ที่ตั้งไว้จะค้าง ทำให้ช่องนั้น "ผิดตลอดไป"
+    // แล้วฟอร์มจะส่งไม่ออกอีกเลย ซึ่งร้ายแรงกว่าปัญหาเดิมที่กำลังแก้อยู่
+    ['input', 'change'].forEach(function (evt) {
+      document.addEventListener(evt, function (e) {
+        if (e.target && typeof e.target.setCustomValidity === 'function') e.target.setCustomValidity('');
+      }, true);
+    });
+  })();
+
   // Ctrl/Cmd+K -> focus search. Ctrl/Cmd+N -> new document (note: some browsers reserve
   // Ctrl+N for "new window" and never deliver the keydown event to the page at all — no
   // workaround exists for that case, it's a browser-level reservation, not a bug here).

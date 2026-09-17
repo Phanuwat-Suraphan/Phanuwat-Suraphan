@@ -1984,6 +1984,55 @@ describe('คำเตือนไฟล์ซ้ำต้องไม่บอ�
   });
 });
 
+// ครูกรอกฟอร์มลงทะเบียนครบแล้วใช้ PIN 123456 ระบบตีกลับว่า PIN เดาง่ายเกินไป ครูแก้แต่ PIN ตามที่
+// ข้อความบอก แล้วกด "ส่งคำขอลงทะเบียน" อีกครั้ง — หน้าไม่ไปไหนเลย กดกี่ครั้งก็เหมือนปุ่มเสีย
+// เพราะช่องรหัสผ่านถูกล้างตอนตีกลับ (ตั้งใจ ไม่ส่งรหัสผ่านกลับมาแสดงบนหน้าเว็บ) แต่ไม่มีอะไรบอกครู
+// แล้วเบราว์เซอร์ก็บล็อกด้วยฟองข้อความภาษาอังกฤษ "Please fill out this field." ที่โผล่แวบเดียว
+// ยืนยันด้วยเบราว์เซอร์จริงแล้วว่าเกิดขึ้นตามนี้ทุกขั้น
+describe('ฟอร์มลงทะเบียนที่ถูกตีกลับต้องไม่กลายเป็นทางตัน', () => {
+  const goodForm = {
+    employeeCode: 'krutest001', firstName: 'ทดสอบ', lastName: 'ตีกลับ',
+    password: 'Rahatpan2569', pin: '473812', note: 'ครูประจำชั้น ป.5',
+  };
+  const submit = (over = {}) => dispatchPost(null, '/register', { ...goodForm, departmentId: deptId, ...over });
+
+  test('หน้าที่ตีกลับต้องบอกให้กรอกรหัสผ่านและ PIN ใหม่ ไม่ใช่พูดถึงแต่ช่องที่ผิด', async () => {
+    const res = await submit({ pin: '123456' });
+    assert.equal(res.status, 400);
+    assert.match(res.body, /PIN นี้เดาง่ายเกินไป/, 'ต้องบอกสาเหตุที่ถูกตีกลับ');
+    assert.match(res.body, /กรอกรหัสผ่านและ PIN ใหม่อีกครั้ง/,
+      'ต้องบอกด้วยว่าสองช่องนี้ถูกล้าง ไม่งั้นครูจะแก้แต่ PIN แล้วกดส่งไม่ออกโดยไม่รู้สาเหตุ');
+  });
+
+  test('เคอร์เซอร์ต้องไปรออยู่ที่ช่องรหัสผ่านที่ถูกล้าง', async () => {
+    const res = await submit({ pin: '123456' });
+    assert.match(res.body, /id="regPassword"[^>]*autofocus/,
+      'ช่องรหัสผ่านต้อง autofocus ตอนตีกลับ เพื่อให้ครูพิมพ์ต่อได้ทันที');
+    // หน้าปกติ (ยังไม่เคยส่ง) ต้องไม่แย่งโฟกัส ไม่งั้นมือถือจะเด้งคีย์บอร์ดขึ้นมาทับฟอร์มตั้งแต่เปิดหน้า
+    const fresh = await dispatchGet(null, '/register', {});
+    assert.ok(!/autofocus/.test(fresh.body), 'หน้าลงทะเบียนที่เพิ่งเปิดต้องไม่ autofocus');
+  });
+
+  test('ข้อมูลที่กรอกไว้ต้องอยู่ครบ แต่รหัสผ่านกับ PIN ต้องไม่ถูกส่งกลับมาแสดง', async () => {
+    const res = await submit({ pin: '123456', prefix: 'นางสาว' });
+    assert.ok(res.body.includes('krutest001') && res.body.includes('ตีกลับ') && res.body.includes('นางสาว'),
+      'ข้อมูลที่ไม่ใช่ความลับต้องยังอยู่ ไม่ให้ครูกรอกใหม่ทั้งฟอร์ม');
+    assert.ok(res.body.includes(`value="${deptId}"`), 'ฝ่ายที่เลือกไว้ต้องยังอยู่');
+    assert.ok(!res.body.includes('Rahatpan2569'), 'ห้ามส่งรหัสผ่านกลับมาแสดงบนหน้าเว็บ');
+    assert.ok(!res.body.includes('123456') || !/name="pin"[^>]*value="123456"/.test(res.body),
+      'ห้ามส่ง PIN กลับมาใส่ในช่อง');
+  });
+
+  test('ข้อความเตือนของเบราว์เซอร์ต้องถูกแปลเป็นไทยให้ทุกฟอร์ม', () => {
+    const appJs = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+    assert.match(appJs, /addEventListener\('invalid'/, 'ต้องดัก invalid เพื่อเปลี่ยนข้อความเป็นไทย');
+    assert.match(appJs, /กรุณากรอก/, 'ต้องมีข้อความภาษาไทยแทน "Please fill out this field."');
+    // ถ้าไม่ล้าง customValidity ตอนผู้ใช้แก้ ช่องนั้นจะผิดตลอดไปและฟอร์มส่งไม่ออกอีกเลย
+    // ซึ่งร้ายแรงกว่าปัญหาเดิมที่กำลังแก้อยู่
+    assert.match(appJs, /setCustomValidity\(''\)/, 'ต้องล้าง customValidity ตอนผู้ใช้แก้ค่า');
+  });
+});
+
 // เดิมฟอร์มลงทะเบียนมีช่องแนบไฟล์ตายตัว 3 ช่อง (fileInput/fileInput2/fileInput3) ซึ่งไม่พอกับหนังสือ
 // ที่มีสิ่งที่ส่งมาด้วยหลายฉบับ ตอนนี้เป็นช่องเดียวเลือกได้ทีละหลายไฟล์ ตัวจัดรายการอยู่ฝั่งเบราว์เซอร์
 // (window.attachMultiPreview ใน public/app.js) เทสต์ชุดนี้จึงล็อกสองอย่างที่ทดสอบได้จากฝั่งเซิร์ฟเวอร์:
