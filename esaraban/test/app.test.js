@@ -3868,6 +3868,40 @@ describe('รายงานสรุป: แยกตามปีงบปร�
       assert.ok(countNew >= 1, 'หนังสือที่ลงรับ 1 ต.ค. เช้ามืด ต้องอยู่ในปีงบประมาณ 2570');
     });
 
+    // ฐานข้อมูลที่ผ่าน migration รุ่นก่อนหน้ามาแล้ว ได้ "วันที่ตามเวลา UTC" ไปเติมใน received_date
+    // ซึ่งช้ากว่าเวลาไทย 7 ชั่วโมง — ต้องมีตัวแก้ย้อนหลังให้ แต่ห้ามทับของที่ธุรการแก้เองไว้แล้ว
+    test('migration ต้องแก้วันที่รับที่เติมไว้ด้วยเวลา UTC และไม่ทับของที่แก้เอง', () => {
+      const mk = (title, receivedDate, edited) => {
+        const id = uuid();
+        db.prepare(`INSERT INTO documents (id, direction, running_number, year_be, doc_number_display, title,
+            doc_type_id, department_id, status, created_by, created_at, updated_at, received_date)
+          VALUES (?, 'incoming', 9902, 2570, ?, ?, ?, ?, 'registered', ?, ?, ?, ?)`)
+          .run(id, `tz-${title}`, title, db.prepare('SELECT id FROM document_types LIMIT 1').get().id,
+            deptId, seed.userIds.reg001, createdUtc, createdUtc, receivedDate);
+        if (edited) {
+          db.prepare(`INSERT INTO audit_logs (id, user_id, action, table_name, record_id, created_at)
+            VALUES (?, ?, 'document_register_info_edited', 'documents', ?, ?)`)
+            .run(uuid(), seed.userIds.reg001, id, nowIso());
+        }
+        return id;
+      };
+      // ค่าที่ migration เดิมเติมไว้ (วันที่ตามเวลา UTC) — ต้องถูกแก้
+      const stale = mk('เติมด้วยเวลา UTC', '2026-09-30', false);
+      // ค่าเดียวกันแต่ธุรการเคยเข้าไปแก้เอง — ต้องไม่ถูกแตะ
+      const manual = mk('ธุรการแก้เอง', '2026-09-30', true);
+      // ค่าที่ธุรการตั้งเป็นวันอื่น — ต้องไม่ถูกแตะ
+      const other = mk('ตั้งวันอื่นไว้', '2026-09-25', false);
+
+      migrate();
+
+      const dateOf = (id) => db.prepare('SELECT received_date d FROM documents WHERE id = ?').get(id).d;
+      assert.equal(dateOf(stale), '2026-10-01', 'ค่าที่เติมด้วยเวลา UTC ต้องถูกแก้เป็นวันที่ตามเวลาไทย');
+      assert.equal(dateOf(manual), '2026-09-30', 'ของที่ธุรการแก้เองต้องไม่ถูกทับ');
+      assert.equal(dateOf(other), '2026-09-25', 'วันที่ที่ตั้งไว้เองต้องไม่ถูกแตะ');
+
+      for (const id of [stale, manual, other]) db.prepare('DELETE FROM documents WHERE id = ?').run(id);
+    });
+
     test('ตัวกรองช่วงวันของทะเบียนต้องหาเจอด้วยวันที่ตามปฏิทินไทย', async () => {
       // กรองวันที่ 1 ต.ค. 2569 วันเดียว — ต้องเจอหนังสือฉบับนี้
       const hit = await dispatchGet(registrarUser, '/documents',

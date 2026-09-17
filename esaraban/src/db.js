@@ -745,7 +745,20 @@ export function migrate() {
     db.exec('ALTER TABLE documents ADD COLUMN received_date TEXT');
     // เติมย้อนหลังจากวันที่ลงทะเบียนเข้าระบบ ซึ่งเป็นค่าที่ทะเบียนใช้แสดงอยู่เดิมอยู่แล้ว — ปล่อยว่างไว้
     // ทะเบียนที่พิมพ์ออกมาจะมีช่อง "วันที่รับ" ว่างทั้งเล่มสำหรับหนังสือเก่าทุกฉบับ
-    db.exec("UPDATE documents SET received_date = substr(created_at, 1, 10) WHERE received_date IS NULL");
+    db.exec(`UPDATE documents SET received_date = ${bangkokDateSql('created_at')} WHERE received_date IS NULL`);
+  } else {
+    // ฐานข้อมูลที่ผ่าน migration รุ่นก่อนหน้ามาแล้ว ได้ "วันที่ตามเวลา UTC" ไปเติมไว้ ซึ่งช้ากว่าเวลาไทย
+    // 7 ชั่วโมง — หนังสือที่ลงรับระหว่างเที่ยงคืนถึง 7 โมงเช้าจึงได้วันที่รับเป็นของเมื่อวาน
+    //
+    // แก้เฉพาะแถวที่ยัง "เท่ากับค่าที่ migration เดิมเติมไว้เป๊ะ" และไม่เคยถูกแก้ด้วยมือเท่านั้น
+    // ถ้าธุรการเข้าไปแก้วันที่รับเองแล้ว (ดู document_register_info_edited) ต้องไม่ไปทับของเขา
+    const fixedReceived = db.prepare(`
+      UPDATE documents SET received_date = ${bangkokDateSql('created_at')}
+      WHERE received_date = substr(created_at, 1, 10)
+        AND received_date <> ${bangkokDateSql('created_at')}
+        AND id NOT IN (SELECT record_id FROM audit_logs WHERE action = 'document_register_info_edited')
+    `).run().changes;
+    if (fixedReceived) console.log(`[migrate] แก้วันที่รับที่เติมไว้ด้วยเวลา UTC ${fixedReceived} ฉบับ ให้เป็นวันที่ตามเวลาไทย`);
   }
   // ฐานข้อมูลที่ deploy ไปก่อนหน้านี้ยังไม่มีคอลัมน์นี้ — เซสชันเก่าทั้งหมดถือเป็นเครื่องส่วนกลาง (0)
   const sessionCols = db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name);
@@ -861,7 +874,7 @@ export function migrate() {
   // ตัวเลขวันที่เท่านั้น และวันที่อัปโหลดเป็นค่าที่จริงและใกล้เคียงที่สุดที่ระบบรู้
   if (tableExists('daily_summaries')) {
     const fixedSummaries = db.prepare(`
-      UPDATE daily_summaries SET summary_date = substr(created_at, 1, 10), updated_at = ?
+      UPDATE daily_summaries SET summary_date = date(created_at, '+7 hours'), updated_at = ?
       WHERE summary_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
         OR CAST(substr(summary_date, 6, 2) AS INTEGER) NOT BETWEEN 1 AND 12
         OR CAST(substr(summary_date, 9, 2) AS INTEGER) NOT BETWEEN 1 AND 31
