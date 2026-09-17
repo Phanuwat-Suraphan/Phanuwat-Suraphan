@@ -1,5 +1,5 @@
 import { router, html, json } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateShort, statusBadge, rowAttrs, rowLink } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateShort, fmtThaiDateLong, statusBadge, rowAttrs, rowLink, schoolName } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { RETENTION_LABEL } from '../db.js';
 import {
@@ -118,6 +118,9 @@ router.get('/retention/batches/:id', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(
           ${batch.decision_note ? `<tr><td class="text-muted">บันทึกการพิจารณา</td><td>${esc(batch.decision_note)}</td></tr>` : ''}
         </tbody>
       </table>
+      <div class="chip-row" style="margin-top:.8rem">
+        <a class="btn btn-outline btn-sm" href="/retention/batches/${esc(batch.id)}/print" target="_blank" rel="noopener">🖨️ พิมพ์บัญชีหนังสือขอทำลาย (แบบที่ 25)</a>
+      </div>
       ${batch.status === 'pending_approval' && canApprove ? `
         <div class="callout-tip" style="margin-top:1rem">
           ⚠️ การอนุมัติจะเปลี่ยนสถานะเอกสาร ${batch.items.length} ฉบับเป็น "ทำลายแล้ว" และ<strong>ลบไฟล์แนบออกจากระบบถาวร</strong>
@@ -157,6 +160,122 @@ router.get('/retention/batches/:id', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(
     </script>`;
 
   html(ctx, 200, layout({ user: ctx.user, title: 'บัญชีทำลายหนังสือ', path: '/retention', content }));
+})));
+
+/**
+ * หน้าพิมพ์ "บัญชีหนังสือขอทำลาย" ตามแบบที่ 25 ท้ายระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ พ.ศ. 2526
+ *
+ * ทำไมต้องมี: ระเบียบกำหนดให้คณะกรรมการทำลายหนังสือจัดทำบัญชีหนังสือขอทำลายเสนอหัวหน้าส่วนราชการ
+ * พิจารณา แล้วเก็บบัญชีนั้นไว้เป็นหลักฐาน — ตัวระบบบันทึกครบทุกอย่างแล้ว แต่เดิม "พิมพ์ออกมาไม่ได้"
+ * ทั้งที่ส่วนอื่นของระบบ (ทะเบียนหนังสือ ใบลา) มีหน้าพิมพ์หมด โรงเรียนจึงต้องพิมพ์หน้าจอหรือพิมพ์
+ * บัญชีขึ้นมาใหม่เองด้วยมือ ซึ่งเสี่ยงคลาดเคลื่อนจากของจริงในระบบ
+ *
+ * ช่อง "การพิจารณา" เว้นว่างไว้ให้เขียนด้วยมือตามแบบราชการ เพราะเป็นความเห็นรายฉบับของคณะกรรมการ
+ * ที่เกิดขึ้นตอนประชุมพิจารณา ไม่ใช่ข้อมูลที่ระบบมี
+ */
+router.get('/retention/batches/:id/print', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage((ctx) => {
+  const batch = getBatch(ctx.params.id);
+  if (!batch) return html(ctx, 404, layout({ user: ctx.user, title: 'ไม่พบข้อมูล', path: '/retention', content: '<p>ไม่พบบัญชีทำลายหนังสือนี้</p>' }));
+
+  // แยกรายชื่อกรรมการทีละบรรทัด — ระเบียบกำหนดอย่างน้อย 3 คน จึงเว้นบล็อกลงนามไว้อย่างน้อย 3 ช่อง
+  // ถ้ากรอกมาน้อยกว่านั้นก็ยังเว้นช่องว่างให้เซ็นครบ ไม่ใช่พิมพ์ออกมาแล้วมีที่เซ็นไม่พอ
+  const committee = String(batch.committee_names || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+  while (committee.length < 3) committee.push('');
+
+  const sigBlock = (name, caption) => `
+    <div class="sig">
+      <div class="sig-space"></div>
+      <div>(ลงชื่อ) ....................................................</div>
+      <div>( ${esc(name || '..................................................')} )</div>
+      <div class="cap">${esc(caption)}</div>
+    </div>`;
+
+  const rows = batch.items.map((d, i) => `
+    <tr>
+      <td class="c">${i + 1}</td>
+      <td class="c">${esc(d.year_be || '')}</td>
+      <td>${esc(d.external_doc_number || d.doc_number_display || '')}</td>
+      <td class="c">${d.external_doc_date ? esc(fmtThaiDateShort(d.external_doc_date)) : '-'}</td>
+      <td class="c">${esc(d.doc_number_display || '')}</td>
+      <td>${esc(d.title || '')}</td>
+      <td></td>
+      <td>${esc(RETENTION_LABEL[d.retention_class] || '')}</td>
+    </tr>`).join('');
+
+  const body = `<!doctype html>
+<html lang="th"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>บัญชีหนังสือขอทำลาย</title>
+<style>
+  * { box-sizing: border-box; }
+  /* แนวนอน เพราะตารางตามแบบที่ 25 มี 8 คอลัมน์ ใส่ในแนวตั้งแล้วช่อง "เรื่อง" แคบจนอ่านไม่ออก */
+  @page { size: A4 landscape; margin: 12mm; }
+  body { font-family: "Noto Sans Thai", "TH Sarabun New", "Sarabun", sans-serif; font-size: 14pt;
+    margin: 0 auto; padding: 10mm; color: #111; }
+  .toolbar { display: flex; justify-content: flex-end; gap: .5rem; margin-bottom: 1rem; }
+  .toolbar button, .toolbar a { font-family: inherit; font-size: 11pt; padding: .5rem 1rem; border-radius: 8px;
+    border: 1px solid #ccc; background: #f4f4f4; cursor: pointer; text-decoration: none; color: #111; }
+  h1 { text-align: center; font-size: 18pt; margin: 0 0 .2rem; }
+  .sub { text-align: center; font-size: 14pt; margin-bottom: .8rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 12pt; }
+  th, td { border: 1px solid #111; padding: .2rem .35rem; vertical-align: top; }
+  th { background: #f0f0f0; font-weight: 700; text-align: center; }
+  td.c { text-align: center; white-space: nowrap; }
+  .sigs { display: flex; gap: 1.2rem; justify-content: space-between; margin-top: 2rem; flex-wrap: wrap; }
+  .sig { text-align: center; min-width: 210px; flex: 1; }
+  .sig .sig-space { height: 46px; }
+  .sig .cap { font-size: 11pt; color: #444; margin-top: .2rem; }
+  .approve-box { border: 1px solid #111; padding: .6rem .8rem; margin-top: 1.6rem; }
+  .note { font-size: 11pt; color: #444; margin-top: .4rem; }
+  @media print { .toolbar { display: none; } body { padding: 0; } }
+</style>
+</head><body>
+  <div class="toolbar">
+    <a href="/retention/batches/${esc(batch.id)}">← กลับหน้าบัญชี</a>
+    <button onclick="window.print()">🖨️ พิมพ์ / บันทึกเป็น PDF</button>
+  </div>
+
+  <h1>บัญชีหนังสือขอทำลาย</h1>
+  <div class="sub">
+    ${esc(schoolName())} &nbsp;·&nbsp; จำนวน ${batch.items.length} ฉบับ
+    &nbsp;·&nbsp; วันที่จัดทำ ${esc(fmtThaiDateLong(batch.created_at))}
+  </div>
+
+  <table>
+    <thead><tr>
+      <th style="width:4%">ลำดับ</th>
+      <th style="width:7%">ปี พ.ศ.</th>
+      <th style="width:14%">ที่</th>
+      <th style="width:10%">ลงวันที่</th>
+      <th style="width:11%">เลขทะเบียนรับ</th>
+      <th style="width:30%">เรื่อง</th>
+      <th style="width:14%">การพิจารณา</th>
+      <th style="width:10%">หมายเหตุ</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <div class="note">
+    ช่อง "การพิจารณา" เว้นไว้ให้คณะกรรมการบันทึกความเห็นรายฉบับด้วยลายมือตามแบบราชการ
+    ${batch.reason ? `<br/>เหตุผลประกอบการขอทำลาย: ${esc(batch.reason)}` : ''}
+  </div>
+
+  <div class="sigs">
+    ${committee.slice(0, 3).map((n, i) => sigBlock(n, i === 0 ? 'ประธานกรรมการทำลายหนังสือ' : 'กรรมการทำลายหนังสือ')).join('')}
+  </div>
+
+  <div class="approve-box">
+    <div><strong>คำสั่ง/ความเห็นของหัวหน้าส่วนราชการ</strong></div>
+    <div style="min-height:40px"></div>
+    ${sigBlock(
+      batch.status === 'approved' ? `${batch.decider_prefix || ''}${batch.decider_first || ''} ${batch.decider_last || ''}`.trim() : '',
+      `ผู้อำนวยการ${schoolName()}`,
+    )}
+    ${batch.status === 'approved' ? `<div class="note">อนุมัติให้ทำลายเมื่อ ${esc(fmtThaiDateLong(batch.decided_at))}${batch.decision_note ? ` — ${esc(batch.decision_note)}` : ''}</div>` : ''}
+    ${batch.status === 'rejected' ? `<div class="note">ไม่อนุมัติเมื่อ ${esc(fmtThaiDateLong(batch.decided_at))}${batch.decision_note ? ` — ${esc(batch.decision_note)}` : ''}</div>` : ''}
+  </div>
+</body></html>`;
+  ctx.res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  ctx.res.end(body);
 })));
 
 router.post('/retention/batches', requireApi(async (ctx) => {

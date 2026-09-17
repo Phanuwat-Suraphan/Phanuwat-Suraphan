@@ -952,6 +952,49 @@ describe('ทำลายหนังสือ: ผู้เสนอกับ�
     return { docId: doc.id, batchId };
   }
 
+  // ระเบียบสำนักนายกฯ ว่าด้วยงานสารบรรณกำหนดให้คณะกรรมการจัดทำ "บัญชีหนังสือขอทำลาย" (แบบที่ 25)
+  // เสนอหัวหน้าส่วนราชการพิจารณา แล้วเก็บไว้เป็นหลักฐาน — ระบบบันทึกครบแล้วแต่เดิมพิมพ์ออกมาไม่ได้
+  // ทั้งที่ส่วนอื่น (ทะเบียนหนังสือ ใบลา) มีหน้าพิมพ์หมด โรงเรียนจึงต้องพิมพ์บัญชีขึ้นใหม่เองด้วยมือ
+  describe('พิมพ์บัญชีหนังสือขอทำลายตามแบบราชการได้', () => {
+    test('หน้าพิมพ์ต้องมีครบทั้งรายการหนังสือ ช่องการพิจารณา และช่องลงนามกรรมการ', async () => {
+      const { batchId, docId } = batchReadyToApprove(registrarUser);
+      const doc = db.prepare('SELECT doc_number_display, title FROM documents WHERE id = ?').get(docId);
+
+      const res = await dispatchGet(registrarUser, `/retention/batches/${batchId}/print`);
+      assert.equal(res.status, 200);
+      assert.match(res.body, /บัญชีหนังสือขอทำลาย/);
+      assert.ok(res.body.includes(doc.doc_number_display), 'ต้องมีเลขทะเบียนของหนังสือที่จะทำลาย');
+      assert.ok(res.body.includes(doc.title), 'ต้องมีชื่อเรื่อง');
+      assert.match(res.body, /การพิจารณา/, 'ต้องมีช่องให้กรรมการเขียนความเห็นรายฉบับด้วยมือ');
+      assert.match(res.body, /ประธานกรรมการทำลายหนังสือ/);
+      assert.match(res.body, /คำสั่ง\/ความเห็นของหัวหน้าส่วนราชการ/, 'ต้องมีช่องให้หัวหน้าส่วนราชการสั่งการ');
+      // ตารางมี 8 คอลัมน์ ใส่แนวตั้งแล้วช่องเรื่องแคบจนอ่านไม่ออก
+      assert.match(res.body, /A4 landscape/, 'ต้องตั้งเป็นแนวนอน');
+    });
+
+    // ระเบียบกำหนดคณะกรรมการอย่างน้อย 3 คน ถ้ากรอกมาน้อยกว่านั้นก็ยังต้องมีที่ให้เซ็นครบ
+    // ไม่ใช่พิมพ์ออกมาแล้วมีช่องลงนามไม่พอ
+    test('กรอกกรรมการมาไม่ครบ 3 คน ต้องยังเว้นช่องลงนามให้ครบ', async () => {
+      const doc = makeDoc({ title: 'เอกสารครบกำหนดทำลาย กรรมการไม่ครบ' });
+      const oldYearBe = beYear() - 20;
+      db.prepare("UPDATE documents SET status = 'completed', year_be = ?, retention_until = ? WHERE id = ?")
+        .run(oldYearBe, computeRetentionUntil(oldYearBe, 'normal_10y'), doc.id);
+      const batchId = createDestructionBatch({
+        documentIds: [doc.id], committeeNames: 'กรรมการคนเดียว', reason: 'ทดสอบ', actorUser: registrarUser,
+      });
+      const res = await dispatchGet(registrarUser, `/retention/batches/${batchId}/print`);
+      const sigCount = (res.body.match(/class="sig"/g) || []).length;
+      assert.ok(sigCount >= 4, `ต้องมีช่องลงนามกรรมการ 3 ช่องบวกของหัวหน้าส่วนราชการอีก 1 แต่ได้ ${sigCount}`);
+    });
+
+    // หน้านี้เป็นรายชื่อหนังสือทั้งกองพร้อมชื่อเรื่อง ซึ่งไม่ใช่ข้อมูลที่ครูทั่วไปควรเปิดดูได้
+    test('ครูทั่วไปเปิดหน้าพิมพ์บัญชีทำลายไม่ได้', async () => {
+      const { batchId } = batchReadyToApprove(registrarUser);
+      const res = await dispatchGet(loadUserForTest(seed.userIds.teacher001), `/retention/batches/${batchId}/print`);
+      assert.equal(res.status, 403);
+    });
+  });
+
   // แอดมินอยู่ทั้งกลุ่มผู้เสนอและกลุ่มผู้อนุมัติ เดิมจึงเสนอเองอนุมัติเองได้ (ทดสอบกับระบบจริงแล้วว่าทำได้)
   // ระเบียบสำนักนายกฯ ว่าด้วยงานสารบรรณกำหนดให้คณะกรรมการเสนอ แล้วหัวหน้าส่วนราชการเป็นผู้พิจารณา
   test('ผู้เสนอบัญชีอนุมัติบัญชีของตัวเองไม่ได้', async () => {

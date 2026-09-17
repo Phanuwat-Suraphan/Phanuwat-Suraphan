@@ -104,8 +104,14 @@ export function listBatches() {
 
 export function getBatch(id) {
   const batch = db.prepare(`
-    SELECT b.*, u1.first_name as creator_first, u1.last_name as creator_last FROM destruction_batches b
-    JOIN users u1 ON u1.id = b.created_by WHERE b.id = ?
+    SELECT b.*, u1.first_name as creator_first, u1.last_name as creator_last,
+      u2.prefix as decider_prefix, u2.first_name as decider_first, u2.last_name as decider_last,
+      u2.position as decider_position
+    FROM destruction_batches b
+    JOIN users u1 ON u1.id = b.created_by
+    -- LEFT JOIN เพราะบัญชีที่ยังรอพิจารณายังไม่มีผู้ตัดสิน ถ้าใช้ JOIN ธรรมดาบัญชีที่รออยู่จะหายไปทั้งหมด
+    LEFT JOIN users u2 ON u2.id = b.decided_by
+    WHERE b.id = ?
   `).get(id);
   if (!batch) return null;
   const items = db.prepare(`
