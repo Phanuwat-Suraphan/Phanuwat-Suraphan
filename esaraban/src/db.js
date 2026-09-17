@@ -445,6 +445,8 @@ export function migrate() {
     -- ประทับลงไฟล์ไม่สำเร็จครั้งล่าสุด (ดูเหตุผลเต็มที่บล็อก ALTER TABLE ด้านล่าง) — ล้างเป็น NULL
     -- ทุกครั้งที่ประทับสำเร็จ เพราะคำเตือนที่ค้างอยู่ทั้งที่แก้ไปแล้วจะถูกมองข้ามจนไม่มีใครอ่านอีกเลย
     stamp_failed_at TEXT,
+    -- เนื้อหาที่รอประทับใหม่ (JSON) เก็บเฉพาะตอนประทับไม่สำเร็จ ล้างทิ้งเมื่อสำเร็จ — ดู markStampFailed
+    stamp_retry_json TEXT,
     stamp_failed_reason TEXT,
     -- ไฟล์ถูกทำลายตามมติคณะกรรมการแล้ว: ตัวไฟล์หายไปจากดิสก์/Drive จริง แต่ยังเก็บ "แถว" ไว้เป็นหลักฐาน
     -- ว่าหนังสือฉบับนั้นเคยมีไฟล์ชื่ออะไร ขนาดเท่าไร ค่าแฮชอะไร ซึ่งเป็นข้อมูลที่บัญชีทำลายหนังสือต้องใช้
@@ -715,6 +717,15 @@ export function migrate() {
     db.exec('ALTER TABLE documents ADD COLUMN stamp_x REAL');
     db.exec('ALTER TABLE documents ADD COLUMN stamp_y REAL');
   }
+  // เนื้อหาที่จะประทับลงไฟล์ (ความเห็น ผอ. / ความเห็นธุรการ / เครื่องหมายบนตรา) เดิมเดินทางจาก
+  // ฟอร์มไปลง PDF ตรงๆ ไม่เคยถูกเก็บลงฐานข้อมูลเลย ถ้าประทับไม่สำเร็จ ข้อความที่ ผอ. เขียนจึงหาย
+  // ถาวรและไม่มีทางเอากลับมาได้ ทั้งที่ผลการตัดสินใจถูกบันทึกในทะเบียนเรียบร้อยแล้ว
+  // เก็บไว้ตอนล้มเหลวเพื่อให้กดประทับใหม่ได้ และล้างทิ้งทันทีที่ประทับสำเร็จ
+  const attachmentColsRetry = db.prepare('PRAGMA table_info(attachments)').all().map((c) => c.name);
+  if (!attachmentColsRetry.includes('stamp_retry_json')) {
+    db.exec('ALTER TABLE attachments ADD COLUMN stamp_retry_json TEXT');
+  }
+
   if (!documentCols.includes('received_date')) {
     db.exec('ALTER TABLE documents ADD COLUMN received_date TEXT');
     // เติมย้อนหลังจากวันที่ลงทะเบียนเข้าระบบ ซึ่งเป็นค่าที่ทะเบียนใช้แสดงอยู่เดิมอยู่แล้ว — ปล่อยว่างไว้

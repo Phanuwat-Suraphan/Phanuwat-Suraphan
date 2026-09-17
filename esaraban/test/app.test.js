@@ -4332,6 +4332,96 @@ describe('เพดานความยาวของช่องข้อค�
       `เพดานตราประทับควรอยู่ในช่วงที่วัดแล้วว่าพอดีหน้าเดียว แต่ตั้งไว้ ${MAX_STAMP_TEXT}`);
   });
 
+  // ความเห็นของ ผอ. เครื่องหมายบนตรา และความเห็นธุรการ เดิมเดินทางจากฟอร์มไปลงไฟล์ PDF ตรงๆ
+  // ไม่เคยถูกเก็บลงฐานข้อมูลเลย (ต่างจาก comment ของขั้นตอน ซึ่งเก็บอยู่แล้ว) ถ้าประทับไม่สำเร็จ
+  // ข้อความที่ ผอ. อุตส่าห์เขียนจะหายถาวรและไม่มีทางเอากลับมา ทั้งที่ทะเบียนบันทึกว่าตัดสินใจแล้ว
+  // — เกิดขึ้นจริงทั้งระบบตอนที่ qpdf ถูกอ่านรหัสจบผิด
+  describe('ประทับไม่สำเร็จแล้วต้องประทับใหม่ได้ ไม่ใช่ความเห็นหายถาวร', () => {
+    // เครื่องทดสอบไม่มี chromium/qpdf การประทับจึงล้มเหลวเสมอ ซึ่งเป็นสภาพที่ต้องการพอดี
+    let docId; let attId;
+    before(async () => {
+      const doc = makeDoc({ title: 'หนังสือที่ประทับตราไม่สำเร็จ' });
+      docId = doc.id;
+      const up = await dispatchPost(registrarUser, `/documents/${docId}/attachments`, {
+        fileName: 'scan.pdf', fileType: 'application/pdf',
+        fileDataBase64: Buffer.from('%PDF-1.4\n% ประทับใหม่\ntrailer<</Root 1 0 R>>\n%%EOF\n').toString('base64'),
+      });
+      assert.ok(up.status < 400, up.body);
+      attId = db.prepare('SELECT id FROM attachments WHERE document_id = ?').get(docId).id;
+
+      // ผอ. รับทราบพร้อมเขียนความเห็นลงตรา — การประทับจะล้มเหลวเพราะไม่มี chromium
+      const step = db.prepare("SELECT id FROM workflow_steps WHERE document_id = ? AND status = 'waiting'").get(docId)
+        || (() => {
+          assignStep({ documentId: docId, assigneeId: seed.userIds.director01, actorUser: registrarUser });
+          return db.prepare("SELECT id FROM workflow_steps WHERE document_id = ? AND status = 'waiting'").get(docId);
+        })();
+      await dispatchPost(loadUserForTest(seed.userIds.director01), `/documents/${docId}/workflow/${step.id}/acknowledge`, {
+        pin: userPin('director01'), comment: 'รับทราบ',
+        decisionNote: 'เห็นควรมอบฝ่ายวิชาการดำเนินการ', decisionMarks: ['ทราบ'], decisionNotify: 'คณะครู',
+      });
+    });
+
+    test('ข้อความที่จะประทับต้องถูกเก็บไว้ ไม่ใช่หายไปพร้อมความล้มเหลว', () => {
+      const att = db.prepare('SELECT * FROM attachments WHERE id = ?').get(attId);
+      assert.ok(att.stamp_failed_at, 'ต้องบันทึกว่าประทับไม่สำเร็จ');
+      assert.ok(att.stamp_retry_json, 'ต้องเก็บเนื้อหาที่จะประทับไว้ให้กดใหม่ได้');
+      const pending = JSON.parse(att.stamp_retry_json);
+      assert.equal(pending.kind, 'director');
+      assert.equal(pending.note, 'เห็นควรมอบฝ่ายวิชาการดำเนินการ', 'ความเห็นที่ ผอ. เขียนต้องอยู่ครบ');
+      assert.deepEqual(pending.marks, ['ทราบ'], 'เครื่องหมายบนตราต้องอยู่ครบ');
+      assert.equal(pending.notifyTarget, 'คณะครู');
+      assert.equal(pending.actorUserId, seed.userIds.director01, 'ต้องจำว่าเป็นลายมือชื่อของใคร');
+    });
+
+    test('หน้าเอกสารต้องมีปุ่มประทับใหม่ให้เจ้าของลายเซ็น', async () => {
+      const res = await dispatchGet(loadUserForTest(seed.userIds.director01), `/documents/${docId}`, {});
+      assert.match(res.body, /ประทับใหม่อีกครั้ง/, 'เจ้าของลายเซ็นต้องเห็นปุ่ม');
+    });
+
+    // ตราประทับคือลายมือชื่อของคนคนนั้น ให้คนอื่นกดแทนเท่ากับเซ็นแทนกัน
+    test('คนอื่นต้องไม่เห็นปุ่ม และกดแทนไม่ได้แม้แต่แอดมิน', async () => {
+      const page = await dispatchGet(registrarUser, `/documents/${docId}`, {});
+      assert.ok(!page.body.includes('ประทับใหม่อีกครั้ง'), 'คนอื่นต้องไม่เห็นปุ่ม');
+      assert.match(page.body, /ต้องให้ .*เข้ามากดประทับใหม่เอง|กดประทับใหม่เอง/, 'ต้องบอกว่าต้องรอใคร');
+
+      for (const who of [registrarUser, adminUser]) {
+        const res = await dispatchPost(who, `/documents/${docId}/attachments/${attId}/retry-stamp`,
+          { pin: userPin(who === adminUser ? 'admin' : 'reg001') });
+        assert.equal(res.status, 403, `${who.employee_code} ต้องกดแทนไม่ได้`);
+        assert.match(res.json.error || '', /ลายมือชื่อของ/, 'ต้องบอกว่าเป็นลายมือชื่อของคนอื่น');
+      }
+    });
+
+    test('เจ้าของลายเซ็นต้องใส่ PIN ถูกต้องก่อน เหมือนตอนลงนามครั้งแรก', async () => {
+      const director = loadUserForTest(seed.userIds.director01);
+      const bad = await dispatchPost(director, `/documents/${docId}/attachments/${attId}/retry-stamp`, { pin: '000000' });
+      assert.equal(bad.status, 401, 'PIN ผิดต้องไม่ผ่าน');
+
+      // PIN ถูกต้องแล้วต้องผ่านด่านสิทธิ์ไปถึงขั้นประทับจริง — บนเครื่องทดสอบไม่มี chromium
+      // จึงล้มเหลวที่ขั้นประทับ (502) ซึ่งเป็นคนละเรื่องกับสิทธิ์ ที่ต้องไม่ได้คือ 401/403
+      const ok = await dispatchPost(director, `/documents/${docId}/attachments/${attId}/retry-stamp`,
+        { pin: userPin('director01') });
+      assert.ok(![401, 403].includes(ok.status), `ต้องผ่านด่านสิทธิ์ แต่ได้ ${ok.status}: ${ok.json?.error}`);
+      // ล้มเหลวซ้ำต้องยังเก็บข้อความไว้ให้ลองใหม่ได้อีก ไม่ใช่ลบทิ้ง
+      assert.ok(db.prepare('SELECT stamp_retry_json j FROM attachments WHERE id = ?').get(attId).j,
+        'ล้มเหลวซ้ำต้องยังเก็บข้อความไว้');
+    });
+
+    test('ไฟล์ที่ไม่มีตราค้างอยู่ ต้องกดประทับใหม่ไม่ได้', async () => {
+      const other = makeDoc({ title: 'หนังสือที่ไม่เคยประทับ' });
+      const up = await dispatchPost(registrarUser, `/documents/${other.id}/attachments`, {
+        fileName: 'x.pdf', fileType: 'application/pdf',
+        fileDataBase64: Buffer.from('%PDF-1.4\n% ไม่เคยประทับ\ntrailer<</Root 1 0 R>>\n%%EOF\n').toString('base64'),
+      });
+      assert.ok(up.status < 400);
+      const otherAtt = db.prepare('SELECT id FROM attachments WHERE document_id = ?').get(other.id).id;
+      const res = await dispatchPost(registrarUser, `/documents/${other.id}/attachments/${otherAtt}/retry-stamp`,
+        { pin: userPin('reg001') });
+      assert.equal(res.status, 400);
+      assert.match(res.json.error || '', /ไม่มีตราประทับที่ค้างอยู่/);
+    });
+  });
+
   // เครื่องใช้งานจริงประทับตราไม่ได้เลย ขึ้นข้อความภาษาอังกฤษดิบๆ ว่า
   //   "qpdf exited with code 3: WARNING: ... dictionary has duplicated key /Info ..."
   //

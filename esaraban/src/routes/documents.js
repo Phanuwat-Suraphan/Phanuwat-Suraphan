@@ -1694,9 +1694,27 @@ router.get('/documents/:id', requirePage((ctx) => {
                 เมื่อ ${fmtDate(a.stamp_failed_at)}
                 <div style="margin-top:.3rem">สาเหตุ: ${esc(a.stamp_failed_reason || 'ไม่ทราบ')}</div>
                 <div style="margin-top:.3rem">
-                  <strong>อย่าเพิ่งส่งไฟล์นี้ออกไปหรือเก็บเข้าแฟ้ม</strong> —
-                  แจ้งผู้ดูแลระบบให้แก้แล้วเสนอผู้มีอำนาจลงนามบนไฟล์ใหม่อีกครั้ง
+                  <strong>อย่าเพิ่งส่งไฟล์นี้ออกไปหรือเก็บเข้าแฟ้ม</strong>
                 </div>
+                ${(() => {
+                  const pend = pendingRestamp(a);
+                  if (!pend) {
+                    return `<div style="margin-top:.3rem">แจ้งผู้ดูแลระบบให้แก้ แล้วเสนอผู้มีอำนาจลงนามบนไฟล์ใหม่อีกครั้ง</div>`;
+                  }
+                  // ตราประทับคือลายมือชื่อของคนคนนั้น คนอื่นกดแทนไม่ได้ จึงต้องบอกให้ชัดว่าต้องรอใคร
+                  if (pend.actorUserId !== ctx.user.id) {
+                    const who = db.prepare('SELECT prefix, first_name, last_name FROM users WHERE id = ?').get(pend.actorUserId);
+                    const name = who ? `${who.prefix || ''}${who.first_name} ${who.last_name}`.trim() : 'เจ้าของลายเซ็น';
+                    return `<div style="margin-top:.3rem">ระบบเก็บข้อความที่จะประทับไว้ให้แล้ว —
+                      ต้องให้ <strong>${esc(name)}</strong> เข้ามากดประทับใหม่เอง เพราะตรานี้เป็นลายมือชื่อของท่าน</div>`;
+                  }
+                  return `<div style="margin-top:.45rem">
+                    ระบบเก็บข้อความที่คุณเขียนไว้ให้แล้ว กดปุ่มนี้เพื่อประทับลงไฟล์อีกครั้งได้เลย
+                    <div style="margin-top:.4rem">
+                      <button type="button" class="btn btn-sm btn-primary" onclick="retryStamp('${a.id}', this)">🖋️ ประทับใหม่อีกครั้ง</button>
+                    </div>
+                  </div>`;
+                })()}
               </div>` : ''}
               <div id="preview-${a.id}" style="display:none;margin-top:.6rem"></div>
             </div>`)).join('') : emptyState('📎', 'ยังไม่มีไฟล์แนบ')}
@@ -1806,6 +1824,23 @@ router.get('/documents/:id', requirePage((ctx) => {
               note.textContent = 'ไม่สามารถแสดงตัวอย่างไฟล์ได้ (เซิร์ฟเวอร์อาจยังไม่ได้ติดตั้ง poppler-utils — ดู DEPLOY.md) — ไม่กระทบการลงนาม/ประทับตราลงไฟล์จริง ซึ่งใช้ตำแหน่งตายตัวอยู่แล้ว';
               imgEl.replaceWith(note);
             };
+            // ประทับใหม่หลังครั้งก่อนล้มเหลว — ข้อความที่จะประทับถูกเก็บไว้ในระบบแล้ว ไม่ต้องพิมพ์ซ้ำ
+            // ต้องใส่ PIN เหมือนตอนลงนามครั้งแรก เพราะเป็นการลงลายมือชื่อของตัวเองลงบนเอกสารเหมือนกัน
+            window.retryStamp = function(attId, btn){
+              var pin = prompt('ยืนยันด้วย PIN 6 หลักของคุณ เพื่อประทับลายมือชื่อลงไฟล์อีกครั้ง');
+              if (!pin) return;
+              window.setBtnLoading(btn, 'กำลังประทับ...');
+              fetch('/documents/${doc.id}/attachments/' + attId + '/retry-stamp', {
+                method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ pin: pin }),
+              }).then(function(r){ return r.json().then(function(d){ return { ok: r.ok, d: d }; }); })
+                .then(function(res){
+                  if (!res.ok) throw new Error(res.d.error || 'ประทับไม่สำเร็จ');
+                  window.toast('ประทับลงไฟล์เรียบร้อยแล้ว', 'success');
+                  setTimeout(function(){ location.reload(); }, 800);
+                })
+                .catch(function(e){ window.toast(e.message, 'danger'); window.restoreBtn(btn); });
+            };
+
             window.applyStamp = function(attId, btn){
               // ให้ธุรการแก้ไขเลขรับ/เวลาที่จะแสดงบนตราได้ก่อนกดยืนยันจริง (เผื่อกด/พิมพ์ผิดตอนนี้จะได้แก้ทัน
               // ก่อนที่จะฝังลง PDF จริงแบบแก้ไม่ได้อีก) — เลขรับ default เป็นเลขที่เอกสารนี้ แต่แก้ได้ ส่วนเวลา
@@ -2125,14 +2160,34 @@ async function readAttachmentBytes(att, { preferStamped = false } = {}) {
 // จำไว้ว่าประทับลงไฟล์ไม่สำเร็จ เพื่อให้หน้าเอกสารเตือนค้างไว้ได้ — คำเตือนผ่าน ?warn= ขึ้นครั้งเดียว
 // บนหน้าแรกแล้วหายไปตลอดกาล ซึ่งไม่พอสำหรับเรื่องที่ทำให้ "ไฟล์หนังสือราชการขาดความเห็นและลายเซ็น ผอ."
 // โดยไม่มีใครรู้ (ดูเหตุผลเต็มที่คอมเมนต์ของคอลัมน์ stamp_failed_at ใน db.js)
-function markStampFailed(attachmentId, reason) {
+/**
+ * จำไว้ว่าประทับไม่สำเร็จ พร้อม "เนื้อหาที่จะประทับ" เพื่อให้กดใหม่ได้
+ *
+ * ทำไมต้องเก็บเนื้อหาด้วย: ความเห็นของ ผอ. เครื่องหมายบนตรา และความเห็นธุรการ เดินทางจากฟอร์ม
+ * ไปลงไฟล์ PDF ตรงๆ ไม่เคยถูกเก็บลงฐานข้อมูลเลย (ต่างจาก comment ของขั้นตอน ซึ่งเก็บอยู่แล้ว)
+ * ถ้าการประทับล้มเหลว ข้อความที่ ผอ. อุตส่าห์เขียนจะหายถาวรและไม่มีทางเอากลับมา ทั้งที่ผลการ
+ * ตัดสินใจถูกบันทึกในทะเบียนเรียบร้อยแล้ว — เกิดขึ้นจริงมาแล้วทั้งระบบตอนที่ qpdf ถูกอ่านรหัสจบผิด
+ *
+ * เก็บแค่ "ข้อมูลของตรา" ไม่เก็บลายเซ็น — ลายเซ็นอ่านใหม่จากโปรไฟล์ตอนกดประทับใหม่ ทั้งเพื่อไม่ให้
+ * รูปลายเซ็นไปนอนอยู่ในตารางไฟล์แนบโดยไม่จำเป็น และเพื่อให้ได้ลายเซ็นล่าสุดของเจ้าตัวเสมอ
+ */
+function markStampFailed(attachmentId, reason, retry = null) {
   try {
-    db.prepare('UPDATE attachments SET stamp_failed_at = ?, stamp_failed_reason = ? WHERE id = ?')
-      .run(nowIso(), String(reason || '').slice(0, 300), attachmentId);
+    db.prepare('UPDATE attachments SET stamp_failed_at = ?, stamp_failed_reason = ?, stamp_retry_json = ? WHERE id = ?')
+      .run(nowIso(), String(reason || '').slice(0, 300), retry ? JSON.stringify(retry) : null, attachmentId);
   } catch (e) {
     // จำไม่ได้ก็ไม่ควรกลืน error เดิมที่กำลังรายงานอยู่ — คำเตือนผ่าน ?warn= ยังทำงานเหมือนเดิม
     console.error('[stamp] บันทึกสถานะประทับไม่สำเร็จไม่ได้:', e?.message || e);
   }
+}
+
+/** เนื้อหาที่รอประทับใหม่ของไฟล์แนบนี้ — คืน null ถ้าไม่มีหรืออ่านไม่ออก */
+function pendingRestamp(att) {
+  if (!att?.stamp_retry_json) return null;
+  try {
+    const parsed = JSON.parse(att.stamp_retry_json);
+    return parsed && parsed.kind ? parsed : null;
+  } catch { return null; }
 }
 
 async function saveStampedCopy(att, stampedBuffer, yearBe) {
@@ -2157,7 +2212,7 @@ async function saveStampedCopy(att, stampedBuffer, yearBe) {
   }
 
   // ประทับสำเร็จแล้ว ล้างคำเตือนเก่าทิ้ง — คำเตือนที่ค้างอยู่ทั้งที่แก้ไปแล้วจะถูกมองข้ามจนไม่มีใครอ่านอีก
-  db.prepare('UPDATE attachments SET stamp_failed_at = NULL, stamp_failed_reason = NULL WHERE id = ?').run(att.id);
+  db.prepare('UPDATE attachments SET stamp_failed_at = NULL, stamp_failed_reason = NULL, stamp_retry_json = NULL WHERE id = ?').run(att.id);
 
   // เก็บเฉพาะไฟล์ผลลัพธ์สุดท้าย — ทิ้งสำเนาชั้นก่อนหน้าหลังบันทึกตัวใหม่สำเร็จแล้วเท่านั้น
   //
@@ -2282,7 +2337,7 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser,
     await saveStampedCopy(att, stampedBuffer, getDocument(documentId)?.year_be);
     audit({ userId: actorUser.id, action: 'attachment_mark_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId } });
   } catch (err) {
-    markStampFailed(att.id, err.message);
+    markStampFailed(att.id, err.message, { kind: 'ack', stepId, actorUserId: actorUser.id, markX, markY });
     audit({ userId: actorUser.id, action: 'attachment_mark_stamp_failed', tableName: 'attachments', recordId: att.id, detail: { documentId, error: err.message } });
     return `บันทึกผลสำเร็จ แต่ลงลายเซ็น "ทราบ" ลงในไฟล์ PDF จริงไม่สำเร็จ: ${err.message}`;
   }
@@ -2337,7 +2392,7 @@ async function stampRegistrarCommentIfApplicable({ documentId, stepId, actorUser
     db.prepare('INSERT INTO comments (id, document_id, user_id, message, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(uuid(), documentId, actorUser.id, `เรียนผู้อำนวยการโรงเรียน\n${text}`, nowIso());
   } catch (err) {
-    markStampFailed(att.id, err.message);
+    markStampFailed(att.id, err.message, { kind: 'registrar', stepId, actorUserId: actorUser.id, comment, registrarX, registrarY });
     audit({ userId: actorUser.id, action: 'attachment_registrar_stamp_failed', tableName: 'attachments', recordId: att.id, detail: { documentId, error: err.message } });
     return `บันทึกผลสำเร็จ แต่ลงความเห็นธุรการลงในไฟล์ PDF จริงไม่สำเร็จ: ${err.message}`;
   }
@@ -2379,11 +2434,62 @@ async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser
     await saveStampedCopy(att, stampedBuffer, doc?.year_be);
     audit({ userId: actorUser.id, action: 'attachment_director_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId, decision, note, marks: marks || [], notifyTarget: notifyTarget || '' } });
   } catch (err) {
-    markStampFailed(att.id, err.message);
+    markStampFailed(att.id, err.message, { kind: 'director', stepId, actorUserId: actorUser.id, decision, note, marks: marks || [], notifyTarget: notifyTarget || '', decisionX, decisionY });
     audit({ userId: actorUser.id, action: 'attachment_director_stamp_failed', tableName: 'attachments', recordId: att.id, detail: { documentId, decision, error: err.message } });
     return `บันทึกผลสำเร็จ แต่ลงตราประทับ/ข้อความ "ความเห็น" ลงในไฟล์ PDF จริงไม่สำเร็จ: ${err.message}`;
   }
 }
+
+/**
+ * ประทับใหม่หลังจากครั้งก่อนล้มเหลว
+ *
+ * ทำไมต้องมี: ความเห็นของ ผอ. ความเห็นธุรการ และเครื่องหมายบนตรา ถูกประทับ "ณ ตอนที่กดตัดสินใจ"
+ * ครั้งเดียวเท่านั้น ถ้าตอนนั้นประทับไม่สำเร็จ ขั้นตอนของหนังสือเดินหน้าไปแล้วและไม่มีปุ่มไหนในระบบ
+ * พากลับมาประทับได้อีกเลย ไฟล์หนังสือราชการจึงขาดความเห็นและลายเซ็นไปตลอด ทั้งที่ทะเบียนบันทึกว่า
+ * ผอ. ตัดสินใจแล้ว (เกิดขึ้นจริงทั้งระบบตอนที่ qpdf ถูกอ่านรหัสจบผิด)
+ *
+ * ใครกดได้: เจ้าของลายเซ็นคนเดิมเท่านั้น และต้องยืนยัน PIN เหมือนตอนลงนามครั้งแรก — ตราประทับนี้
+ * คือลายมือชื่อของคนคนนั้น การให้คนอื่น (แม้แต่แอดมิน) กดแทนเท่ากับเซ็นแทนกัน ซึ่งทำไม่ได้
+ */
+router.post('/documents/:id/attachments/:attId/retry-stamp', requireApi(async (ctx) => {
+  const doc = getDocument(ctx.params.id);
+  if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
+  const att = db.prepare('SELECT * FROM attachments WHERE id = ? AND document_id = ?').get(ctx.params.attId, doc.id);
+  if (!att) throw httpError(404, 'ไม่พบไฟล์แนบนี้');
+
+  const pending = pendingRestamp(att);
+  if (!pending) throw httpError(400, 'ไฟล์นี้ไม่มีตราประทับที่ค้างอยู่');
+  if (pending.actorUserId !== ctx.user.id) {
+    const who = db.prepare('SELECT prefix, first_name, last_name FROM users WHERE id = ?').get(pending.actorUserId);
+    const name = who ? `${who.prefix || ''}${who.first_name} ${who.last_name}`.trim() : 'เจ้าของลายเซ็น';
+    throw httpError(403, `ตราประทับนี้เป็นลายมือชื่อของ ${name} — ต้องให้เจ้าตัวเป็นผู้กดประทับใหม่เอง`);
+  }
+  const { verifyPin } = await import('../auth.js');
+  if (!verifyPin(ctx.user.id, ctx.body?.pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
+
+  let warning;
+  if (pending.kind === 'director') {
+    warning = await stampDirectorDecisionIfApplicable({
+      documentId: doc.id, stepId: pending.stepId, actorUser: ctx.user, decision: pending.decision,
+      note: pending.note, marks: pending.marks, notifyTarget: pending.notifyTarget,
+      decisionX: pending.decisionX, decisionY: pending.decisionY,
+    });
+  } else if (pending.kind === 'registrar') {
+    warning = await stampRegistrarCommentIfApplicable({
+      documentId: doc.id, stepId: pending.stepId, actorUser: ctx.user,
+      comment: pending.comment, registrarX: pending.registrarX, registrarY: pending.registrarY,
+    });
+  } else {
+    warning = await stampAcknowledgeMarkIfApplicable({
+      documentId: doc.id, stepId: pending.stepId, actorUser: ctx.user,
+      markX: pending.markX, markY: pending.markY,
+    });
+  }
+  // ตัวประทับจะเขียน stamp_retry_json ทับไว้เองถ้าล้มเหลวอีกรอบ และล้างทิ้งเมื่อสำเร็จ
+  if (warning) throw httpError(502, warning);
+  audit({ userId: ctx.user.id, action: 'attachment_restamped', tableName: 'attachments', recordId: att.id, detail: { documentId: doc.id, kind: pending.kind } });
+  json(ctx, 200, { ok: true });
+}));
 
 // ประทับตราลงในเนื้อไฟล์ PDF จริง (เขียนสำเนาใหม่ ไม่แตะไฟล์ต้นฉบับ) — ใช้ตำแหน่งที่บันทึกไว้ล่าสุดจาก
 // /stamp-position ต้องติดตั้ง chromium + qpdf บนเซิร์ฟเวอร์ก่อน (ดู DEPLOY.md) ไม่งั้นจะ error 501 ชัดเจน
