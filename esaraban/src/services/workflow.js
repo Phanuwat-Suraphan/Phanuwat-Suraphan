@@ -109,7 +109,7 @@ export function createDocument(input) {
  * ไม่ใช่ออกเลขรับให้ 6 ฉบับแรกไปแล้วค่อยพบว่าฉบับที่ 7 กรอกวันที่ผิด — เลขรับที่ออกไปแล้วนำกลับมาใช้ซ้ำ
  * ไม่ได้ตามหลักงานสารบรรณ ทะเบียนจะมีเลขขาดหายเป็นรูโหว่ที่อธิบายไม่ได้ตอนตรวจ
  */
-function normalizeDocumentInput({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, externalDocNumber, externalDocDate, dueDate, retentionClass, customDocNumber, createdBy }) {
+function normalizeDocumentInput({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, externalDocNumber, externalDocDate, receivedDate, dueDate, retentionClass, customDocNumber, createdBy }) {
   title = typeof title === 'string' ? title.trim() : title;
   correspondentName = typeof correspondentName === 'string' ? correspondentName.trim() : correspondentName;
   if (!title) throw httpError(400, 'กรุณากรอกชื่อเรื่อง');
@@ -132,12 +132,17 @@ function normalizeDocumentInput({ direction, title, subject, docTypeId, departme
     direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName,
     externalDocNumber, customDocNumber, createdBy,
     externalDocDate: normalizeDate(externalDocDate, 'วันที่ของหนังสือต้นทาง'),
+    // วันที่รับจริง — ไม่กรอกมาถือว่ารับวันนี้ ซึ่งเป็นกรณีปกติที่สุด (ลงรับทันทีที่หนังสือมาถึง)
+    // หนังสือส่งไม่มีวันที่รับ จึงเก็บเป็น null ไว้ ไม่ใช่ยัดวันนี้ลงไปให้ทุกฉบับ
+    receivedDate: direction === 'incoming'
+      ? (normalizeDate(receivedDate, 'วันที่รับหนังสือ') || todayInBangkok())
+      : null,
     dueDate: normalizeDate(dueDate, 'วันครบกำหนด'),
   };
 }
 
 // ต้องเรียกอยู่ภายใน transaction ของผู้เรียกเสมอ — การอ่าน+บวกตัวนับเลขรับกับการ INSERT ต้องอยู่ก้อนเดียวกัน
-function insertDocumentRow({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, externalDocNumber, externalDocDate, dueDate, retentionClass, customDocNumber, createdBy }) {
+function insertDocumentRow({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, externalDocNumber, externalDocDate, receivedDate, dueDate, retentionClass, customDocNumber, createdBy }) {
   const { runningNumber, yearBe, display: autoDisplay } = nextRunningNumber({ direction });
   const display = customDocNumber || autoDisplay;
   let duplicateDocNumberWarning = null;
@@ -150,10 +155,10 @@ function insertDocumentRow({ direction, title, subject, docTypeId, departmentId,
   const retClass = retentionClass || 'normal_10y';
   const retentionUntil = computeRetentionUntil(yearBe, retClass);
   db.prepare(`
-    INSERT INTO documents (id, direction, running_number, year_be, doc_number_display, external_doc_number, external_doc_date, title, subject,
+    INSERT INTO documents (id, direction, running_number, year_be, doc_number_display, external_doc_number, external_doc_date, received_date, title, subject,
       doc_type_id, department_id, priority, secret_level, correspondent_name, status, due_date, retention_class, retention_until, created_by, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', ?, ?, ?, ?, ?, ?)
-  `).run(id, direction, runningNumber, yearBe, display, externalDocNumber || null, externalDocDate || null, title, subject || null,
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', ?, ?, ?, ?, ?, ?)
+  `).run(id, direction, runningNumber, yearBe, display, externalDocNumber || null, externalDocDate || null, receivedDate || null, title, subject || null,
     docTypeId, departmentId, priority || 'normal', secretLevel || 'normal', correspondentName || null, dueDate || null, retClass, retentionUntil, createdBy, now, now);
   return { id, docNumberDisplay: display, duplicateDocNumberWarning };
 }

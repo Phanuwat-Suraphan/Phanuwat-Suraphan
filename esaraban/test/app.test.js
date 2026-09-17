@@ -2103,6 +2103,106 @@ describe('ธุรการต้องประทับตรารับล�
   });
 });
 
+// "วันที่รับ" ในทะเบียนหนังสือรับคือวันที่หนังสือมาถึงจริง ไม่ใช่เวลาที่พิมพ์เข้าระบบ — ธุรการลงทะเบียน
+// ย้อนหลังเป็นชุดบ่อยมาก (หนังสือมาวันศุกร์ มาลงวันจันทร์) ถ้าใช้ created_at วันที่ในทะเบียนราชการ
+// จะผิดทุกฉบับและแก้ให้ตรงความจริงไม่ได้เลย
+describe('วันที่รับและเลขทะเบียน กรอกเองและแก้ย้อนหลังได้', () => {
+  // ชื่อเรื่องต้องไม่ซ้ำกัน ไม่งั้นตัวกัน "เพิ่งลงทะเบียนเรื่องนี้ไปเมื่อครู่" จะตอบ 409 ให้ยืนยันก่อน
+  // (assertNotJustRegistered) แล้วเทสต์จะล้มด้วยเหตุผลที่ไม่เกี่ยวกับสิ่งที่กำลังตรวจ
+  let seq = 0;
+  const makeIncoming = (over = {}) => dispatchPost(registrarUser, '/documents', {
+    title: `หนังสือรับสำหรับทดสอบทะเบียน ${(seq += 1)}`, departmentId: deptId, correspondentName: 'สพป.',
+    direction: 'incoming', ...over,
+  });
+  const idOf = (res) => /\/documents\/([0-9a-f-]{36})/.exec(res.body)?.[1];
+  const rowOf = (id) => db.prepare('SELECT * FROM documents WHERE id = ?').get(id);
+
+  test('ช่องทะเบียน/วันที่รับต้องอยู่นอกปุ่มตัวเลือกเพิ่มเติม ไม่ใช่ซ่อนไว้', async () => {
+    const res = await dispatchGet(registrarUser, '/documents/new', { direction: 'incoming' });
+    const beforeDetails = res.body.split('<details')[0];
+    for (const name of ['customDocNumber', 'receivedDate', 'externalDocNumber', 'externalDocDate']) {
+      assert.ok(beforeDetails.includes(`name="${name}"`),
+        `ช่อง ${name} ต้องเห็นได้เลย ไม่ใช่ซ่อนใต้ "ตัวเลือกเพิ่มเติม" — ถ้าซ่อนไว้ก็จะไม่มีใครกรอก`);
+    }
+  });
+
+  test('ลงรับย้อนหลังแล้ววันที่รับต้องเป็นวันที่กรอก ไม่ใช่วันนี้', async () => {
+    const id = idOf(await makeIncoming({ receivedDate: '2026-09-11' }));
+    assert.equal(rowOf(id).received_date, '2026-09-11');
+  });
+
+  test('ไม่กรอกวันที่รับถือว่ารับวันนี้ และหนังสือส่งต้องไม่มีวันที่รับ', async () => {
+    assert.equal(rowOf(idOf(await makeIncoming({}))).received_date, todayInBangkok());
+    const out = await dispatchPost(registrarUser, '/documents', {
+      title: `หนังสือส่งออกทดสอบทะเบียน ${(seq += 1)}`, departmentId: deptId, correspondentName: 'สพป.',
+      direction: 'outgoing', receivedDate: '2026-09-11',
+    });
+    assert.equal(rowOf(idOf(out)).received_date, null, 'หนังสือส่งไม่มีวันที่รับ');
+  });
+
+  test('วันที่รับที่เป็นไปไม่ได้ต้องถูกปฏิเสธ', async () => {
+    for (const bad of ['2026-13-45', '2026-02-30', '2569-10-01', 'ไม่ใช่วันที่']) {
+      assert.ok((await makeIncoming({ receivedDate: bad })).status >= 400, `"${bad}" ควรถูกปฏิเสธ`);
+    }
+  });
+
+  test('ธุรการแก้เลขทะเบียนและวันที่รับย้อนหลังได้ และมี audit ว่าแก้จากอะไรเป็นอะไร', async () => {
+    const id = idOf(await makeIncoming({ receivedDate: '2026-09-11' }));
+    const before = rowOf(id).doc_number_display;
+    const res = await dispatchPost(registrarUser, `/documents/${id}/register-info`,
+      { docNumberDisplay: 'ร.0042/2569', receivedDate: '2026-09-10' });
+    assert.equal(res.status, 200, res.body);
+    assert.equal(rowOf(id).doc_number_display, 'ร.0042/2569');
+    assert.equal(rowOf(id).received_date, '2026-09-10');
+
+    const log = db.prepare(`SELECT detail FROM audit_logs WHERE action = 'document_register_info_edited'
+      AND record_id = ? ORDER BY created_at DESC LIMIT 1`).get(id);
+    assert.ok(log, 'ต้องบันทึก audit ไว้ — เลขทะเบียนเป็นข้อมูลของทะเบียนราชการ');
+    assert.ok(JSON.parse(log.detail).before.doc_number_display === before, 'ต้องเก็บค่าเดิมไว้ด้วย');
+  });
+
+  test('เลขทะเบียนซ้ำต้องถามยืนยันก่อน ไม่ใช่เงียบหรือห้ามตาย', async () => {
+    const a = idOf(await makeIncoming({ customDocNumber: 'ซ้ำ/2569' }));
+    const b = idOf(await makeIncoming({}));
+    const clash = await dispatchPost(registrarUser, `/documents/${b}/register-info`, { docNumberDisplay: 'ซ้ำ/2569' });
+    assert.equal(clash.status, 409);
+    assert.equal(clash.json.confirmRetry?.field, 'allowDuplicateNumber',
+      'ต้องส่ง confirmRetry ให้หน้าเว็บถามยืนยัน ไม่งั้นธุรการจะตันตรงนี้');
+    const forced = await dispatchPost(registrarUser, `/documents/${b}/register-info`,
+      { docNumberDisplay: 'ซ้ำ/2569', allowDuplicateNumber: true });
+    assert.equal(forced.status, 200, 'ยืนยันแล้วต้องบันทึกได้');
+    assert.ok(a && rowOf(b).doc_number_display === 'ซ้ำ/2569');
+  });
+
+  test('เลขทะเบียนเว้นว่างไม่ได้ และคนที่ไม่ใช่ธุรการ/แอดมินแก้ไม่ได้', async () => {
+    const id = idOf(await makeIncoming({}));
+    assert.equal((await dispatchPost(registrarUser, `/documents/${id}/register-info`, { docNumberDisplay: '  ' })).status, 400);
+    const teacher = loadUserForTest(seed.userIds.teacher001);
+    assert.equal((await dispatchPost(teacher, `/documents/${id}/register-info`, { docNumberDisplay: 'ครูแก้เอง' })).status, 403);
+    const head = loadUserForTest(seed.userIds.head_acad);
+    assert.equal((await dispatchPost(head, `/documents/${id}/register-info`, { receivedDate: '2026-01-01' })).status, 403);
+  });
+
+  test('ทะเบียนหนังสือรับที่พิมพ์ออกมาต้องใช้วันที่รับ ไม่ใช่วันที่พิมพ์เข้าระบบ', async () => {
+    const id = idOf(await makeIncoming({ title: 'หนังสือมาถึงวันศุกร์', receivedDate: '2026-09-11' }));
+    // ให้ created_at ต่างจากวันที่รับชัดเจน เพื่อพิสูจน์ว่าทะเบียนหยิบคอลัมน์ถูกตัว
+    db.prepare("UPDATE documents SET created_at = '2026-09-17T03:00:00.000Z' WHERE id = ?").run(id);
+    const res = await dispatchGet(registrarUser, '/documents/register', { direction: 'incoming' });
+    assert.equal(res.status, 200);
+    assert.match(res.body, /<th[^>]*>วันที่รับ<\/th>/, 'ต้องมีคอลัมน์วันที่รับ');
+    const row = res.body.split('<tr').find((r) => r.includes('หนังสือมาถึงวันศุกร์'));
+    assert.ok(row.includes('11 ก.ย. 2569'), `ทะเบียนต้องแสดงวันที่รับ ไม่ใช่วันที่พิมพ์เข้าระบบ: ${row?.slice(0, 300)}`);
+    assert.ok(!row.includes('17 ก.ย. 2569'), 'ต้องไม่ใช้วันที่พิมพ์เข้าระบบ');
+  });
+
+  test('หนังสือที่ทำลายไปแล้วต้องแก้ทะเบียนไม่ได้', async () => {
+    const id = idOf(await makeIncoming({}));
+    db.prepare("UPDATE documents SET status = 'destroyed' WHERE id = ?").run(id);
+    const res = await dispatchPost(registrarUser, `/documents/${id}/register-info`, { docNumberDisplay: 'แก้หลังทำลาย' });
+    assert.equal(res.status, 403, 'รายการทะเบียนที่เหลืออยู่คือหลักฐานการทำลาย ห้ามแก้');
+  });
+});
+
 // ไอคอนบนแท็บเคยเป็นไฟล์นิ่งที่เขียนตัวย่อ "จพ" ของโรงเรียนอื่นฝังไว้ตายตัว แก้จากในระบบไม่ได้เลย
 test('ไอคอนบนแท็บต้องใช้ตัวย่อของโรงเรียนที่ตั้งไว้จริง', async () => {
   const res = await dispatchGet(null, '/favicon.svg', {});
@@ -5005,8 +5105,10 @@ describe('ส่งออกทะเบียนหนังสือ', () => {
 
     const sheet = sheetOf(res.buffer);
     assert.equal(sheet.name, 'ทะเบียนหนังสือรับ');
-    assert.deepEqual(sheet.rows[0].slice(0, 5),
-      ['ทะเบียนรับที่', 'ที่ (หนังสือต้นทาง)', 'ลงวันที่', 'จาก', 'เรื่อง']);
+    // ลำดับตามแบบทะเบียนหนังสือรับ (แบบที่ 13) — เลขทะเบียนรับกับวันที่รับเป็นกลุ่ม "ทะเบียนรับ"
+    // อยู่ต้นตาราง แล้วจึงตามด้วยข้อมูลของหนังสือต้นทาง
+    assert.deepEqual(sheet.rows[0].slice(0, 6),
+      ['ทะเบียนรับที่', 'วันที่รับ', 'ที่ (หนังสือต้นทาง)', 'ลงวันที่', 'จาก', 'เรื่อง']);
     assert.ok(sheet.rows.length > 1, 'ต้องมีข้อมูลอย่างน้อยหนึ่งแถว ไม่งั้นเทสต์นี้ไม่ได้ตรวจอะไร');
     assert.ok(sheet.rows.every((r) => r.length === sheet.rows[0].length), 'ทุกแถวต้องมีจำนวนคอลัมน์เท่ากัน');
   });

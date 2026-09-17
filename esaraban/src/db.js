@@ -259,6 +259,10 @@ export function migrate() {
     doc_number_display TEXT NOT NULL, -- e.g. 0001/2569
     external_doc_number TEXT, -- เลขหนังสือจากหน่วยงานต้นทาง/เลขที่เราจะส่ง
     external_doc_date TEXT, -- ลงวันที่ (วันที่ระบุในหนังสือต้นฉบับ ตามแบบทะเบียนหนังสือรับ-ส่ง)
+    -- วันที่รับหนังสือจริง (คนละเรื่องกับ created_at ซึ่งคือเวลาที่พิมพ์เข้าระบบ) — ธุรการมักลงทะเบียน
+    -- ย้อนหลังเป็นชุด เช่น หนังสือมาถึงวันศุกร์แต่มาลงวันจันทร์ ถ้าทะเบียนใช้เวลาที่พิมพ์เข้าระบบ
+    -- วันที่รับในทะเบียนราชการจะผิดทุกฉบับ และแก้ให้ตรงความจริงไม่ได้เลย
+    received_date TEXT,
     title TEXT NOT NULL,
     subject TEXT,
     doc_type_id TEXT NOT NULL REFERENCES document_types(id),
@@ -710,6 +714,12 @@ export function migrate() {
   if (!documentCols.includes('stamp_x')) {
     db.exec('ALTER TABLE documents ADD COLUMN stamp_x REAL');
     db.exec('ALTER TABLE documents ADD COLUMN stamp_y REAL');
+  }
+  if (!documentCols.includes('received_date')) {
+    db.exec('ALTER TABLE documents ADD COLUMN received_date TEXT');
+    // เติมย้อนหลังจากวันที่ลงทะเบียนเข้าระบบ ซึ่งเป็นค่าที่ทะเบียนใช้แสดงอยู่เดิมอยู่แล้ว — ปล่อยว่างไว้
+    // ทะเบียนที่พิมพ์ออกมาจะมีช่อง "วันที่รับ" ว่างทั้งเล่มสำหรับหนังสือเก่าทุกฉบับ
+    db.exec("UPDATE documents SET received_date = substr(created_at, 1, 10) WHERE received_date IS NULL");
   }
   // ฐานข้อมูลที่ deploy ไปก่อนหน้านี้ยังไม่มีคอลัมน์นี้ — เซสชันเก่าทั้งหมดถือเป็นเครื่องส่วนกลาง (0)
   const sessionCols = db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name);

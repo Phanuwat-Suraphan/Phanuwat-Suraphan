@@ -17,7 +17,7 @@ import {
   DECISION_MAX_TOP_PERCENT, DEFAULT_ACK_MARK_X_PERCENT, DEFAULT_DECISION_X_PERCENT, DEFAULT_REGISTRAR_X_PERCENT,
   ackSlotTopPercent, ACK_WORD_HEIGHT_PERCENT, ACK_ENTRY_HEIGHT_PERCENT, MAX_STAMP_TEXT,
 } from '../services/pdfStamp.js';
-import { assertMaxLength } from '../services/validate.js';
+import { assertMaxLength, requireDate } from '../services/validate.js';
 import { canShareToLine, documentShareText, lineShareUrl } from '../services/line.js';
 import { getActiveDelegateFor } from '../services/delegation.js';
 import {
@@ -67,6 +67,18 @@ function canApplyReceivedStamp(user, doc) {
   if (user.roleCodes.includes('admin')) return true;
   if (user.roleCodes.includes('registrar')) return true;
   return doc.created_by === user.id;
+}
+
+/**
+ * ใครแก้เลขทะเบียน/วันที่รับย้อนหลังได้ — ธุรการกับผู้ดูแลระบบเท่านั้น
+ *
+ * สองค่านี้เป็นข้อมูลของทะเบียนหนังสือราชการ ไม่ใช่ข้อมูลของเรื่อง คนที่ดูแลทะเบียนคือธุรการ
+ * ไม่ใช่ใครก็ตามที่บังเอิญเป็นคนพิมพ์เรื่องนั้นเข้าระบบ — และหนังสือที่ทำลายไปแล้วห้ามแก้ เพราะ
+ * รายการทะเบียนที่เหลืออยู่คือหลักฐานว่าเคยมีหนังสือฉบับนั้นและถูกทำลายเมื่อใด
+ */
+function canEditRegister(user, doc) {
+  if (!doc || doc.status === 'destroyed') return false;
+  return user.roleCodes.includes('admin') || user.roleCodes.includes('registrar');
 }
 // checkbox บนตราประทับความเห็นของ ผอ./ผู้รักษาการแทน — ถ้อยคำตรงกับตรายางจริงของโรงเรียน (ยืนยันจาก
 // ภาพถ่ายตราจริงและจากผู้ใช้โดยตรง) เลือกได้หลายอันพร้อมกัน ไม่ผูกกับปุ่ม workflow ที่กดส่ง (ปุ่มนั้นแค่
@@ -331,22 +343,34 @@ router.get('/documents/new', requirePage((ctx) => {
           <label>สาระสำคัญ / หมายเหตุ</label>
           <textarea name="subject" placeholder="สรุปใจความสำคัญของหนังสือ"></textarea>
         </div>
+        <!-- ช่องของ "ทะเบียนหนังสือรับ" อยู่นอกปุ่มตัวเลือกเพิ่มเติมโดยตั้งใจ — สี่ช่องนี้คือคอลัมน์หลัก
+             ของทะเบียนหนังสือรับตามระเบียบงานสารบรรณ (ทะเบียนรับที่ / ที่ / ลงวันที่ / วันที่รับ)
+             ธุรการต้องกรอกแทบทุกฉบับ ถ้าซ่อนอยู่ใต้ปุ่มที่ต้องกดเปิดก่อน ก็จะไม่มีใครกรอกและทะเบียน
+             ที่พิมพ์ออกมาจะมีช่องว่างทั้งเล่ม -->
+        <div class="form-grid cols-2">
+          <div class="field">
+            <label>ทะเบียน${direction === 'incoming' ? 'รับ' : 'ส่ง'}ที่ (กำหนดเอง)</label>
+            <input type="text" name="customDocNumber" placeholder="เว้นว่างให้ระบบออกเลขให้อัตโนมัติ (เช่น 0001/2569)" />
+            <div class="help-text">พิมพ์เลขเองได้ถ้าไม่ต้องการเลขเรียงอัตโนมัติ — ระบบจะใช้เลขที่พิมพ์นี้ทุกที่ (ทะเบียน/ตราประทับ/พิมพ์เอกสาร) และแก้ทีหลังได้</div>
+          </div>
+          ${direction === 'incoming' ? `
+          <div class="field">
+            <label>วันที่รับ</label>
+            <input type="date" name="receivedDate" value="${todayInBangkok()}" />
+            <div class="help-text">วันที่หนังสือมาถึงโรงเรียนจริง — แก้ได้ถ้าลงทะเบียนย้อนหลัง (เช่น หนังสือมาวันศุกร์ แต่มาลงวันจันทร์)</div>
+          </div>` : ''}
+          <div class="field">
+            <label>เลขหนังสือ${direction === 'incoming' ? 'จากต้นทาง (ถ้ามี)' : 'อ้างอิง (ถ้ามี)'}</label>
+            <input type="text" name="externalDocNumber" placeholder="เช่น ศธ 04123/55 หรือเว้นว่างถ้าไม่มี" />
+          </div>
+          <div class="field">
+            <label>ลงวันที่ (วันที่ในหนังสือต้นฉบับ)</label>
+            <input type="date" name="externalDocDate" />
+          </div>
+        </div>
         <details class="field-more">
           <summary>⚙️ ตัวเลือกเพิ่มเติม (ไม่บังคับ — ไม่กรอกก็ใช้ค่าเริ่มต้นได้เลย)</summary>
           <div class="form-grid cols-2" style="margin-top:.8rem">
-            <div class="field">
-              <label>เลขที่หนังสือ (กำหนดเอง)</label>
-              <input type="text" name="customDocNumber" placeholder="เว้นว่างให้ระบบออกเลขอัตโนมัติ (เช่น 0001/2569)" />
-              <div class="help-text">พิมพ์เลขที่เองได้ถ้าเลขที่ต้องการไม่ใช่เลขเรียงอัตโนมัติของระบบ — ระบบจะใช้เลขที่พิมพ์นี้แสดงแทนทุกที่ (ทะเบียน/ตราประทับ/พิมพ์เอกสาร)</div>
-            </div>
-            <div class="field">
-              <label>เลขหนังสือ${direction === 'incoming' ? 'จากต้นทาง (ถ้ามี)' : 'อ้างอิง (ถ้ามี)'}</label>
-              <input type="text" name="externalDocNumber" placeholder="เช่น ศธ 04123/55 หรือเว้นว่างถ้าไม่มี" />
-            </div>
-            <div class="field">
-              <label>ลงวันที่ (วันที่ในหนังสือต้นฉบับ)</label>
-              <input type="date" name="externalDocDate" />
-            </div>
             <div class="field">
               <label>ชั้นความลับ</label>
               <select name="secretLevel">
@@ -567,7 +591,8 @@ router.post('/documents', requireApi(async (ctx) => {
     direction: b.direction === 'outgoing' ? 'outgoing' : 'incoming',
     title: b.title.trim(), subject: b.subject?.trim(), docTypeId: defaultDocTypeId(), departmentId: b.departmentId,
     priority: b.priority, secretLevel: b.secretLevel, correspondentName: b.correspondentName.trim(),
-    externalDocNumber: b.externalDocNumber?.trim(), externalDocDate: b.externalDocDate || null, dueDate: b.dueDate || null,
+    externalDocNumber: b.externalDocNumber?.trim(), externalDocDate: b.externalDocDate || null,
+    receivedDate: b.receivedDate || null, dueDate: b.dueDate || null,
     retentionClass: b.retentionClass, customDocNumber: b.customDocNumber?.trim() || null, createdBy: ctx.user.id,
     // ผู้ใช้ยืนยันแล้วว่าเป็นคนละฉบับ ทั้งที่ชื่อเรื่องซ้ำกับที่เพิ่งลงไป (ดู assertNotJustRegistered)
     allowDuplicate: b.allowDuplicate === true,
@@ -903,6 +928,10 @@ function registerColumns(direction) {
   const isAll = direction === 'all';
   return [
     { head: isAll ? 'เลขทะเบียน' : (isIn ? 'ทะเบียนรับที่' : 'ทะเบียนส่งที่'), width: 13, get: (d) => d.doc_number_display },
+    // "วันที่รับ" อยู่ถัดจากเลขทะเบียนรับทันที ตามแบบทะเบียนหนังสือรับ (แบบที่ 13) ซึ่งจัดสองช่องนี้
+    // ไว้เป็นกลุ่ม "ทะเบียนรับ" ด้วยกัน — และเป็นวันที่หนังสือมาถึงจริง ไม่ใช่เวลาที่พิมพ์เข้าระบบ
+    // ธุรการลงทะเบียนย้อนหลังเป็นชุดบ่อยมาก ถ้าใช้ created_at วันที่ในทะเบียนราชการจะผิดทุกฉบับ
+    ...(isIn ? [{ head: 'วันที่รับ', width: 13, get: (d) => fmtThaiDateShort(d.received_date || d.created_at) }] : []),
     // โหมดค้นหารวมมีทั้งหนังสือเข้าและออกปนกัน ต้องมีคอลัมน์บอกว่าแถวไหนเป็นอะไร ไม่งั้นอ่านไม่รู้เรื่อง
     ...(isAll ? [{ head: 'ประเภท', width: 10, get: (d) => (d.direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก') }] : []),
     { head: 'ที่ (หนังสือต้นทาง)', width: 18, get: (d) => d.external_doc_number || '' },
@@ -914,7 +943,7 @@ function registerColumns(direction) {
     { head: 'ชั้นความลับ', width: 12, get: (d) => LABELS.SECRET_LABEL[d.secret_level] || d.secret_level },
     { head: 'การปฏิบัติ', width: 16, get: (d) => LABELS.STATUS_LABEL[d.status] || d.status },
     { head: 'ครบกำหนด', width: 13, get: (d) => (d.due_date ? fmtThaiDateShort(d.due_date) : '') },
-    { head: 'วันที่ลงทะเบียน', width: 15, get: (d) => fmtThaiDateShort(d.created_at) },
+    ...(isIn ? [] : [{ head: 'วันที่ลงทะเบียน', width: 15, get: (d) => fmtThaiDateShort(d.created_at) }]),
     // อยู่ท้ายสุดเพราะไม่ใช่คอลัมน์ตามแบบทะเบียนราชการ แต่จำเป็นเวลาใช้ทะเบียนที่พิมพ์/ส่งออกไปแล้ว
     // ตามหาไฟล์สแกน — ไม่ต้องเปิดระบบทีละฉบับเพื่อดูว่าฉบับไหนสแกนไว้แล้วและฉบับไหนยังค้าง
     { head: 'ไฟล์แนบ', width: 10, get: (d) => (d.attachment_count ? `${d.attachment_count} ไฟล์` : '-') },
@@ -1227,6 +1256,7 @@ router.get('/documents/:id', requirePage((ctx) => {
   const isCreatorOrAdmin = doc.created_by === ctx.user.id || ctx.user.roleCodes.includes('admin');
   // ต้องตรงกับที่บังคับฝั่งเซิร์ฟเวอร์เป๊ะ ไม่งั้นปุ่มจะโผล่มาแล้วกดไม่ผ่าน หรือกดได้แต่ไม่มีปุ่มให้กด
   const canStampReceived = canApplyReceivedStamp(ctx.user, doc);
+  const canEditRegisterInfo = canEditRegister(ctx.user, doc);
   const canAssign = ['registered', 'returned'].includes(doc.status) && isCreatorOrAdmin;
   const canVoid = ['draft', 'registered'].includes(doc.status) && isCreatorOrAdmin;
   const canArchive = doc.status === 'completed' && isCreatorOrAdmin;
@@ -1585,10 +1615,45 @@ router.get('/documents/:id', requirePage((ctx) => {
               <tr><td class="text-muted">ฝ่าย</td><td>${esc(doc.dept_name)}</td></tr>
               ${doc.due_date ? `<tr><td class="text-muted">กำหนดเสร็จ</td><td>${docStillOpen ? dueCell(doc.due_date, { long: true }) : esc(fmtThaiDateLong(doc.due_date))}</td></tr>` : ''}
               <tr><td class="text-muted">อายุการเก็บ</td><td>${esc(RETENTION_LABEL[doc.retention_class] || doc.retention_class)}${doc.retention_until ? ` (ครบกำหนด ${esc(fmtThaiDateLong(doc.retention_until))})` : ''}</td></tr>
+              ${doc.direction === 'incoming' ? `<tr><td class="text-muted">วันที่รับ</td><td>${doc.received_date ? esc(fmtThaiDateLong(doc.received_date)) : '<span class="text-muted">ยังไม่ได้ระบุ</span>'}</td></tr>` : ''}
               <tr><td class="text-muted">ผู้บันทึก</td><td>${esc(doc.creator_first)} ${esc(doc.creator_last)}</td></tr>
               <tr><td class="text-muted">วันที่บันทึก</td><td>${fmtDate(doc.created_at)}</td></tr>
             </tbody>
           </table>
+          ${canEditRegisterInfo ? `
+          <!-- แก้ทะเบียนย้อนหลัง — เลขทะเบียนกับวันที่รับเป็นข้อมูลของทะเบียนหนังสือราชการ พิมพ์ผิดแล้ว
+               เดิมแก้ไม่ได้เลย ต้องยกเลิกทั้งฉบับแล้วลงใหม่ ซึ่งทำให้เลขทะเบียนขาดเป็นรูโหว่ในเล่ม
+               จำกัดไว้ที่ธุรการ/แอดมิน และบันทึก audit ทุกครั้งว่าใครแก้จากอะไรเป็นอะไร -->
+          <details class="field-more" style="margin-top:.6rem">
+            <summary>✏️ แก้เลขทะเบียน / วันที่รับ</summary>
+            <div class="form-grid cols-2" style="margin-top:.7rem">
+              <div class="field">
+                <label for="regNumEdit">ทะเบียน${doc.direction === 'incoming' ? 'รับ' : 'ส่ง'}ที่</label>
+                <input type="text" id="regNumEdit" value="${esc(doc.doc_number_display)}" />
+              </div>
+              ${doc.direction === 'incoming' ? `<div class="field">
+                <label for="recvDateEdit">วันที่รับ</label>
+                <input type="date" id="recvDateEdit" value="${esc(doc.received_date || '')}" />
+              </div>` : ''}
+            </div>
+            <div class="help-text">เลขทะเบียนไปขึ้นบนตราประทับและทะเบียนที่พิมพ์ออกมา — แก้แล้วระบบบันทึกไว้ว่าใครแก้เมื่อไร</div>
+            <button type="button" class="btn btn-primary btn-sm" style="margin-top:.5rem" onclick="saveRegisterInfo(this)">บันทึกการแก้ไข</button>
+          </details>
+          <script>
+            window.saveRegisterInfo = function (btn) {
+              var num = document.getElementById('regNumEdit');
+              var recv = document.getElementById('recvDateEdit');
+              window.setBtnLoading(btn, 'กำลังบันทึก...');
+              window.postJson('/documents/${doc.id}/register-info', {
+                docNumberDisplay: num ? num.value : undefined,
+                receivedDate: recv ? recv.value : undefined,
+              }).then(function (d) {
+                if (d === null) { window.restoreBtn(btn); return; } // ผู้ใช้กดยกเลิกตอนถามยืนยันเลขซ้ำ
+                window.toast('บันทึกแล้ว', 'success');
+                setTimeout(function () { location.reload(); }, 600);
+              }).catch(function (e) { window.toast(e.message, 'danger'); window.restoreBtn(btn); });
+            };
+          </script>` : ''}
           ${doc.subject ? `<p style="margin-top:.75rem"><strong>สาระสำคัญ:</strong><br/>${esc(doc.subject).replace(/\n/g, '<br/>')}</p>` : ''}
           ${doc.void_reason ? `<div class="alert alert-danger">ยกเลิกแล้ว: ${esc(doc.void_reason)}</div>` : ''}
           ${doc.status === 'destroyed' ? `<div class="alert alert-danger">🗄️ ทำลายแล้วตามมติคณะกรรมการทำลายหนังสือ เมื่อ ${fmtDate(doc.destroyed_at)} (ไฟล์แนบถูกลบออกจากระบบถาวร รายการทะเบียน/เลขที่ยังคงอยู่เป็นหลักฐาน)</div>` : ''}
@@ -1646,7 +1711,7 @@ router.get('/documents/:id', requirePage((ctx) => {
             var STAMP_HTML = '<div class="doc-stamp doc-overlay-box" id="docStamp" data-label="ตราลงรับของธุรการ" style="left:' + STAMP_X + '%;top:' + STAMP_Y + '%">' +
               '<div class="stamp-title">${esc(schoolName())}</div>' +
               '<div>เลขรับ......${esc(doc.doc_number_display)}......</div>' +
-              '<div>วันที่......${stampDateThai(new Date(doc.created_at))}......</div>' +
+              '<div>วันที่......${stampDateThai(doc.received_date ? new Date(`${doc.received_date}T00:00:00Z`) : new Date(doc.created_at))}......</div>' +
               '<div>เวลา......${stampTimeThai(new Date(doc.created_at))}......</div>' +
             '</div>';
             // ต้องประกาศก่อนสร้าง MARK_HTML/DECISION_HTML/REGISTRAR_HTML ที่เอาค่านี้ไปใส่ใน style="top:..%"
@@ -2342,7 +2407,12 @@ router.post('/documents/:id/attachments/:attId/apply-stamp', requireApi(async (c
     originalBuffer,
     schoolName: schoolName(),
     docNumberDisplay,
-    dateThaiLong: stampDateThai(now),
+    // วันบนตรารับต้องเป็น "วันที่รับหนังสือ" ที่บันทึกไว้ ไม่ใช่วันที่กดปุ่มประทับตรา — ธุรการมักลงทะเบียน
+    // ไว้ก่อนแล้วมาประทับตราทีหลัง ถ้าใช้วันที่กดปุ่ม ตราบนไฟล์จะไม่ตรงกับวันที่รับในทะเบียน ซึ่งเป็น
+    // เอกสารราชการคนละใบที่ต้องตรงกัน
+    // received_date เป็นสตริง YYYY-MM-DD แต่ stampDateThai รับ Date — อ่านเป็นวันที่ตามปฏิทินตรงๆ
+    // (ต่อ T00:00:00Z) ไม่ให้โซนเวลาทำให้วันเลื่อนไปหนึ่งวัน
+    dateThaiLong: stampDateThai(doc.received_date ? new Date(`${doc.received_date}T00:00:00Z`) : now),
     timeStr,
     xPercent: doc.stamp_x,
     yPercent: doc.stamp_y,
@@ -2351,6 +2421,61 @@ router.post('/documents/:id/attachments/:attId/apply-stamp', requireApi(async (c
   await saveStampedCopy(att, stampedBuffer, doc.year_be);
   audit({ userId: ctx.user.id, action: 'attachment_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId: doc.id, docNumberDisplay, timeStr } });
   json(ctx, 200, { ok: true });
+}));
+
+// แก้เลขทะเบียนและวันที่รับย้อนหลัง — สองค่านี้ไปขึ้นบนตราประทับและทะเบียนที่พิมพ์เก็บเข้าแฟ้ม
+// เดิมพิมพ์ผิดแล้วแก้ไม่ได้เลย ทางเดียวคือยกเลิกทั้งฉบับแล้วลงใหม่ ซึ่งทำให้เลขทะเบียนขาดเป็นรูโหว่
+// ในเล่ม และเลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้ตามหลักงานสารบรรณ
+router.post('/documents/:id/register-info', requireApi((ctx) => {
+  const doc = getDocument(ctx.params.id);
+  if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
+  if (!canEditRegister(ctx.user, doc)) {
+    throw httpError(403, doc.status === 'destroyed'
+      ? 'หนังสือที่ทำลายไปแล้วแก้ทะเบียนไม่ได้ — รายการที่เหลืออยู่เป็นหลักฐานการทำลาย'
+      : 'แก้เลขทะเบียน/วันที่รับได้เฉพาะเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบเท่านั้น');
+  }
+
+  const patch = {};
+  if (typeof ctx.body.docNumberDisplay === 'string') {
+    const num = ctx.body.docNumberDisplay.trim();
+    if (!num) throw httpError(400, 'เลขทะเบียนเว้นว่างไม่ได้ — หนังสือทุกฉบับต้องมีเลขทะเบียน');
+    if (num.length > 100) throw httpError(400, 'เลขทะเบียนยาวเกินไป');
+    if (num !== doc.doc_number_display) {
+      // เลขซ้ำกันได้จริงในบางกรณี (เช่นแก้ให้ตรงกับเล่มกระดาษที่เคยลงซ้ำไว้) จึงถามยืนยันแทนที่จะห้าม
+      // — แต่ห้ามปล่อยผ่านเงียบๆ เพราะเลขทะเบียนคือสิ่งที่ใช้อ้างอิงหนังสือฉบับนั้นไปตลอด
+      const dup = db.prepare('SELECT id FROM documents WHERE doc_number_display = ? AND id != ? AND deleted_at IS NULL').get(num, doc.id);
+      if (dup && ctx.body.allowDuplicateNumber !== true) {
+        // ต้องอยู่ใน details เท่านั้น — middleware กระจายเฉพาะ err.details ลงไปใน JSON ที่ตอบกลับ
+        // ถ้าแปะไว้นอก details หน้าเว็บจะไม่เห็น confirmRetry เลย แล้วกลายเป็นตันตรงนี้แทนที่จะถามยืนยัน
+        throw httpError(409, `เลขทะเบียน "${num}" ซ้ำกับหนังสืออีกฉบับที่มีอยู่แล้ว`, {
+          confirmRetry: {
+            field: 'allowDuplicateNumber',
+            message: `เลขทะเบียน "${num}" ซ้ำกับหนังสืออีกฉบับในระบบ — ยืนยันว่าต้องการใช้เลขซ้ำจริงหรือไม่?`,
+          },
+        });
+      }
+      patch.doc_number_display = num;
+    }
+  }
+  if (typeof ctx.body.receivedDate === 'string') {
+    if (doc.direction !== 'incoming') throw httpError(400, 'หนังสือส่งไม่มีวันที่รับ');
+    // ใช้ตัวตรวจวันที่ตัวเดียวกับทั้งระบบ — ถ้าปล่อยค่าที่ไม่ใช่วันที่เข้ามา ทะเบียนที่เรียงตามวันที่
+    // แบบข้อความจะมีแถวลอยค้างอยู่ผิดที่ถาวร (เว้นว่างได้ แปลว่ายังไม่ได้ระบุวันที่รับ)
+    patch.received_date = ctx.body.receivedDate.trim()
+      ? requireDate(ctx.body.receivedDate, 'วันที่รับหนังสือ')
+      : null;
+  }
+  if (!Object.keys(patch).length) return json(ctx, 200, { ok: true, changed: false });
+
+  const before = { doc_number_display: doc.doc_number_display, received_date: doc.received_date };
+  const sets = Object.keys(patch).map((k) => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE documents SET ${sets}, updated_at = ? WHERE id = ?`)
+    .run(...Object.values(patch), nowIso(), doc.id);
+  audit({
+    userId: ctx.user.id, action: 'document_register_info_edited', tableName: 'documents', recordId: doc.id,
+    detail: { before: Object.fromEntries(Object.keys(patch).map((k) => [k, before[k]])), after: patch },
+  });
+  json(ctx, 200, { ok: true, changed: true });
 }));
 
 router.post('/documents/:id/archive', requireApi(async (ctx) => {
