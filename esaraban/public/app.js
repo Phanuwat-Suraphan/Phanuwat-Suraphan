@@ -62,6 +62,139 @@
     if (preview) preview.textContent = input.files[0] ? input.files[0].name + ' (' + Math.round(input.files[0].size / 1024) + ' KB)' : '';
   };
 
+  window.MAX_ATTACH_FILES = 8;
+  const MAX_ATTACH_BYTES = 10 * 1024 * 1024;
+
+  function fileSizeText(bytes) {
+    return bytes >= 1024 * 1024 ? (bytes / 1024 / 1024).toFixed(1) + ' MB' : Math.round(bytes / 1024) + ' KB';
+  }
+
+  /**
+   * ช่องแนบไฟล์แบบเลือกได้หลายไฟล์พร้อมกัน (สูงสุด window.MAX_ATTACH_FILES ไฟล์)
+   *
+   * ทำไมต้องมีรายการให้เห็น ไม่ใช่แค่ใส่ multiple ไว้เฉยๆ: ช่อง input แบบ multiple ของเบราว์เซอร์
+   * แสดงแค่ "เลือกไฟล์ 6 ไฟล์" ลอยๆ ผู้ใช้จึงไม่มีทางรู้ว่าเลือกไฟล์ไหนไปบ้าง เลือกซ้ำหรือเปล่า
+   * และเอาไฟล์ที่หยิบผิดออกทีละไฟล์ไม่ได้เลย (ต้องเลือกใหม่ทั้งชุด) ซึ่งเจ็บมากตอนหนังสือมีสิ่งที่
+   * ส่งมาด้วยหลายฉบับและต้องไล่หาในโฟลเดอร์สแกนทีละไฟล์
+   *
+   * และทำไมต้องเลื่อนลำดับได้: ไฟล์แรกคือ "ไฟล์หลัก" ซึ่งเป็นไฟล์ที่ตราประทับรับและความเห็น ผอ. จะ
+   * ไปลงจริง (ดู applyStampToFirstAttachment ใน routes/documents.js) ถ้าเลือกไฟล์มาแล้วเรียงผิด
+   * ตราจะไปลงบนใบแนบแทนที่จะเป็นตัวหนังสือ โดยไม่มีอะไรเตือน — เบราว์เซอร์เรียงไฟล์ตามที่ระบบไฟล์
+   * ส่งมา ไม่ใช่ตามที่ผู้ใช้กดเลือก จึงต้องให้ย้ายได้เอง
+   *
+   * เก็บผลไว้ใน input.files ตามเดิม (เขียนกลับผ่าน DataTransfer) เพื่อให้โค้ดที่อ่าน input.files
+   * อยู่แล้วใช้ต่อได้โดยไม่ต้องรู้ว่ามีตัวช่วยนี้อยู่
+   */
+  window.attachMultiPreview = function (input, previewId, opts) {
+    opts = opts || {};
+    const max = opts.max || window.MAX_ATTACH_FILES;
+    const preview = document.getElementById(previewId);
+    if (!preview) return;
+
+    // kept ต้องถูกอัปเดตที่นี่ที่เดียวเสมอ — ตอน change เบราว์เซอร์เขียนทับ input.files ไปแล้ว จึงอ่าน
+    // "ของเดิม" จาก input.files ไม่ได้ ต้องจำไว้เอง และถ้าปุ่ม ✕/▲ ไปแก้ input.files โดยไม่แตะ kept
+    // ไฟล์ที่เพิ่งกดเอาออกจะกลับมาเองตอนเลือกไฟล์รอบถัดไป
+    let kept = [];
+    function setFiles(list) {
+      kept = list.slice();
+      const dt = new DataTransfer();
+      kept.forEach((f) => dt.items.add(f));
+      input.files = dt.files;
+      render();
+    }
+
+    function render() {
+      const files = Array.prototype.slice.call(input.files);
+      preview.innerHTML = '';
+      if (!files.length) return;
+
+      const ol = document.createElement('ol');
+      ol.className = 'file-pick-list';
+      files.forEach(function (f, i) {
+        const li = document.createElement('li');
+
+        const name = document.createElement('span');
+        name.className = 'file-pick-name';
+        name.textContent = f.name + ' (' + fileSizeText(f.size) + ')';
+        li.appendChild(name);
+
+        if (i === 0 && opts.mainBadge !== false) {
+          const badge = document.createElement('span');
+          badge.className = 'badge badge-info';
+          badge.textContent = 'ไฟล์หลัก';
+          badge.title = 'ตราประทับรับและความเห็นของผู้อำนวยการจะไปลงบนไฟล์นี้';
+          li.appendChild(badge);
+        }
+
+        if (i > 0) {
+          const up = document.createElement('button');
+          up.type = 'button';
+          up.className = 'btn btn-outline btn-sm';
+          up.textContent = '▲';
+          up.title = 'เลื่อนขึ้น' + (i === 1 && opts.mainBadge !== false ? ' (ทำให้เป็นไฟล์หลัก)' : '');
+          up.setAttribute('aria-label', 'เลื่อนไฟล์ ' + f.name + ' ขึ้นหนึ่งลำดับ');
+          up.onclick = function () {
+            const next = files.slice();
+            next[i - 1] = files[i];
+            next[i] = files[i - 1];
+            setFiles(next);
+          };
+          li.appendChild(up);
+        }
+
+        const rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'btn btn-outline btn-sm';
+        rm.textContent = '✕';
+        rm.title = 'เอาไฟล์นี้ออก';
+        rm.setAttribute('aria-label', 'เอาไฟล์ ' + f.name + ' ออกจากรายการ');
+        rm.onclick = function () { setFiles(files.filter((_, j) => j !== i)); };
+        li.appendChild(rm);
+
+        ol.appendChild(li);
+      });
+      preview.appendChild(ol);
+
+      const note = document.createElement('div');
+      note.className = 'help-text';
+      note.textContent = 'เลือกไว้ ' + files.length + ' ไฟล์ จากสูงสุด ' + max + ' ไฟล์'
+        + (files.length > 1 && opts.mainBadge !== false ? ' · ไฟล์ลำดับที่ 1 คือไฟล์ที่ตราประทับจะไปลง กด ▲ เพื่อเปลี่ยนได้' : '');
+      preview.appendChild(note);
+    }
+
+    // เลือกรอบใหม่ให้ "เพิ่มเข้าไป" ไม่ใช่แทนที่ของเดิม — ไฟล์สแกนมักกระจายอยู่หลายโฟลเดอร์ ถ้าเลือก
+    // รอบที่สองแล้วรอบแรกหายไปเงียบๆ ผู้ใช้จะกดบันทึกโดยเชื่อว่าแนบครบแล้ว (ตัวกันไฟล์ซ้ำอยู่ที่
+    // ชื่อ+ขนาด เพราะ File object คนละตัวกันเทียบด้วย === ไม่ได้)
+    function absorb(incoming) {
+      const merged = kept.slice();
+      const rejected = { big: [], dup: [] };
+      incoming.forEach(function (f) {
+        if (f.size > MAX_ATTACH_BYTES) { rejected.big.push(f.name); return; }
+        if (merged.some((k) => k.name === f.name && k.size === f.size)) { rejected.dup.push(f.name); return; }
+        merged.push(f);
+      });
+      const overflow = merged.length > max ? merged.length - max : 0;
+      const final = merged.slice(0, max);
+
+      if (rejected.big.length) window.toast('ไฟล์ใหญ่เกิน 10MB จึงไม่ได้แนบ: ' + rejected.big.join(', '), 'warning');
+      if (rejected.dup.length) window.toast('ไฟล์นี้เลือกไว้แล้ว: ' + rejected.dup.join(', '), 'info');
+      if (overflow) window.toast('แนบได้สูงสุด ' + max + ' ไฟล์ต่อครั้ง — อีก ' + overflow + ' ไฟล์ยังไม่ได้แนบ แนบเพิ่มได้อีกหลังบันทึกเอกสารแล้ว', 'warning');
+
+      setFiles(final);
+    }
+
+    input.addEventListener('change', function () { absorb(Array.prototype.slice.call(input.files)); });
+
+    render();
+    // add() มีไว้ให้โค้ดที่ได้ไฟล์มาจากทางอื่น (เช่นไฟล์ที่แชร์มาจากแอปไลน์) ใส่เข้ารายการนี้ได้โดย
+    // ไม่ต้องไปเขียน input.files เอง ซึ่งจะทำให้ kept ไม่ตรงกับที่แสดงอยู่
+    return {
+      files: () => Array.prototype.slice.call(input.files),
+      add: (list) => absorb(Array.prototype.slice.call(list)),
+      clear: () => setFiles([]),
+    };
+  };
+
   /**
    * ส่ง JSON ไปที่เซิร์ฟเวอร์ — จัดการกรณี "ต้องถามยืนยันแล้วส่งใหม่" ให้ที่เดียว
    *

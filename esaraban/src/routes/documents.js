@@ -34,6 +34,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
 const ALLOWED_MIME = new Set(['application/pdf']);
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+// จำนวนไฟล์ที่เลือกแนบพร้อมกันได้ต่อหนึ่งครั้ง — ไม่ใช่เพดานของหนังสือหนึ่งฉบับ (แนบเพิ่มอีกกี่รอบก็ได้
+// ที่หน้าเอกสาร) เดิมฟอร์มลงทะเบียนมีช่องแนบไฟล์ตายตัวแค่ 3 ช่อง ซึ่งไม่พอกับหนังสือที่มีสิ่งที่ส่งมาด้วย
+// หลายฉบับ และช่องที่เพิ่มเข้ามาเรื่อยๆ ก็ทำให้ฟอร์มยาวขึ้นทุกช่องทั้งที่ส่วนใหญ่ไม่ได้ใช้
+//
+// ตั้งไว้ที่ 8 เพราะไฟล์ถูกส่งเป็น base64 ใน JSON ทีละคำขอ (ไฟล์ละไม่เกิน 10MB) — เลือกทีละมากกว่านี้
+// แปลว่ารอนานหลายสิบวินาทีบนเน็ตโรงเรียน โดยที่ถ้าหลุดกลางคันต้องมาไล่ดูเองว่าไฟล์ไหนขึ้นไปแล้วบ้าง
+const MAX_ATTACH_FILES = 8;
+
+// ลำดับไฟล์แนบ — ต้องใช้ตัวเดียวกันทุกที่ เพราะ "ไฟล์แรก" ไม่ใช่แค่ลำดับที่แสดง แต่เป็นไฟล์ที่ตรา
+// ประทับรับและความเห็นของผู้อำนวยการจะไปลงจริง ถ้าหน้าเอกสารเรียงแบบหนึ่งแล้วตัวเลือกไฟล์ตอน
+// ประทับตราเรียงอีกแบบ ตัวอย่างบนหน้าจอจะโชว์ว่าตราลงที่ไฟล์ A แต่ของจริงไปลงไฟล์ B โดยไม่มีอะไรฟ้อง
+//
+// เติม rowid เป็นตัวตัดสินรอง: created_at ละเอียดระดับมิลลิวินาที ซึ่งพอสำหรับการแนบทีละไฟล์ (วัดจาก
+// การแนบ 8 ไฟล์รวดผ่านเบราว์เซอร์จริง ไม่มีคู่ไหน created_at ชนกันเลย) แต่ถ้าชนกันเมื่อไร SQLite จะ
+// เลือกแถวไหนก็ได้ และ "ไฟล์หลัก" จะสลับตัวเองได้ระหว่างสองคำขอ — ตัวตัดสินรองทำให้ผลคงที่เสมอ
+const ATTACHMENT_ORDER = 'ORDER BY created_at, rowid';
 // checkbox บนตราประทับความเห็นของ ผอ./ผู้รักษาการแทน — ถ้อยคำตรงกับตรายางจริงของโรงเรียน (ยืนยันจาก
 // ภาพถ่ายตราจริงและจากผู้ใช้โดยตรง) เลือกได้หลายอันพร้อมกัน ไม่ผูกกับปุ่ม workflow ที่กดส่ง (ปุ่มนั้นแค่
 // ปิด/ส่งต่อขั้นตอนเท่านั้น) ผู้ตัดสินใจติ๊กเองว่าอันไหนตรงกับความเห็นจริง
@@ -333,28 +350,28 @@ router.get('/documents/new', requirePage((ctx) => {
           </div>
         </details>
         <div class="field">
-          <label>ไฟล์แนบ 1 (ไฟล์หลัก)</label>
-          <input type="file" id="fileInput" accept="application/pdf" onchange="attachFilePreview(this,'filePreview')" />
-          <div id="filePreview" class="help-text"></div>
-          <div class="help-text">รองรับเฉพาะไฟล์ PDF ขนาดไม่เกิน 10MB (ระบบจะตรวจ magic number และคำนวณ SHA-256 hash)</div>
-        </div>
-        <div class="form-grid cols-2">
-          <div class="field">
-            <label>ไฟล์แนบ 2 (ถ้ามี)</label>
-            <input type="file" id="fileInput2" accept="application/pdf" onchange="attachFilePreview(this,'filePreview2')" />
-            <div id="filePreview2" class="help-text"></div>
+          <label for="fileInput">ไฟล์แนบ (เลือกได้ทีละหลายไฟล์)</label>
+          <input type="file" id="fileInput" accept="application/pdf" multiple />
+          <div id="filePreview"></div>
+          <div class="help-text">
+            เลือกได้สูงสุด ${MAX_ATTACH_FILES} ไฟล์ต่อครั้ง (กด Ctrl หรือ Shift ค้างไว้เพื่อเลือกหลายไฟล์ บนมือถือแตะเลือกได้หลายไฟล์เลย)
+            — เลือกเพิ่มทีหลังได้อีก ไฟล์ที่เลือกไว้แล้วจะไม่หาย และแนบเพิ่มได้อีกเรื่อยๆ หลังบันทึกเอกสารแล้ว
           </div>
-          <div class="field">
-            <label>ไฟล์แนบ 3 (ถ้ามี)</label>
-            <input type="file" id="fileInput3" accept="application/pdf" onchange="attachFilePreview(this,'filePreview3')" />
-            <div id="filePreview3" class="help-text"></div>
-          </div>
+          <div class="help-text">รองรับเฉพาะไฟล์ PDF ขนาดไม่เกิน 10MB ต่อไฟล์ (ระบบจะตรวจ magic number และคำนวณ SHA-256 hash)</div>
         </div>
         <button class="btn btn-primary" type="submit">บันทึกและออกเลข${direction === 'incoming' ? 'รับ' : 'ส่ง'}อัตโนมัติ</button>
         <a class="btn btn-outline" href="/documents?direction=${direction}">ยกเลิก</a>
       </form>
     </div>
     <script>
+      // ช่องแนบไฟล์แบบหลายไฟล์ — window.attachMultiPreview อยู่ใน /app.js ซึ่งโหลดท้าย body จึงผูกตอน
+      // load เท่านั้น และต้องผูก "ก่อน" ตัวรับไฟล์ที่แชร์มาด้านล่าง (listener ทำงานตามลำดับที่ลงทะเบียน)
+      // เพื่อให้ picker พร้อมใช้ตอนมันเรียก picker.add()
+      var picker = null;
+      window.addEventListener('load', function(){
+        picker = window.attachMultiPreview(document.getElementById('fileInput'), 'filePreview', { max: ${MAX_ATTACH_FILES} });
+      });
+
       // รับไฟล์ที่ผู้ใช้แชร์มาจากแอปอื่น (LINE ฯลฯ) — service worker พักไฟล์ไว้ใน Cache Storage แล้วพามาที่
       // หน้านี้พร้อม ?shared=1 ตรงนี้ทำหน้าที่หยิบไฟล์ออกมาใส่ช่อง "ไฟล์แนบ 1" ให้อัตโนมัติ ผู้ใช้แค่กรอก
       // ชื่อเรื่องกับหน่วยงานต้นทางแล้วกดบันทึกได้เลย ไม่ต้องดาวน์โหลดไฟล์ลงเครื่องแล้วไล่หาเองอีก
@@ -379,15 +396,13 @@ router.get('/documents/new', requirePage((ctx) => {
           await cache.delete('/__shared-file__'); // ใช้ครั้งเดียวแล้วลบ กันไฟล์เก่าค้างมาโผล่รอบหน้า
           if (blob.size > 10 * 1024 * 1024) { window.toast('ไฟล์ที่แชร์มาใหญ่เกิน 10MB', 'warning'); return; }
 
-          var input = document.getElementById('fileInput');
-          var dt = new DataTransfer();
           // บางแอป (รวมถึง LINE บางรุ่น) แชร์ไฟล์มาเป็น application/octet-stream ทั้งที่เป็น PDF —
           // ถ้าปล่อยไว้จะไปตกตอนกดบันทึก (เซิร์ฟเวอร์รับเฉพาะ application/pdf) หลังผู้ใช้กรอกฟอร์มจนเสร็จ
           // แล้ว เสียเวลาเปล่า จึงตั้ง type ให้ถูกตั้งแต่ตรงนี้ (เซิร์ฟเวอร์ยังตรวจ magic number ซ้ำอยู่ดี)
           var sharedType = /\.pdf$/i.test(name) ? 'application/pdf' : (blob.type || 'application/pdf');
-          dt.items.add(new File([blob], name, { type: sharedType }));
-          input.files = dt.files;
-          window.attachFilePreview(input, 'filePreview');
+          // ใส่ผ่าน picker.add ไม่ใช่เขียน input.files ตรงๆ — ไม่งั้นรายการที่แสดงอยู่กับสิ่งที่จะถูกส่งจริง
+          // จะไม่ตรงกัน และไฟล์ที่แชร์มาจะหายไปทันทีที่ผู้ใช้กดเลือกไฟล์เพิ่มเอง
+          picker.add([new File([blob], name, { type: sharedType })]);
           window.toast('รับไฟล์ "' + name + '" จากแอปที่แชร์มาแล้ว — กรอกชื่อเรื่องแล้วบันทึกได้เลย', 'success');
           var titleEl = document.querySelector('input[name="title"]');
           if (titleEl) titleEl.focus();
@@ -399,18 +414,16 @@ router.get('/documents/new', requirePage((ctx) => {
         e.preventDefault();
         var formEl = this;
         var btn = formEl.querySelector('[type=submit]');
-        var extraFiles = [document.getElementById('fileInput2').files[0], document.getElementById('fileInput3').files[0]].filter(Boolean);
-        for (var f of extraFiles) {
-          if (f.size > 10 * 1024 * 1024) { window.toast('ไฟล์ "' + f.name + '" ใหญ่เกิน 10MB — เอาออกหรือแนบทีหลังแทน', 'warning'); return; }
-        }
+        // ไฟล์ลำดับที่ 1 เป็นไฟล์หลัก (ไฟล์ที่ตราประทับจะไปลง) ที่เหลือแนบตามทีละไฟล์
+        var picked = Array.prototype.slice.call(document.getElementById('fileInput').files);
+        var mainFile = picked[0];
+        var extraFiles = picked.slice(1);
         window.setBtnLoading(btn, 'กำลังบันทึก...');
         try {
           var formData = new FormData(formEl);
           var payload = {};
           for (var pair of formData.entries()) payload[pair[0]] = pair[1];
-          var mainFile = document.getElementById('fileInput').files[0];
           if (mainFile) {
-            if (mainFile.size > 10 * 1024 * 1024) { window.toast('ไฟล์หลักใหญ่เกิน 10MB', 'warning'); window.restoreBtn(btn); return; }
             payload.fileName = mainFile.name;
             payload.fileType = mainFile.type || 'application/octet-stream';
             payload.fileDataBase64 = await window.fileToBase64(mainFile);
@@ -421,18 +434,26 @@ router.get('/documents/new', requirePage((ctx) => {
           var data = await window.postJson('/documents', payload);
           if (data === null) { window.restoreBtn(btn); return; } // ผู้ใช้กดยกเลิกตอนถามยืนยัน
 
-          // แนบไฟล์ 2 และ 3 ต่อทันที (ใช้ endpoint แนบไฟล์เพิ่มเดิมที่มีอยู่แล้ว — ไม่ต้องเพิ่ม backend ใหม่)
+          // แนบไฟล์ที่เหลือต่อทันที (ใช้ endpoint แนบไฟล์เพิ่มเดิมที่มีอยู่แล้ว — ไม่ต้องเพิ่ม backend ใหม่)
+          // ส่งทีละไฟล์ตามลำดับ ไม่ยิงพร้อมกัน เพราะลำดับ created_at คือสิ่งที่กำหนดว่าไฟล์ไหนเป็นไฟล์หลัก
           var docIdMatch = data.redirect.match(/documents\\/([a-f0-9-]+)/);
           var docId = docIdMatch && docIdMatch[1];
           var failedExtras = [];
-          for (var ef of extraFiles) {
+          for (var i = 0; i < extraFiles.length; i++) {
+            var ef = extraFiles[i];
+            // บอกความคืบหน้าระหว่างทาง — แนบได้ถึง ${MAX_ATTACH_FILES} ไฟล์แล้ว การค้างเงียบๆ หลายวินาที
+            // ทำให้ธุรการคิดว่าเครื่องแฮงก์แล้วกดซ้ำหรือปิดหน้าไปกลางคัน
+            window.setBtnLoading(btn, 'กำลังแนบไฟล์ ' + (i + 2) + '/' + picked.length + '...');
             try {
               var b64 = await window.fileToBase64(ef);
               var r2 = await fetch('/documents/' + docId + '/attachments', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ fileName: ef.name, fileType: ef.type || 'application/octet-stream', fileDataBase64: b64 }) });
               if (!r2.ok) failedExtras.push(ef.name);
             } catch (e) { failedExtras.push(ef.name); }
           }
-          if (failedExtras.length) window.toast('บันทึกเอกสารสำเร็จ แต่แนบไม่สำเร็จ: ' + failedExtras.join(', '), 'warning');
+          if (failedExtras.length) {
+            window.toast('บันทึกเอกสารและออกเลขสำเร็จแล้ว แต่แนบไม่สำเร็จ ' + failedExtras.length + ' ไฟล์: '
+              + failedExtras.join(', ') + ' — แนบเพิ่มเองได้ที่หน้าเอกสาร ไม่ต้องลงทะเบียนใหม่', 'warning');
+          }
           window.location.href = data.redirect;
         } catch (err) {
           window.toast(err.message || 'เกิดข้อผิดพลาด', 'danger');
@@ -1158,7 +1179,7 @@ router.get('/documents/:id', requirePage((ctx) => {
       content: emptyState('🔍', 'ไม่พบเอกสารนี้ หรือคุณไม่มีสิทธิ์เข้าถึง') }));
   }
 
-  const attachments = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at').all(doc.id);
+  const attachments = db.prepare(`SELECT * FROM attachments WHERE document_id = ? ${ATTACHMENT_ORDER}`).all(doc.id);
   // ไฟล์ที่ยังเปิดได้จริง — ปุ่มทุกปุ่มที่พาไปเปิดไฟล์ต้องดูจากรายการนี้ ไม่ใช่ attachments ทั้งหมด
   // เพราะไฟล์ที่ถูกทำลายตามระเบียบยังมีแถวอยู่ (เก็บไว้เป็นหลักฐาน) แต่ตัวไฟล์ไม่มีแล้ว
   const liveAttachments = attachments.filter((a) => !a.destroyed_at);
@@ -1752,14 +1773,45 @@ router.get('/documents/:id', requirePage((ctx) => {
             };
           </script>
           ${canAttachTo(doc) ? `<form id="addAttachForm" style="margin-top:.9rem">
-            <input type="file" id="addAttachInput" accept="application/pdf" onchange="attachFilePreview(this,'addAttachPreview')" />
-            <div id="addAttachPreview" class="help-text"></div>
+            <label for="addAttachInput">แนบไฟล์เพิ่ม (เลือกได้ทีละหลายไฟล์)</label>
+            <input type="file" id="addAttachInput" accept="application/pdf" multiple />
+            <div id="addAttachPreview"></div>
+            <div class="help-text">เลือกได้สูงสุด ${MAX_ATTACH_FILES} ไฟล์ต่อครั้ง · PDF ขนาดไม่เกิน 10MB ต่อไฟล์</div>
             <button class="btn btn-outline btn-sm" style="margin-top:.5rem" type="submit">แนบไฟล์เพิ่ม</button>
           </form>
           <script>
-            document.getElementById('addAttachForm').addEventListener('submit', function(e){
-              e.preventDefault();
-              submitWithFile(this, 'addAttachInput', '/documents/${doc.id}/attachments', {});
+            window.addEventListener('load', function(){
+              // ที่นี่ไม่ต้องมีป้าย "ไฟล์หลัก" — ไฟล์หลักคือไฟล์แรกของหนังสือที่แนบไว้ตั้งแต่ตอนลงทะเบียน
+              // ไฟล์ที่แนบเพิ่มทีหลังต่อท้ายเสมอ ไม่มีทางกลายเป็นไฟล์หลักได้ ติดป้ายไว้จะเข้าใจผิด
+              var addPicker = window.attachMultiPreview(document.getElementById('addAttachInput'), 'addAttachPreview',
+                { max: ${MAX_ATTACH_FILES}, mainBadge: false });
+
+              document.getElementById('addAttachForm').addEventListener('submit', async function(e){
+                e.preventDefault();
+                var btn = this.querySelector('[type=submit]');
+                var files = addPicker.files();
+                if (!files.length) { window.toast('กรุณาเลือกไฟล์ก่อน', 'warning'); return; }
+                window.setBtnLoading(btn, 'กำลังแนบ...');
+                // ส่งทีละไฟล์ตามลำดับที่เห็นในรายการ เพื่อให้ลำดับไฟล์แนบในหน้าเอกสารตรงกับที่เลือกไว้
+                var failed = [];
+                for (var i = 0; i < files.length; i++) {
+                  window.setBtnLoading(btn, 'กำลังแนบไฟล์ ' + (i + 1) + '/' + files.length + '...');
+                  try {
+                    var b64 = await window.fileToBase64(files[i]);
+                    var r = await fetch('/documents/${doc.id}/attachments', {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ fileName: files[i].name, fileType: files[i].type || 'application/octet-stream', fileDataBase64: b64 }),
+                    });
+                    if (!r.ok) failed.push(files[i].name + ' (' + ((await r.json().catch(function(){ return {}; })).error || 'ไม่สำเร็จ') + ')');
+                  } catch (err) { failed.push(files[i].name); }
+                }
+                if (!failed.length) { window.location.reload(); return; }
+                // บางไฟล์ขึ้นไปแล้ว บางไฟล์ไม่ — ต้องบอกให้ชัดว่าไฟล์ไหนไม่ขึ้น ไม่งั้นจะแนบซ้ำทั้งชุด
+                window.restoreBtn(btn);
+                window.toast('แนบสำเร็จ ' + (files.length - failed.length) + ' จาก ' + files.length
+                  + ' ไฟล์ · ไม่สำเร็จ: ' + failed.join(', '), 'warning');
+                if (files.length - failed.length > 0) window.setTimeout(function(){ window.location.reload(); }, 4000);
+              });
             });
           </script>` : `<p class="text-muted" style="margin-top:.9rem;font-size:.84rem">
             หนังสือฉบับนี้${esc(NO_ATTACH_STATUSES[doc.status])} จึงแนบไฟล์เพิ่มไม่ได้อีก
@@ -2122,7 +2174,7 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser,
   if (directorTitleMode(stepId, actorUser) !== 'generic') return;
   if (actorUser.roleCodes.includes('registrar')) return;
   if (!actorUser.signature_image) return;
-  const att = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at LIMIT 1').get(documentId);
+  const att = db.prepare(`SELECT * FROM attachments WHERE document_id = ? ${ATTACHMENT_ORDER} LIMIT 1`).get(documentId);
   if (!att) return;
   try {
     const originalBuffer = await readAttachmentBytes(att, { preferStamped: true });
@@ -2178,7 +2230,7 @@ function registrarBoxYPercent(attachmentId) {
 async function stampRegistrarCommentIfApplicable({ documentId, stepId, actorUser, comment, registrarX, registrarY }) {
   const text = typeof comment === 'string' ? comment.trim() : '';
   if (!text || !canWriteRegistrarComment(stepId, actorUser)) return;
-  const att = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at LIMIT 1').get(documentId);
+  const att = db.prepare(`SELECT * FROM attachments WHERE document_id = ? ${ATTACHMENT_ORDER} LIMIT 1`).get(documentId);
   if (!att) return;
   try {
     const originalBuffer = await readAttachmentBytes(att, { preferStamped: true });
@@ -2215,7 +2267,7 @@ async function stampRegistrarCommentIfApplicable({ documentId, stepId, actorUser
 async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser, decision, note, marks, notifyTarget, decisionX, decisionY }) {
   const titleMode = directorTitleMode(stepId, actorUser);
   if (titleMode === 'generic') return;
-  const att = db.prepare('SELECT * FROM attachments WHERE document_id = ? ORDER BY created_at LIMIT 1').get(documentId);
+  const att = db.prepare(`SELECT * FROM attachments WHERE document_id = ? ${ATTACHMENT_ORDER} LIMIT 1`).get(documentId);
   if (!att) return;
   const doc = getDocument(documentId);
   const forLabel = actingForLabel(stepId, actorUser);

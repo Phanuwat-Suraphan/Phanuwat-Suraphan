@@ -911,3 +911,45 @@ code { overflow-wrap: anywhere; }
   color: var(--text-muted);
   font-size: .78rem;
 }
+
+/* รายการไฟล์ที่เลือกไว้ในช่องแนบไฟล์แบบหลายไฟล์ (window.attachMultiPreview)
+   ชื่อไฟล์สแกนมักยาวมาก (เช่น "หนังสือ ศธ 04-2569 ลว 3 ก.ย. 69 เรื่อง....pdf") จึงต้องตัดด้วย
+   ellipsis ไม่ให้ดันปุ่ม ✕/▲ ตกขอบจอมือถือจนกดไม่ได้ */
+.file-pick-list {
+  /* นับเลขเอง ไม่ใช้ list-style — display:flex บน <li> ทำให้ marker ของลิสต์หายไปทั้งแถบ
+     (ยืนยันจากภาพหน้าจอจริง) แล้วคำอธิบายที่บอกว่า "ไฟล์ลำดับที่ 1 คือไฟล์ที่ตราประทับจะไปลง"
+     จะอ้างถึงเลขลำดับที่ผู้ใช้มองไม่เห็นเลย */
+  counter-reset: file-pick;
+  list-style: none;
+  margin: .45rem 0 .1rem;
+  padding-left: 0;
+}
+.file-pick-list li {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  padding: .25rem 0;
+  font-size: .85rem;
+}
+.file-pick-list li::before {
+  counter-increment: file-pick;
+  content: counter(file-pick) ".";
+  flex: 0 0 auto;
+  min-width: 1.25rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.file-pick-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-pick-list .btn {
+  flex: 0 0 auto;
+  /* เป้ากดอย่างน้อย 32px ตามนิ้วจริง — ปุ่มเล็กกว่านี้บนมือถือจะกดโดนไฟล์ผิดบรรทัด */
+  min-width: 2rem;
+  padding-left: .45rem;
+  padding-right: .45rem;
+}

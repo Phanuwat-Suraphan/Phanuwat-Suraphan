@@ -1984,6 +1984,61 @@ describe('คำเตือนไฟล์ซ้ำต้องไม่บอ�
   });
 });
 
+// เดิมฟอร์มลงทะเบียนมีช่องแนบไฟล์ตายตัว 3 ช่อง (fileInput/fileInput2/fileInput3) ซึ่งไม่พอกับหนังสือ
+// ที่มีสิ่งที่ส่งมาด้วยหลายฉบับ ตอนนี้เป็นช่องเดียวเลือกได้ทีละหลายไฟล์ ตัวจัดรายการอยู่ฝั่งเบราว์เซอร์
+// (window.attachMultiPreview ใน public/app.js) เทสต์ชุดนี้จึงล็อกสองอย่างที่ทดสอบได้จากฝั่งเซิร์ฟเวอร์:
+// หน้าเว็บต้องเปิดให้เลือกหลายไฟล์จริง และลำดับไฟล์ที่ทยอยส่งขึ้นมาต้องถูกเก็บตามลำดับนั้น
+describe('แนบไฟล์ได้ทีละหลายไฟล์', () => {
+  const pdfNo = (n) => Buffer.from(`%PDF-1.4\n% ไฟล์ที่ ${n} ของชุดทดสอบแนบหลายไฟล์\ntrailer<</Root 1 0 R>>\n%%EOF\n`).toString('base64');
+
+  test('ฟอร์มลงทะเบียนต้องเลือกได้หลายไฟล์ในช่องเดียว ไม่ใช่ช่องตายตัวสามช่อง', async () => {
+    const res = await dispatchGet(registrarUser, '/documents/new', { direction: 'incoming' });
+    assert.equal(res.status, 200);
+    assert.match(res.body, /id="fileInput"[^>]*multiple/, 'ช่องแนบไฟล์ต้องมี multiple');
+    assert.ok(!res.body.includes('id="fileInput2"') && !res.body.includes('id="fileInput3"'),
+      'ช่องแนบไฟล์แบบตายตัวช่องที่ 2/3 ต้องไม่เหลืออยู่');
+    assert.match(res.body, /สูงสุด 8 ไฟล์/, 'ต้องบอกผู้ใช้ว่าแนบได้สูงสุดกี่ไฟล์');
+  });
+
+  test('หน้าเอกสารต้องแนบไฟล์เพิ่มได้ทีละหลายไฟล์เหมือนกัน', async () => {
+    const doc = makeDoc({ title: 'หนังสือสำหรับแนบไฟล์เพิ่ม' });
+    const res = await dispatchGet(registrarUser, `/documents/${doc.id}`, {});
+    assert.equal(res.status, 200);
+    assert.match(res.body, /id="addAttachInput"[^>]*multiple/, 'ช่องแนบไฟล์เพิ่มต้องมี multiple');
+    // ไฟล์หลักคือไฟล์แรกของหนังสือเสมอ ไฟล์ที่แนบทีหลังต่อท้าย ติดป้าย "ไฟล์หลัก" ตรงนี้จะเข้าใจผิด
+    assert.match(res.body, /mainBadge: false/, 'ช่องแนบเพิ่มต้องไม่ติดป้ายไฟล์หลัก');
+  });
+
+  // ไฟล์แรกคือไฟล์ที่ตราประทับรับและความเห็น ผอ. จะไปลงจริง (ดู applyStampToFirstAttachment)
+  // ถ้าลำดับเพี้ยน ตราจะไปลงบนใบแนบแทนที่จะเป็นตัวหนังสือ โดยไม่มีอะไรเตือนเลย
+  test('ไฟล์ 8 ไฟล์ต้องถูกเก็บครบตามลำดับที่ส่งขึ้นมา และไฟล์แรกยังเป็นไฟล์ที่ตราประทับจะไปลง', async () => {
+    const created = await dispatchPost(registrarUser, '/documents', {
+      title: 'หนังสือที่มีสิ่งที่ส่งมาด้วยหลายฉบับ', departmentId: deptId, correspondentName: 'สพป.',
+      fileName: 'แนบ-1.pdf', fileType: 'application/pdf', fileDataBase64: pdfNo(1),
+    });
+    const docId = /\/documents\/([0-9a-f-]{36})/.exec(created.body)?.[1];
+    assert.ok(docId, created.body);
+
+    for (let n = 2; n <= 8; n++) {
+      const r = await dispatchPost(registrarUser, `/documents/${docId}/attachments`, {
+        fileName: `แนบ-${n}.pdf`, fileType: 'application/pdf', fileDataBase64: pdfNo(n),
+      });
+      assert.ok(r.status < 400, `แนบไฟล์ที่ ${n} ไม่สำเร็จ: ${r.body}`);
+    }
+
+    const rows = db.prepare('SELECT filename FROM attachments WHERE document_id = ? ORDER BY created_at, rowid').all(docId);
+    assert.deepEqual(rows.map((r) => r.filename),
+      [1, 2, 3, 4, 5, 6, 7, 8].map((n) => `แนบ-${n}.pdf`), 'ต้องเก็บครบ 8 ไฟล์ตามลำดับที่ส่งขึ้นมา');
+
+    // ตัวเลือกไฟล์ที่ระบบใช้ตอนประทับตราต้องเป็นไฟล์แรกตัวเดียวกัน
+    const stampTarget = db.prepare('SELECT filename FROM attachments WHERE document_id = ? ORDER BY created_at LIMIT 1').get(docId);
+    assert.equal(stampTarget.filename, 'แนบ-1.pdf');
+
+    const page = await dispatchGet(registrarUser, `/documents/${docId}`, {});
+    assert.match(page.body, /ไฟล์แนบ \(8\)/, 'หน้าเอกสารต้องนับไฟล์แนบครบทั้ง 8');
+  });
+});
+
 // เดินผ่านฟอร์มจริงในเบราว์เซอร์แล้วเจอ: เลือกไฟล์ PDF ที่มี 0 ไบต์ (สแกนค้างกลางคัน/ไฟล์เสีย/ก๊อป
 // ไม่จบ ซึ่งเกิดขึ้นจริง) แล้วกด "แนบไฟล์เพิ่ม" ระบบตอบสำเร็จและพากลับหน้าเดิม โดยไม่มีไฟล์แนบจริง
 // และไม่มีข้อความอะไรบอกเลย เพราะเงื่อนไข `if (!fileDataBase64)` กลืนกรณีนี้รวมกับ "ไม่ได้แนบไฟล์มา"
