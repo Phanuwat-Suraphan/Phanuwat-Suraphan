@@ -73,6 +73,23 @@ function esc(s) {
 // เรียกโปรแกรมระบบ (chromium/qpdf) — เป็น system package ผ่าน apt ไม่ใช่ npm dependency จึงยังอยู่ใน
 // กติกา zero-dependency ของโปรเจกต์นี้ (แนวทางเดียวกับ poppler-utils ใน pdfPreview.js) ต้องติดตั้ง
 // บนเซิร์ฟเวอร์ก่อนใช้งาน (ดู DEPLOY.md)
+/**
+ * รหัสจบการทำงานที่ถือว่า "สำเร็จ" ของแต่ละโปรแกรม
+ *
+ * qpdf ใช้ 3 = "ทำงานสำเร็จแล้ว แต่มีคำเตือน" ซึ่งต่างจาก 2 = "มีข้อผิดพลาด" (ดู qpdf --help=exit-status)
+ * และไฟล์ผลลัพธ์ถูกสร้างครบถ้วนแล้วในกรณีนี้
+ *
+ * เรื่องนี้สำคัญมากกับงานจริง เพราะไฟล์ PDF ที่สแกนจากเครื่องถ่ายเอกสารของโรงเรียน หรือที่ส่งมาจาก
+ * หน่วยงานต้นทาง เกือบทุกไฟล์มีคำเตือนแบบนี้เป็นปกติ:
+ *   - "dictionary has duplicated key /Info"
+ *   - "stream keyword followed by carriage return only"
+ * ทั้งสองอย่างเป็นความไม่เรียบร้อยเล็กน้อยของไฟล์ที่ qpdf ซ่อมให้เองได้ ไม่กระทบเนื้อหาเอกสารเลย
+ *
+ * เดิมถือว่า "ไม่ใช่ 0 = ล้มเหลว" ทั้งหมด ผลคือการประทับตราล้มเหลวกับหนังสือจริงเกือบทุกฉบับ
+ * โดยขึ้นข้อความ error ภาษาอังกฤษดิบๆ ที่อ่านไม่รู้เรื่อง (ยืนยันจากเครื่องใช้งานจริงแล้ว)
+ */
+const OK_EXIT_CODES = { qpdf: new Set([0, 3]) };
+
 function run(cmd, args) {
   return new Promise((resolve, reject) => {
     const proc = spawn(cmd, args);
@@ -90,8 +107,14 @@ function run(cmd, args) {
     });
     proc.on('close', (code) => {
       clearTimeout(timer);
-      if (code !== 0) reject(new Error(`${cmd} exited with code ${code}: ${stderr.slice(0, 500)}`));
-      else resolve();
+      const ok = (OK_EXIT_CODES[path.basename(cmd)] || new Set([0])).has(code);
+      if (!ok) reject(new Error(`${cmd} exited with code ${code}: ${stderr.slice(0, 500)}`));
+      else {
+        // คำเตือนต้องเห็นใน log ของเซิร์ฟเวอร์ ไม่ใช่กลืนหายไปเฉยๆ — ถ้าวันหนึ่งไฟล์เสียจริง
+        // จะได้ตามรอยได้ว่าเริ่มเตือนตั้งแต่เมื่อไร แต่ไม่ต้องไปกวนผู้ใช้ที่หน้าเว็บ
+        if (code !== 0) console.warn(`[stamp] ${cmd} จบด้วยรหัส ${code} (คำเตือน ไม่ใช่ข้อผิดพลาด): ${stderr.slice(0, 300).replace(/\s+/g, ' ')}`);
+        resolve();
+      }
     });
   });
 }
@@ -149,7 +172,14 @@ async function overlayHtmlOnFirstPage(originalBuffer, buildHtml) {
     await run('qpdf', [originalPath, '--overlay', stampPdfPath, '--to=1', '--', outputPath]);
     if (!fs.existsSync(outputPath)) throw httpError(500, 'รวมตราประทับเข้ากับ PDF ไม่สำเร็จ');
 
-    return fs.readFileSync(outputPath);
+    // ตรวจไฟล์ผลลัพธ์เอง ไม่เชื่อรหัสจบการทำงานอย่างเดียว — รหัสจบบอกได้แค่ว่าโปรแกรมคิดว่าตัวเอง
+    // ทำสำเร็จไหม แต่สิ่งที่ต้องรับประกันคือ "ไฟล์ที่จะเอาไปเก็บเป็นหนังสือราชการใช้เปิดได้จริง"
+    // ถ้าปล่อยไฟล์เสียผ่านไป มันจะไปทับสำเนาที่ประทับตราแล้วของหนังสือฉบับนั้นโดยไม่มีอะไรฟ้อง
+    const stamped = fs.readFileSync(outputPath);
+    if (stamped.length < 512 || stamped.subarray(0, 5).toString('latin1') !== '%PDF-') {
+      throw httpError(500, 'ไฟล์ที่ประทับตราแล้วไม่ใช่ PDF ที่ถูกต้อง — ยกเลิกการบันทึกเพื่อไม่ให้ทับไฟล์เดิม');
+    }
+    return stamped;
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

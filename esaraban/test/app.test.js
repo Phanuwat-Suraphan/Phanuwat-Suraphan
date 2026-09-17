@@ -4332,6 +4332,44 @@ describe('เพดานความยาวของช่องข้อค�
       `เพดานตราประทับควรอยู่ในช่วงที่วัดแล้วว่าพอดีหน้าเดียว แต่ตั้งไว้ ${MAX_STAMP_TEXT}`);
   });
 
+  // เครื่องใช้งานจริงประทับตราไม่ได้เลย ขึ้นข้อความภาษาอังกฤษดิบๆ ว่า
+  //   "qpdf exited with code 3: WARNING: ... dictionary has duplicated key /Info ..."
+  //
+  // qpdf ใช้รหัส 3 = "ทำงานสำเร็จแล้ว แต่มีคำเตือน" ต่างจาก 2 = "มีข้อผิดพลาด" และไฟล์ผลลัพธ์
+  // ถูกสร้างครบถ้วนแล้ว — แต่โค้ดเดิมถือว่า "ไม่ใช่ 0 = ล้มเหลว" การประทับตราจึงล้มเหลวกับหนังสือ
+  // จริงเกือบทุกฉบับ เพราะไฟล์ที่สแกนจากเครื่องถ่ายเอกสารเกือบทุกไฟล์มีคำเตือนแบบนี้เป็นปกติ
+  describe('รหัสจบการทำงานของ qpdf ตอนประทับตราลงไฟล์จริง', () => {
+    const run = (mode) => {
+      const out = execFileSync(process.execPath, ['--no-warnings', 'test/stampExitCode.mjs', mode], {
+        cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', timeout: 90_000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      const lines = out.trim().split('\n');
+      return JSON.parse(lines[lines.length - 1]);
+    };
+
+    test('มีคำเตือนแต่ทำงานสำเร็จ (exit 3) ต้องประทับตราได้ตามปกติ', () => {
+      const r = run('warnings');
+      assert.equal(r.ok, true, `ต้องประทับตราสำเร็จ แต่ได้: ${r.error}`);
+      assert.equal(r.isPdf, true, 'ไฟล์ที่ได้ต้องเป็น PDF');
+      assert.ok(r.bytes > 512);
+    });
+
+    test('ข้อผิดพลาดจริง (exit 2) ต้องยังล้มเหลวตามเดิม', () => {
+      const r = run('error');
+      assert.equal(r.ok, false, 'ไฟล์เสียจริงต้องไม่ถูกปล่อยผ่าน');
+      assert.match(r.error, /code 2/);
+    });
+
+    // รหัสจบบอกได้แค่ว่าโปรแกรมคิดว่าตัวเองทำสำเร็จไหม สิ่งที่ต้องรับประกันคือไฟล์ที่จะเก็บเป็น
+    // หนังสือราชการเปิดได้จริง — ถ้าปล่อยไฟล์เสียผ่าน มันจะไปทับสำเนาที่ประทับตราแล้วโดยไม่มีอะไรฟ้อง
+    test('จบด้วย exit 3 แต่ไฟล์ที่ได้ไม่ใช่ PDF ต้องไม่ปล่อยผ่าน', () => {
+      const r = run('bad-output');
+      assert.equal(r.ok, false);
+      assert.match(r.error, /ไม่ใช่ PDF ที่ถูกต้อง/);
+    });
+  });
+
   test('บัญชีทำลายหนังสือมีเพดาน และไม่ 500 เมื่อส่งค่าผิดชนิด', () => {
     const actor = reg();
     assert.throws(() => createDestructionBatch({ documentIds: 'ไม่ใช่อาเรย์', committeeNames: 'ก ข ค', actorUser: actor }),
