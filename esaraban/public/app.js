@@ -463,6 +463,52 @@
   })();
 
   /**
+   * ปุ่มดู/ซ่อนรหัสผ่านทุกช่องในระบบ
+   *
+   * ทำที่เดียวแบบกวาดทั้งหน้า แทนการไล่เติมปุ่มทีละฟอร์ม — ช่องรหัสผ่านกระจายอยู่หลายหน้า
+   * (เข้าสู่ระบบ, ตั้งรหัสครั้งแรก, เปลี่ยนรหัสในโปรไฟล์, ลงทะเบียน, ผู้ดูแลตั้งรหัสให้) ถ้าไล่เติมเอง
+   * จะตกหล่นและฟอร์มที่เพิ่มมาใหม่วันหลังก็จะลืมอีก วิธีนี้ครอบคลุมทั้งของเดิมและของใหม่
+   *
+   * ทำไมจำเป็น: รหัสที่ตั้งใหม่ต้องยาวอย่างน้อย 8 ตัวและพิมพ์บนแป้นมือถือ ซึ่งพิมพ์ผิดง่ายมากและ
+   * มองไม่เห็นเลยว่าพิมพ์อะไรไป คนจึงตั้งรหัสที่ตัวเองก็ไม่รู้ว่าคืออะไร แล้วล็อกอินกลับเข้าไม่ได้
+   */
+  (function passwordRevealButtons() {
+    function attach(input) {
+      if (input.dataset.revealReady) return;
+      input.dataset.revealReady = '1';
+
+      const wrap = document.createElement('div');
+      wrap.className = 'pw-wrap';
+      input.parentNode.insertBefore(wrap, input);
+      wrap.appendChild(input);
+
+      const btn = document.createElement('button');
+      btn.type = 'button'; // ต้องไม่ใช่ submit ไม่งั้นกดดูรหัสแล้วฟอร์มถูกส่งทันที
+      btn.className = 'pw-reveal';
+      btn.tabIndex = -1; // ไม่ขวางลำดับ Tab จากช่องรหัสผ่านไปยังปุ่มส่ง
+      const sync = () => {
+        const shown = input.type === 'text';
+        btn.textContent = shown ? '🙈' : '👁️';
+        btn.title = shown ? 'ซ่อนรหัส' : 'ดูรหัสที่พิมพ์ไว้';
+        btn.setAttribute('aria-label', btn.title);
+        btn.setAttribute('aria-pressed', shown ? 'true' : 'false');
+      };
+      btn.onclick = function () {
+        // เก็บตำแหน่งเคอร์เซอร์ไว้ — การสลับ type ทำให้เคอร์เซอร์เด้งไปท้ายช่องทุกครั้ง
+        // ซึ่งกวนมากถ้ากำลังแก้ตัวอักษรกลางรหัสอยู่
+        const pos = input.selectionStart;
+        input.type = input.type === 'password' ? 'text' : 'password';
+        sync();
+        input.focus();
+        try { input.setSelectionRange(pos, pos); } catch (_) { /* บางเบราว์เซอร์ไม่ให้ตั้งกับ type=text ทันที */ }
+      };
+      sync();
+      wrap.appendChild(btn);
+    }
+    document.querySelectorAll('input[type=password]').forEach(attach);
+  })();
+
+  /**
    * ข้อความเตือนของเบราว์เซอร์เป็นภาษาไทย
    *
    * ฟอร์มที่ส่งแบบ <form method="post"> ธรรมดา (หน้าเข้าสู่ระบบ ตั้งรหัสครั้งแรก ลงทะเบียน) พึ่ง

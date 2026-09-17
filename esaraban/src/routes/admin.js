@@ -168,7 +168,7 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
           <div class="field"><label>ฝ่าย</label><select id="departmentId">${depts.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
           <div class="field"><label>บทบาท</label><select id="roleId">${roles.map((r) => `<option value="${r.id}">${esc(r.name_th)}</option>`).join('')}</select></div>
           <div class="field"><label>รหัสผ่านเริ่มต้น</label><input type="text" id="password" required placeholder="เช่น Welcome@2569" /></div>
-          <div class="field"><label>PIN เริ่มต้น (6 หลัก)</label><input type="text" id="pin" inputmode="numeric" maxlength="6" required /></div>
+          <div class="field"><label>PIN เริ่มต้น (6 หลัก)</label><input type="password" id="pin" inputmode="numeric" maxlength="6" required autocomplete="new-password" /></div>
           <button class="btn btn-primary" type="submit">สร้างผู้ใช้</button>
         </form>
         <script>

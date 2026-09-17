@@ -51,6 +51,23 @@ const MAX_ATTACH_FILES = 8;
 // การแนบ 8 ไฟล์รวดผ่านเบราว์เซอร์จริง ไม่มีคู่ไหน created_at ชนกันเลย) แต่ถ้าชนกันเมื่อไร SQLite จะ
 // เลือกแถวไหนก็ได้ และ "ไฟล์หลัก" จะสลับตัวเองได้ระหว่างสองคำขอ — ตัวตัดสินรองทำให้ผลคงที่เสมอ
 const ATTACHMENT_ORDER = 'ORDER BY created_at, rowid';
+
+/**
+ * ใครประทับ "ตรารับ" (เลขรับ/วันที่/เวลา) ลงไฟล์ PDF ได้
+ *
+ * เดิมเงื่อนไขคือ "ผู้บันทึกเอกสาร หรือแอดมิน" ซึ่งกลับหัวกลับหางกับงานจริง — การประทับตรารับเป็น
+ * หน้าที่ของเจ้าหน้าที่ธุรการโดยตรงตามระเบียบงานสารบรรณ (ธุรการคือคนลงรับหนังสือที่เข้ามา) แต่พอ
+ * ครูหรือใครก็ตามเป็นคนลงทะเบียนหนังสือฉบับนั้นเข้าระบบ ธุรการจะ "ไม่เห็นปุ่มประทับตราเลย" และถ้า
+ * ยิงตรงไปที่ API ก็ถูกปฏิเสธ 403 (ทดสอบยืนยันแล้วทั้งสองทาง) — ตราประทับของธุรการจึงไม่แสดง
+ *
+ * ธุรการได้สิทธิ์เฉพาะหนังสือรับ เพราะตรารับมีอยู่แต่ในหนังสือที่รับเข้ามา หนังสือส่งไม่มีตรานี้
+ */
+function canApplyReceivedStamp(user, doc) {
+  if (!doc || doc.direction !== 'incoming') return false;
+  if (user.roleCodes.includes('admin')) return true;
+  if (user.roleCodes.includes('registrar')) return true;
+  return doc.created_by === user.id;
+}
 // checkbox บนตราประทับความเห็นของ ผอ./ผู้รักษาการแทน — ถ้อยคำตรงกับตรายางจริงของโรงเรียน (ยืนยันจาก
 // ภาพถ่ายตราจริงและจากผู้ใช้โดยตรง) เลือกได้หลายอันพร้อมกัน ไม่ผูกกับปุ่ม workflow ที่กดส่ง (ปุ่มนั้นแค่
 // ปิด/ส่งต่อขั้นตอนเท่านั้น) ผู้ตัดสินใจติ๊กเองว่าอันไหนตรงกับความเห็นจริง
@@ -1208,6 +1225,8 @@ router.get('/documents/:id', requirePage((ctx) => {
   // canWriteRegistrarComment() เพื่อไม่ให้ช่องกรอกโผล่มาแล้วกดไปเงียบๆ โดยไม่มีอะไรติดลงไฟล์
   const isRegistrarComment = !!step && !isDirectorDecision && ctx.user.roleCodes.includes('registrar');
   const isCreatorOrAdmin = doc.created_by === ctx.user.id || ctx.user.roleCodes.includes('admin');
+  // ต้องตรงกับที่บังคับฝั่งเซิร์ฟเวอร์เป๊ะ ไม่งั้นปุ่มจะโผล่มาแล้วกดไม่ผ่าน หรือกดได้แต่ไม่มีปุ่มให้กด
+  const canStampReceived = canApplyReceivedStamp(ctx.user, doc);
   const canAssign = ['registered', 'returned'].includes(doc.status) && isCreatorOrAdmin;
   const canVoid = ['draft', 'registered'].includes(doc.status) && isCreatorOrAdmin;
   const canArchive = doc.status === 'completed' && isCreatorOrAdmin;
@@ -1595,7 +1614,7 @@ router.get('/documents/:id', requirePage((ctx) => {
                   ${a.stamped_storage_provider ? '<span class="badge badge-success" style="margin-left:.4rem">✅ ประทับตราแล้ว</span>' : ''}
                 </div>
                 <div class="chip-row">
-                  ${i === 0 && doc.direction === 'incoming' && isCreatorOrAdmin ? `<button type="button" class="btn btn-sm btn-primary" onclick="applyStamp('${a.id}', this)">🖋️ ประทับตราลงไฟล์ PDF จริง</button>` : ''}
+                  ${i === 0 && canStampReceived ? `<button type="button" class="btn btn-sm btn-primary" onclick="applyStamp('${a.id}', this)">🖋️ ประทับตราลงไฟล์ PDF จริง</button>` : ''}
                   <button type="button" class="btn btn-sm btn-outline" onclick="togglePreview('${a.id}')">👁️ ดูตัวอย่าง</button>
                   <a class="btn btn-sm btn-outline" href="/files/${a.id}" target="_blank" rel="noopener">เปิดแท็บใหม่</a>
                   ${a.stamped_storage_provider ? `<a class="btn btn-sm btn-outline" href="/files/${a.id}?original=1" target="_blank" rel="noopener">ดูต้นฉบับ (ไม่มีตรา)</a>` : ''}
@@ -2306,8 +2325,8 @@ async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser
 router.post('/documents/:id/attachments/:attId/apply-stamp', requireApi(async (ctx) => {
   const doc = getDocument(ctx.params.id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
-  if (doc.created_by !== ctx.user.id && !ctx.user.roleCodes.includes('admin')) {
-    throw httpError(403, 'สร้าง PDF ที่ประทับตราแล้วได้เฉพาะผู้บันทึกเอกสารหรือแอดมินเท่านั้น');
+  if (!canApplyReceivedStamp(ctx.user, doc)) {
+    throw httpError(403, 'ประทับตรารับลงไฟล์ PDF ได้เฉพาะเจ้าหน้าที่ธุรการ ผู้บันทึกเอกสาร หรือผู้ดูแลระบบเท่านั้น');
   }
   const att = db.prepare('SELECT * FROM attachments WHERE id = ? AND document_id = ?').get(ctx.params.attId, doc.id);
   if (!att) throw httpError(404, 'ไม่พบไฟล์แนบนี้');

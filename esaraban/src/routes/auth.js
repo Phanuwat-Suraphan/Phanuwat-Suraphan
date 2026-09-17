@@ -86,10 +86,10 @@ function loginPage({ error, next = '', remember = false } = {}) {
           </div>
           <div class="field">
             <label>รหัสผ่าน</label>
-            <div class="password-field">
-              <input type="password" name="password" id="loginPassword" required autocomplete="current-password" placeholder="••••••••" />
-              <button type="button" class="password-toggle" onclick="var f=document.getElementById('loginPassword');var showing=f.type==='text';f.type=showing?'password':'text';this.textContent=showing?'แสดง':'ซ่อน';">แสดง</button>
-            </div>
+            <!-- ปุ่มดู/ซ่อนรหัสไม่ต้องเขียนที่นี่ — /app.js เติมให้ทุกช่องรหัสผ่านในระบบเองแบบเดียวกันหมด
+                 (เดิมหน้านี้มีปุ่มของตัวเองเขียนไว้ต่างหาก ทำให้เป็นที่เดียวในระบบที่มีปุ่ม และพอเติมปุ่ม
+                 กลางเข้ามาก็กลายเป็นสองปุ่มซ้อนทับกัน) -->
+            <input type="password" name="password" id="loginPassword" required autocomplete="current-password" placeholder="••••••••" />
           </div>
           <label class="remember-row">
             <input type="checkbox" name="remember" value="on"${remember ? ' checked' : ''} />
@@ -208,6 +208,13 @@ function firstLoginPage(user, { error } = {}) {
             <input type="password" name="newPin" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required autocomplete="new-password" />
             <div class="help-text">ห้ามใช้เลขซ้ำทั้งหมด (111111) หรือเลขเรียง (123456)</div>
           </div>
+          <!-- PIN ต้องพิมพ์สองครั้งเหมือนรหัสผ่าน — PIN ใช้แทนการลงลายมือชื่อ ถ้าพิมพ์ผิดตั้งแต่วันแรก
+               เจ้าตัวจะไม่รู้เลยจนกว่าจะถึงตอนต้องลงนามหนังสือจริง (ซึ่งอาจเป็นอีกหลายวันถัดไป) แล้วก็
+               กดลงนามไม่ได้ ต้องไปขอผู้ดูแลตั้งให้ใหม่ ทั้งที่กันได้ตั้งแต่ตอนกรอกด้วยช่องยืนยันช่องเดียว -->
+          <div class="field">
+            <label>พิมพ์ PIN ใหม่อีกครั้ง</label>
+            <input type="password" name="confirmPin" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required autocomplete="new-password" />
+          </div>
           <button class="btn btn-primary btn-block" type="submit">บันทึกและเริ่มใช้งาน</button>
         </form>
         <div class="text-muted" style="text-align:center;margin-top:1rem;font-size:.82rem">
@@ -227,7 +234,7 @@ router.get('/first-login', (ctx) => {
 router.post('/first-login', (ctx) => {
   if (!ctx.user) return redirect(ctx, '/login');
   if (!ctx.user.must_change_password) return redirect(ctx, '/');
-  const { newPassword, confirmPassword, newPin } = ctx.body;
+  const { newPassword, confirmPassword, newPin, confirmPin } = ctx.body;
   const fail = (error) => html(ctx, 400, layout({
     user: null, title: 'ตั้งรหัสผ่านของตัวเอง', path: '/first-login',
     content: firstLoginPage(ctx.user, { error }),
@@ -239,6 +246,9 @@ router.post('/first-login', (ctx) => {
   const row = db.prepare('SELECT password_hash, pin_hash FROM users WHERE id = ?').get(ctx.user.id);
   if (verifySecret(newPassword, row.password_hash)) return fail('รหัสผ่านใหม่ต้องไม่ซ้ำกับรหัสผ่านชั่วคราวที่ได้รับมา');
   if (!/^\d{6}$/.test(newPin || '')) return fail('PIN ต้องเป็นตัวเลข 6 หลัก');
+  // ต้องตรวจก่อน isWeakPin เพื่อให้ข้อความตรงกับสิ่งที่ผิดจริง — ถ้าพิมพ์ไม่ตรงกันแล้วไปเจอ
+  // "PIN เดาง่ายเกินไป" ก่อน ผู้ใช้จะไล่แก้ผิดจุด
+  if (newPin !== confirmPin) return fail('PIN ใหม่ทั้งสองช่องไม่ตรงกัน');
   if (isWeakPin(newPin)) return fail('PIN นี้เดาง่ายเกินไป — ห้ามใช้เลขซ้ำทั้งหมดหรือเลขเรียงติดกัน');
   if (verifySecret(newPin, row.pin_hash)) return fail('PIN ใหม่ต้องไม่ซ้ำกับ PIN ชั่วคราวที่ได้รับมา');
 

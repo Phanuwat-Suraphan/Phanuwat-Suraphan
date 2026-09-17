@@ -202,7 +202,7 @@ ${user ? renderAppShell({ user, currentPath, content, flash, initials }) : conte
     <h3 id="pinModalTitle">ยืนยันตัวตนด้วย PIN</h3>
     <p class="text-muted" style="font-size:.82rem">กรอกรหัส PIN 6 หลักของคุณเพื่อยืนยันการทำรายการนี้ (ตาม Business Rule: ต้องยืนยันตัวตนก่อนรับทราบ/ลงนามทุกครั้ง)</p>
     <div class="field">
-      <input type="text" inputmode="numeric" maxlength="6" id="pinInput" aria-label="รหัส PIN 6 หลัก" placeholder="••••••" style="text-align:center;font-size:1.4rem;letter-spacing:.4em" autocomplete="off" />
+      <input type="password" inputmode="numeric" maxlength="6" id="pinInput" aria-label="รหัส PIN 6 หลัก" placeholder="••••••" style="text-align:center;font-size:1.4rem;letter-spacing:.4em" autocomplete="off" />
     </div>
     <div class="flex gap-2">
       <button class="btn btn-outline btn-block" onclick="closePinModal(false)">ยกเลิก</button>

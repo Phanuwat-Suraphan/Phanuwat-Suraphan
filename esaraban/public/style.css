@@ -953,3 +953,29 @@ code { overflow-wrap: anywhere; }
   padding-left: .45rem;
   padding-right: .45rem;
 }
+
+/* ปุ่มดู/ซ่อนรหัสผ่าน (window.app.js → passwordRevealButtons)
+   ปุ่มลอยทับอยู่ในกรอบช่องกรอก จึงต้องเผื่อ padding ขวาไว้ ไม่งั้นตัวอักษรท้ายรหัสจะวิ่งไปอยู่ใต้ปุ่ม */
+.pw-wrap { position: relative; display: block; }
+.pw-wrap > input { width: 100%; padding-right: 2.9rem; }
+.pw-reveal {
+  position: absolute;
+  top: 50%;
+  right: .35rem;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  font-size: 1.05rem;
+  /* เป้ากดอย่างน้อย 40px ตามนิ้วจริงบนมือถือ — ปุ่มขนาดตัวอีโมจิเปล่าๆ เล็กเกินกว่าจะกดโดน */
+  width: 2.3rem;
+  height: 2.3rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  opacity: .72;
+}
+.pw-reveal:hover, .pw-reveal:focus-visible { opacity: 1; background: var(--surface-2); }

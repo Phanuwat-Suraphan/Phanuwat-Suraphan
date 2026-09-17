@@ -78,7 +78,7 @@ function registerPage({ error, done, values = {} } = {}) {
         <input type="password" id="regPassword" name="password" minlength="8" required autocomplete="new-password"
           ${error ? 'autofocus' : ''} /></div>
       <div class="field"><label for="regPin">PIN 6 หลัก *</label>
-        <input type="text" id="regPin" name="pin" inputmode="numeric" maxlength="6" required />
+        <input type="password" id="regPin" name="pin" inputmode="numeric" maxlength="6" required autocomplete="new-password" />
         <div class="help-text">ใช้แทนการลงลายมือชื่อเวลากด "ทราบ"/ลงนาม จึงต้องเป็นความลับเฉพาะตัว ห้ามใช้ 111111 หรือ 123456</div></div>
       <div class="field"><label>ข้อความถึงผู้ดูแล</label>
         <textarea name="note" rows="2" placeholder="เช่น ครูประจำชั้น ป.4 เพิ่งย้ายมาเทอมนี้">${v('note')}</textarea>

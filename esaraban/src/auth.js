@@ -57,7 +57,27 @@ function unsign(signed) {
   return diff === 0 ? value : null;
 }
 
+/**
+ * ช่องว่างหน้า-หลังที่ติดมาโดยไม่ตั้งใจ ต้องไม่นับเป็นตัวอักษรที่ผู้ใช้พิมพ์
+ *
+ * บนมือถือ แป้นพิมพ์เติมช่องว่างให้เองหลังเลือกคำจากแถบคำแนะนำ และการคัดลอกรหัสที่ผู้ดูแลส่งมาทางไลน์
+ * มักติดช่องว่างหรือขึ้นบรรทัดใหม่มาด้วยเสมอ ผลคือ "บัญชีผู้ใช้หรือรหัสผ่านไม่ถูกต้อง" ทั้งที่พิมพ์ถูกทุกตัว
+ * และมองด้วยตาก็ไม่มีทางเห็นว่าต่างกันตรงไหน — ครูจะสรุปว่ารหัสที่ได้มาใช้ไม่ได้
+ *
+ * รหัสผ่านตัดช่องว่างทิ้งไปเลยไม่ได้ เพราะถ้ามีใครตั้งรหัสที่มีช่องว่างหน้า-หลังไว้จริง รหัสนั้นจะใช้ไม่ได้
+ * ทันที จึงลองแบบที่พิมพ์มาก่อนเสมอ แล้วค่อยลองแบบตัดช่องว่างเป็นทางสำรอง — ไม่มีรหัสเดิมของใครพังเลย
+ * และการนับครั้งที่กรอกผิดยังเดินตามปกติเมื่อผิดจริงทั้งสองแบบ
+ */
+function passwordMatches(password, hash) {
+  if (verifySecret(password, hash)) return true;
+  const trimmed = String(password ?? '').trim();
+  return trimmed !== password && verifySecret(trimmed, hash);
+}
+
 export function login(employeeCode, password, ip, userAgent, { remember = false } = {}) {
+  // รหัสพนักงานตัดช่องว่างได้เลย ไม่ต้องมีทางสำรอง — เป็นชื่อบัญชีที่ผู้ดูแลตั้งให้ ไม่มีกรณีที่ตั้งใจ
+  // ให้มีช่องว่างหัวท้าย (และฝั่งสร้างผู้ใช้ก็ตัดทิ้งอยู่แล้ว)
+  employeeCode = typeof employeeCode === 'string' ? employeeCode.trim() : employeeCode;
   const user = getUserByCode(employeeCode);
   if (!user || user.status !== 'active') {
     audit({ action: 'login_failed', detail: { employeeCode, reason: 'no_user' }, ip });
@@ -70,7 +90,7 @@ export function login(employeeCode, password, ip, userAgent, { remember = false 
     return { ok: false, error: `บัญชีถูกล็อกชั่วคราวเนื่องจากกรอกรหัสผ่านผิดหลายครั้ง กรุณาลองใหม่อีกครั้งในอีก ${minutesLeft} นาที` };
   }
 
-  if (!verifySecret(password, user.password_hash)) {
+  if (!passwordMatches(password, user.password_hash)) {
     const failedCount = (user.failed_login_count || 0) + 1;
     if (failedCount >= MAX_FAILED_ATTEMPTS) {
       const lockedUntil = new Date(Date.now() + LOCKOUT_MS).toISOString();

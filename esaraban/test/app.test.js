@@ -1984,6 +1984,134 @@ describe('คำเตือนไฟล์ซ้ำต้องไม่บอ�
   });
 });
 
+// แป้นพิมพ์มือถือเติมช่องว่างให้เองหลังเลือกคำจากแถบคำแนะนำ และรหัสที่ผู้ดูแลส่งมาทางไลน์แล้วคัดลอกมา
+// วางมักติดช่องว่าง/ขึ้นบรรทัดใหม่มาด้วย ผลคือขึ้น "บัญชีผู้ใช้หรือรหัสผ่านไม่ถูกต้อง" ทั้งที่พิมพ์ถูกทุกตัว
+// และมองด้วยตาไม่มีทางเห็นว่าต่างกันตรงไหน
+describe('ช่องว่างที่ติดมาโดยไม่ตั้งใจตอนเข้าสู่ระบบ ต้องไม่นับเป็นตัวที่พิมพ์', () => {
+  const code = 'spacetest01';
+  const pass = 'RahatPanTest2569';
+  let userId;
+  before(() => {
+    userId = uuid();
+    db.prepare(`INSERT INTO users (id, employee_code, first_name, last_name, password_hash, status, created_at, updated_at)
+      VALUES (?, ?, 'ทดสอบ', 'ช่องว่าง', ?, 'active', ?, ?)`).run(userId, code, hashSecret(pass), nowIso(), nowIso());
+  });
+
+  for (const [label, c, p] of [
+    ['ช่องว่างหน้ารหัสพนักงาน', ` ${code}`, pass],
+    ['ช่องว่างหลังรหัสพนักงาน', `${code} `, pass],
+    ['ช่องว่างหน้ารหัสผ่าน', code, ` ${pass}`],
+    ['ช่องว่างหลังรหัสผ่าน', code, `${pass} `],
+    ['ช่องว่างทั้งสองช่อง', ` ${code} `, ` ${pass} `],
+    ['ขึ้นบรรทัดใหม่ติดมาจากการคัดลอก', `${code}\n`, `${pass}\n`],
+  ]) {
+    test(label, () => {
+      const res = login(c, p, '127.0.0.1', 'test');
+      assert.equal(res.ok, true, `ควรเข้าได้ แต่ได้: ${res.error}`);
+    });
+  }
+
+  test('รหัสผ่านผิดจริงยังต้องถูกปฏิเสธตามเดิม', () => {
+    assert.equal(login(code, 'RahatPanPhit9999', '127.0.0.1', 'test').ok, false);
+    // ช่องว่าง "กลาง" รหัสไม่ใช่ช่องว่างที่ติดมาโดยไม่ตั้งใจ ห้ามตัดทิ้ง
+    assert.equal(login(code, pass.slice(0, 5) + ' ' + pass.slice(5), '127.0.0.1', 'test').ok, false);
+  });
+
+  // ถ้าตัดช่องว่างทิ้งดื้อๆ คนที่ตั้งรหัสซึ่งมีช่องว่างหัวท้ายไว้จริงจะเข้าไม่ได้ทันทีตั้งแต่วันที่อัปเดต
+  test('คนที่ตั้งรหัสผ่านโดยมีช่องว่างหัวท้ายไว้จริง ต้องยังเข้าได้ด้วยรหัสเดิม', () => {
+    const spacedCode = 'spacetest02';
+    const spacedPass = '  RahatMiChongWang  ';
+    db.prepare(`INSERT INTO users (id, employee_code, first_name, last_name, password_hash, status, created_at, updated_at)
+      VALUES (?, ?, 'ทดสอบ', 'รหัสมีช่องว่าง', ?, 'active', ?, ?)`)
+      .run(uuid(), spacedCode, hashSecret(spacedPass), nowIso(), nowIso());
+    assert.equal(login(spacedCode, spacedPass, '127.0.0.1', 'test').ok, true, 'รหัสเดิมต้องยังใช้ได้');
+  });
+});
+
+// ทุกช่องที่เป็นความลับต้องกดดู/ซ่อนได้ — รหัสที่ตั้งใหม่ต้องยาวอย่างน้อย 8 ตัวและพิมพ์บนแป้นมือถือ
+// ซึ่งพิมพ์ผิดง่ายมากโดยมองไม่เห็นเลยว่าพิมพ์อะไรไป คนจึงตั้งรหัสที่ตัวเองก็ไม่รู้ว่าคืออะไร
+describe('ช่องรหัสผ่านและ PIN ทุกช่องต้องกดดู/ซ่อนได้', () => {
+  test('ตัวเติมปุ่มดู/ซ่อนต้องกวาดทุกช่องเอง ไม่ใช่เขียนทีละฟอร์ม', () => {
+    const appJs = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+    assert.match(appJs, /querySelectorAll\('input\[type=password\]'\)/, 'ต้องกวาดช่องรหัสผ่านทั้งหน้า');
+    assert.match(appJs, /btn\.type = 'button'/, 'ปุ่มต้องไม่ใช่ submit ไม่งั้นกดดูรหัสแล้วฟอร์มถูกส่งทันที');
+  });
+
+  // PIN ใช้แทนการลงลายมือชื่อ จึงต้องถูกปิดไว้เหมือนรหัสผ่าน ไม่ใช่โชว์เต็มๆ บนจอ
+  // (ตัวเติมปุ่มดู/ซ่อนจับเฉพาะ input[type=password] ช่องที่เป็น text จึงไม่ได้ปุ่มไปด้วย)
+  test('ช่อง PIN ทุกที่ต้องเป็น type=password', () => {
+    const files = ['../src/render.js', '../src/routes/profile.js', '../src/routes/admin.js',
+      '../src/routes/registration.js', '../src/routes/auth.js'];
+    for (const f of files) {
+      const src = fs.readFileSync(new URL(f, import.meta.url), 'utf8');
+      for (const m of src.match(/<input[^>]*(?:id="[^"]*[Pp]in"|name="(?:pin|newPin|confirmPin)")[^>]*>/g) || []) {
+        assert.ok(m.includes('type="password"'), `ช่อง PIN นี้ยังไม่ได้ปิดไว้ใน ${f}: ${m}`);
+      }
+    }
+  });
+
+  test('หน้าเข้าสู่ระบบต้องไม่มีปุ่มดู/ซ่อนของตัวเองซ้อนกับปุ่มกลาง', async () => {
+    const res = await dispatchGet(null, '/login', {});
+    assert.ok(!res.body.includes('class="password-toggle"'),
+      'ปุ่มเดิมที่เขียนไว้เฉพาะหน้านี้ต้องถูกเอาออก ไม่งั้นจะมีสองปุ่มซ้อนทับกัน');
+  });
+});
+
+// ตราประทับรับเป็นหน้าที่ของเจ้าหน้าที่ธุรการโดยตรงตามระเบียบงานสารบรรณ แต่เงื่อนไขเดิมคือ
+// "ผู้บันทึกเอกสาร หรือแอดมิน" เท่านั้น พอครูเป็นคนลงทะเบียนหนังสือฉบับนั้นเข้าระบบ ธุรการจะไม่เห็น
+// ปุ่มประทับตราเลย และถ้ายิงตรงไปที่ API ก็ถูกปฏิเสธ 403 (ยืนยันด้วยการเดินจริงทั้งสองทาง)
+describe('ธุรการต้องประทับตรารับลงไฟล์ PDF ได้ แม้ไม่ได้เป็นคนลงทะเบียนเอง', () => {
+  let docId, attId;
+  before(async () => {
+    const teacher = loadUserForTest(seed.userIds.teacher001);
+    const res = await dispatchPost(teacher, '/documents', {
+      title: 'หนังสือรับที่ครูเป็นคนลงทะเบียน', departmentId: deptId, correspondentName: 'สพป.', direction: 'incoming',
+      fileName: 'scan.pdf', fileType: 'application/pdf',
+      fileDataBase64: Buffer.from('%PDF-1.4\n% ตราประทับธุรการ\ntrailer<</Root 1 0 R>>\n%%EOF\n').toString('base64'),
+    });
+    docId = /\/documents\/([0-9a-f-]{36})/.exec(res.body)?.[1];
+    attId = db.prepare('SELECT id FROM attachments WHERE document_id = ?').get(docId)?.id;
+  });
+
+  test('ธุรการต้องเห็นปุ่มประทับตราในหน้าเอกสาร', async () => {
+    const res = await dispatchGet(registrarUser, `/documents/${docId}`, {});
+    assert.match(res.body, /ประทับตราลงไฟล์ PDF จริง/, 'ธุรการต้องเห็นปุ่มประทับตรา');
+  });
+
+  test('ธุรการต้องไม่ถูกปฏิเสธสิทธิ์ตอนกดประทับตรา', async () => {
+    const res = await dispatchPost(registrarUser, `/documents/${docId}/attachments/${attId}/apply-stamp`, {});
+    // 501 = เซิร์ฟเวอร์นี้ยังไม่ได้ติดตั้ง chromium/qpdf ซึ่งเป็นคนละเรื่องกับสิทธิ์ — ที่ต้องไม่ได้คือ 403
+    assert.notEqual(res.status, 403, `ธุรการต้องไม่ถูกปฏิเสธสิทธิ์ แต่ได้: ${res.json?.error}`);
+  });
+
+  test('ครูทั่วไปที่ไม่ได้ลงทะเบียนเอกสารนี้ ยังต้องประทับตราไม่ได้', async () => {
+    const other = loadUserForTest(seed.userIds.head_acad);
+    const page = await dispatchGet(other, `/documents/${docId}`, {});
+    assert.ok(!page.body.includes('ประทับตราลงไฟล์ PDF จริง'), 'คนที่ไม่เกี่ยวข้องต้องไม่เห็นปุ่ม');
+    assert.equal((await dispatchPost(other, `/documents/${docId}/attachments/${attId}/apply-stamp`, {})).status, 403);
+  });
+
+  test('หนังสือส่งไม่มีตรารับ ธุรการก็ต้องไม่เห็นปุ่มนี้', async () => {
+    const out = await dispatchPost(registrarUser, '/documents', {
+      title: 'หนังสือส่งออก', departmentId: deptId, correspondentName: 'สพป.', direction: 'outgoing',
+      fileName: 'out.pdf', fileType: 'application/pdf',
+      fileDataBase64: Buffer.from('%PDF-1.4\n% ส่งออก\ntrailer<</Root 1 0 R>>\n%%EOF\n').toString('base64'),
+    });
+    const outId = /\/documents\/([0-9a-f-]{36})/.exec(out.body)?.[1];
+    const page = await dispatchGet(registrarUser, `/documents/${outId}`, {});
+    assert.ok(!page.body.includes('ประทับตราลงไฟล์ PDF จริง'), 'หนังสือส่งไม่มีตรารับ');
+  });
+});
+
+// ไอคอนบนแท็บเคยเป็นไฟล์นิ่งที่เขียนตัวย่อ "จพ" ของโรงเรียนอื่นฝังไว้ตายตัว แก้จากในระบบไม่ได้เลย
+test('ไอคอนบนแท็บต้องใช้ตัวย่อของโรงเรียนที่ตั้งไว้จริง', async () => {
+  const res = await dispatchGet(null, '/favicon.svg', {});
+  assert.equal(res.status, 200);
+  assert.match(res.headers['Content-Type'] || '', /image\/svg\+xml/);
+  assert.ok(res.body.includes(schoolInitials()), `ต้องมีตัวย่อ "${schoolInitials()}" อยู่ในไอคอน`);
+  assert.ok(!res.body.includes('จพ') || schoolInitials() === 'จพ', 'ต้องไม่ใช่ตัวย่อที่ฝังไว้ตายตัว');
+});
+
 // ครูกรอกฟอร์มลงทะเบียนครบแล้วใช้ PIN 123456 ระบบตีกลับว่า PIN เดาง่ายเกินไป ครูแก้แต่ PIN ตามที่
 // ข้อความบอก แล้วกด "ส่งคำขอลงทะเบียน" อีกครั้ง — หน้าไม่ไปไหนเลย กดกี่ครั้งก็เหมือนปุ่มเสีย
 // เพราะช่องรหัสผ่านถูกล้างตอนตีกลับ (ตั้งใจ ไม่ส่งรหัสผ่านกลับมาแสดงบนหน้าเว็บ) แต่ไม่มีอะไรบอกครู
@@ -3706,7 +3834,7 @@ describe('ค้นหาจากแถบบนสุด และหน้า
       assert.equal(res.status, 400, `ควรปฏิเสธ PIN ${weak}`);
       assert.match(res.json.error || '', /เดาง่าย/);
     }
-    assert.equal((await dispatchPost(user, '/profile/pin', { currentPassword: pass, newPin: '739184' })).status, 200,
+    assert.equal((await dispatchPost(user, '/profile/pin', { currentPassword: pass, newPin: '739184', confirmPin: '739184' })).status, 200,
       'PIN ที่เดายากต้องยังตั้งได้');
   });
 
@@ -4498,7 +4626,7 @@ describe('ด่านบังคับตั้งรหัสผ่านเ�
 
   test('ตั้งรหัสผ่านและ PIN ใหม่แล้วใช้งานได้ตามปกติ', async () => {
     const user = freshUser('firstlogin03');
-    const res = await post(user, '/first-login', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '739184' });
+    const res = await post(user, '/first-login', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '739184', confirmPin: '739184' });
     assert.equal(res.status, 302);
     const row = db.prepare('SELECT must_change_password FROM users WHERE id = ?').get(user.id);
     assert.equal(row.must_change_password, 0, 'ธงต้องถูกลบหลังตั้งรหัสเสร็จ');
@@ -4511,13 +4639,15 @@ describe('ด่านบังคับตั้งรหัสผ่านเ�
   test('ปฏิเสธรหัสผ่าน/PIN ที่ยังไม่ปลอดภัยพอ', async () => {
     const user = freshUser('firstlogin04');
     const cases = [
-      ['สั้นเกินไป', { newPassword: 'Sun123', confirmPassword: 'Sun123', newPin: '739184' }, /อย่างน้อย 8/],
-      ['พิมพ์ยืนยันไม่ตรง', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy98', newPin: '739184' }, /ไม่ตรงกัน/],
-      ['ซ้ำรหัสชั่วคราว', { newPassword: user.password, confirmPassword: user.password, newPin: '739184' }, /ไม่ซ้ำกับรหัสผ่านชั่วคราว/],
-      ['PIN ไม่ใช่ 6 หลัก', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '12ก4' }, /6 หลัก/],
-      ['PIN เลขซ้ำ', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '111111' }, /เดาง่าย/],
-      ['PIN เลขเรียง', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '123456' }, /เดาง่าย/],
-      ['PIN ซ้ำของเดิม', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: user.pin }, /ไม่ซ้ำกับ PIN ชั่วคราว/],
+      ['สั้นเกินไป', { newPassword: 'Sun123', confirmPassword: 'Sun123', newPin: '739184', confirmPin: '739184' }, /อย่างน้อย 8/],
+      ['พิมพ์ยืนยันไม่ตรง', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy98', newPin: '739184', confirmPin: '739184' }, /ไม่ตรงกัน/],
+      ['ซ้ำรหัสชั่วคราว', { newPassword: user.password, confirmPassword: user.password, newPin: '739184', confirmPin: '739184' }, /ไม่ซ้ำกับรหัสผ่านชั่วคราว/],
+      ['PIN ไม่ใช่ 6 หลัก', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '12ก4', confirmPin: '12ก4' }, /6 หลัก/],
+      ['PIN เลขซ้ำ', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '111111', confirmPin: '111111' }, /เดาง่าย/],
+      ['PIN เลขเรียง', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '123456', confirmPin: '123456' }, /เดาง่าย/],
+      ['PIN ซ้ำของเดิม', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: user.pin, confirmPin: user.pin }, /ไม่ซ้ำกับ PIN ชั่วคราว/],
+      // PIN ใช้แทนลายมือชื่อ พิมพ์ผิดตั้งแต่วันแรกแล้วจะไม่รู้ตัวจนถึงตอนต้องลงนามจริง
+      ['PIN ยืนยันไม่ตรง', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '739184', confirmPin: '739185' }, /PIN ใหม่ทั้งสองช่องไม่ตรงกัน/],
     ];
     for (const [label, body, expected] of cases) {
       const res = await post(user, '/first-login', body);
@@ -4565,7 +4695,7 @@ describe('ด่านบังคับตั้งรหัสผ่านเ�
   test('ตั้งรหัสใหม่เองแล้ว ต้องใช้ได้ทันทีแม้บัญชีเคยถูกล็อกอยู่', async () => {
     const user = freshUser('firstlogin05');
     db.prepare("UPDATE users SET locked_until = '2099-01-01T00:00:00.000Z', failed_login_count = 5 WHERE id = ?").run(user.id);
-    const res = await post(user, '/first-login', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '739184' });
+    const res = await post(user, '/first-login', { newPassword: 'RhatMaiPloxy99', confirmPassword: 'RhatMaiPloxy99', newPin: '739184', confirmPin: '739184' });
     assert.equal(res.status, 302);
     const row = db.prepare('SELECT locked_until, failed_login_count FROM users WHERE id = ?').get(user.id);
     assert.equal(row.locked_until, null, 'ต้องปลดล็อกให้ด้วย ไม่งั้นรหัสที่เพิ่งตั้งจะใช้ไม่ได้อีก 15 นาที');

@@ -117,7 +117,7 @@ router.get('/profile', requirePage((ctx) => {
         <h3 style="margin-top:1.2rem">เปลี่ยน PIN (ใช้ยืนยันการรับทราบ/ลงนาม)</h3>
         <form id="pinForm" class="stack">
           <div class="field"><label>รหัสผ่านปัจจุบัน</label><input type="password" id="curPassword" required /></div>
-          <div class="field"><label>PIN ใหม่ (6 หลัก)</label><input type="text" id="newPin" inputmode="numeric" maxlength="6" required /></div>
+          <div class="field"><label>PIN ใหม่ (6 หลัก)</label><input type="password" id="newPin" inputmode="numeric" maxlength="6" required autocomplete="new-password" /></div>
           <button class="btn btn-primary" type="submit">บันทึก PIN ใหม่</button>
         </form>
 

@@ -98,7 +98,10 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/' || !pathname.startsWith('/api') ) {
       // manifest.webmanifest ไม่เสิร์ฟเป็นไฟล์นิ่ง เพราะต้องใส่ชื่อโรงเรียนที่แอดมินตั้งไว้ลงไป
       // (ชื่อแอปบนหน้าจอมือถือ) — มี route สร้างให้แบบ dynamic ใน src/routes/index.js แทน
-      if (pathname !== '/manifest.webmanifest'
+      // favicon.svg ก็เช่นกัน — ตัวอักษรย่อบนไอคอนต้องเป็นของโรงเรียนที่ใช้งานอยู่จริง ไม่ใช่ค่าที่
+      // ฝังไว้ตอนเขียนโปรแกรม (เดิมเป็นไฟล์นิ่งที่เขียน "จพ" ไว้ตายตัว ทุกโรงเรียนจึงได้ตัวย่อนั้นหมด)
+      const DYNAMIC_ASSETS = new Set(['/manifest.webmanifest', '/favicon.svg']);
+      if (!DYNAMIC_ASSETS.has(pathname)
         && (pathname.startsWith('/style.css') || pathname.startsWith('/app.js') || pathname.match(/\.(css|js|png|svg|ico|webmanifest)$/))) {
         if (serveStatic(req, res, pathname)) return;
       }
