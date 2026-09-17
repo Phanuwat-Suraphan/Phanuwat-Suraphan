@@ -5904,6 +5904,74 @@ describe('สำรองฐานข้อมูล: สำเนาต้อ�
     }
   });
 
+  // เดินเส้นทาง "สำรอง → ดิสก์ถูกล้าง → กู้คืน" ให้ครบวงกับ Google Drive จำลอง
+  //
+  // เดิมเทสต์แตะได้แค่ทางที่ "ไม่ทำอะไร" (ไฟล์ยังอยู่ / ยังไม่ได้เชื่อม Drive) ส่วนทางที่ทำงานจริงคือ
+  // ดาวน์โหลดสำเนาแล้วเขียนเป็นฐานข้อมูล ไม่มีเทสต์แตะเลยสักข้อ ทั้งที่เป็นเส้นทางที่ข้อมูลทั้งโรงเรียน
+  // แขวนอยู่ — ดิสก์ของโฮสต์ฟรีถูกล้างทุกครั้งที่ deploy ทะเบียนหนังสือกลับมาได้ด้วยเส้นทางนี้เส้นเดียว
+  //
+  // ต้องรันในโปรเซสแยก เพราะชุดนี้ใช้ไฟล์ฐานข้อมูลร่วมกันทั้งชุดและเปิดค้างไว้ จะลบทิ้งกลางคันเพื่อ
+  // จำลอง "ดิสก์ถูกล้าง" ไม่ได้ — และการแยกโปรเซสยังได้ทดสอบลำดับการบูตจริงไปด้วยในตัว
+  describe('สำรองแล้วกู้คืนกลับมาได้จริงทั้งวงรอบ', () => {
+    const run = (scenario) => {
+      const out = execFileSync(process.execPath, ['--no-warnings', 'test/restoreRoundTrip.mjs', scenario], {
+        cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', timeout: 60_000,
+      });
+      const lines = out.trim().split('\n');
+      return JSON.parse(lines[lines.length - 1]);
+    };
+
+    test('ดิสก์ถูกล้างแล้วกู้คืนกลับมาได้ครบ ทั้งหนังสือและบัญชีผู้ใช้', () => {
+      const r = run('ok');
+      assert.ok(!r.fatal, r.fatal + '\n' + (r.stack || ''));
+      assert.equal(r.backupOk, true, 'ต้องสำรองขึ้น Drive ได้');
+      assert.equal(r.filesOnDrive, 1, 'ต้องมีไฟล์สำเนาอยู่บน Drive จริง');
+      assert.ok(r.folderNames.includes('สำเนาฐานข้อมูล (ห้ามลบ)'), 'ต้องเก็บในโฟลเดอร์ที่ตั้งชื่อไว้');
+      assert.equal(r.dbGone, true, 'ต้องลบไฟล์ฐานข้อมูลได้จริงก่อนทดสอบกู้คืน');
+      assert.equal(r.restored, true, 'ต้องกู้คืนสำเร็จ');
+      assert.equal(r.markerFound, true, 'หนังสือที่ใส่ไว้ก่อนสำรองต้องกลับมา');
+      assert.equal(r.docsAfter, r.docsBefore, 'จำนวนหนังสือต้องเท่าเดิม');
+      assert.ok(r.usersAfter > 0, 'บัญชีผู้ใช้ต้องกลับมาด้วย');
+      assert.equal(r.leftoverTempFile, false, 'ต้องไม่เหลือไฟล์ชั่วคราวค้างไว้');
+    });
+
+    // บั๊กจริงที่เจอจากเทสต์นี้: การดาวน์โหลดที่ขาดกลางคันแล้ว "จบลงอย่างสงบ" (เน็ตสะดุด/ตัวกลาง
+    // ตัดสาย ซึ่งเกิดได้ตลอดบนเครื่องที่เพิ่งตื่น) จะได้ไฟล์ไม่ครบที่ดูเหมือนสำเร็จ แล้วถูก rename
+    // ทับเข้าไปเป็นฐานข้อมูลจริง — log ขึ้นว่า "กู้คืนเรียบร้อย" แต่เปิดฐานข้อมูลแล้ว malformed
+    // และแก้เองไม่ได้ เพราะรอบหน้าจะข้ามการกู้คืนทันที (กู้เฉพาะตอนไม่มีไฟล์) restart กี่ครั้งก็ไม่หาย
+    test('สำเนาที่ดาวน์โหลดมาไม่ครบ ต้องไม่ถูกติดตั้งเป็นฐานข้อมูลจริง', () => {
+      const r = run('truncated');
+      assert.ok(!r.fatal, r.fatal);
+      assert.equal(r.restored, false, 'ต้องไม่ถือว่ากู้คืนสำเร็จ');
+      assert.equal(r.dbBack, false, 'ต้องไม่วางไฟล์ที่เสียหายไว้เป็นฐานข้อมูล');
+      assert.equal(r.leftoverTempFile, false, 'ไฟล์ชั่วคราวต้องถูกลบทิ้ง');
+      assert.equal(r.readBackError, undefined, 'ต้องไม่มีฐานข้อมูลเสียหายให้อ่านเจอเลย');
+    });
+
+    test('สำเนาล่าสุดเสียหาย ต้องถอยไปใช้สำเนาก่อนหน้า ไม่ใช่เริ่มจากศูนย์', () => {
+      const r = run('fallback');
+      assert.ok(!r.fatal, r.fatal);
+      assert.equal(r.filesOnDrive, 2);
+      assert.equal(r.restored, true, 'ต้องกู้คืนสำเร็จจากสำเนาที่ยังดี');
+      assert.equal(r.docsAfter, 2, 'ต้องได้สำเนาอีกชุดที่มีหนังสือครบสองฉบับ');
+    });
+
+    test('ดาวน์โหลดไม่สำเร็จเลย ต้องเริ่มด้วยฐานข้อมูลใหม่โดยไม่พัง', () => {
+      const r = run('download-fails');
+      assert.ok(!r.fatal, r.fatal);
+      assert.equal(r.restored, false);
+      assert.equal(r.dbBack, false);
+      assert.equal(r.leftoverTempFile, false);
+    });
+
+    test('ยังไม่มีสำเนาบน Drive เลย ต้องไม่พังและไม่สร้างไฟล์ทิ้งไว้', () => {
+      const r = run('no-backup');
+      assert.ok(!r.fatal, r.fatal);
+      assert.equal(r.restoredWithNothingOnDrive, false);
+      assert.equal(r.dbExistsAfter, false);
+    });
+  });
+
   test('ยังไม่ได้เชื่อมต่อ Drive ต้องไม่พังและไม่ทำอะไรเลย', async () => {
     assert.equal(isBackupEnabled(), false);
     assert.equal(await restoreDatabaseIfMissing(), false);

@@ -38,6 +38,23 @@ export function isGoogleDriveConnected() {
   return Boolean(process.env.GOOGLE_OAUTH_REFRESH_TOKEN);
 }
 
+/**
+ * ตัวยิงคำขอ HTTP ทั้งหมดของไฟล์นี้ — แยกเป็นตัวแปรเพื่อให้เทสต์สลับเป็น Google Drive จำลองได้
+ *
+ * ทำไมต้องมี: ทางกู้คืนฐานข้อมูลจากสำเนาบน Drive คือโค้ดที่ข้อมูลทั้งโรงเรียนแขวนอยู่ — ถ้าดิสก์ของ
+ * โฮสต์ถูกล้าง (ซึ่งเกิดทุกครั้งที่ deploy) ทะเบียนหนังสือทั้งเล่มกลับมาได้ด้วยเส้นทางนี้เส้นเดียว
+ * แต่เดิมทดสอบได้แค่ทางที่ "ไม่ทำอะไร" (ไฟล์ยังอยู่ / ยังไม่ได้เชื่อม Drive) ส่วนทางที่ทำงานจริงคือ
+ * ดาวน์โหลดแล้วเขียนไฟล์ ไม่มีเทสต์แตะเลยสักข้อ เพราะต้องยิงเน็ตออกไปหา Google จริง
+ *
+ * แนวเดียวกับ _setLineApiCallerForTest ใน lineNotify.js — ของจริงยังใช้ fetch ตามปกติทุกประการ
+ */
+let httpFetch = (...args) => fetch(...args);
+
+export function _setDriveFetchForTest(fn) {
+  httpFetch = fn || ((...args) => fetch(...args));
+  cachedToken = null; // โทเคนที่แคชไว้เป็นของตัวยิงตัวเก่า ต้องทิ้งเสมอตอนสลับ
+}
+
 let cachedToken = null; // { accessToken, expiresAt }
 async function getAccessToken() {
   if (cachedToken && cachedToken.expiresAt > Date.now() + 60_000) return cachedToken.accessToken;
@@ -45,7 +62,7 @@ async function getAccessToken() {
   const refreshToken = process.env.GOOGLE_OAUTH_REFRESH_TOKEN;
   if (!refreshToken) throw httpError(500, 'ยังไม่ได้เชื่อมต่อ Google Drive — ไปที่หน้า /admin/google-drive เพื่อเชื่อมต่อบัญชี Google ก่อน');
 
-  const res = await fetch(TOKEN_URL, {
+  const res = await httpFetch(TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ grant_type: 'refresh_token', client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken }),
@@ -67,7 +84,7 @@ async function getAccessToken() {
 
 async function driveFetch(url, opts = {}) {
   const token = await getAccessToken();
-  const res = await fetch(url, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${token}` } });
+  const res = await httpFetch(url, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${token}` } });
   return res;
 }
 
@@ -176,7 +193,7 @@ export async function listFilesInFolder(folderId, { limit = 100 } = {}) {
 // อัปโหลดไฟล์ด้วย resumable upload (รองรับไฟล์ได้ถึง 10MB ตามเพดานของระบบอย่างน่าเชื่อถือ)
 export async function uploadFile({ buffer, filename, mimeType, folderId }) {
   const token = await getAccessToken();
-  const initRes = await fetch(`${UPLOAD_BASE}?uploadType=resumable`, {
+  const initRes = await httpFetch(`${UPLOAD_BASE}?uploadType=resumable`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -193,7 +210,7 @@ export async function uploadFile({ buffer, filename, mimeType, folderId }) {
   const uploadUrl = initRes.headers.get('Location');
   if (!uploadUrl) throw httpError(502, 'Google Drive ไม่ส่ง upload session URL กลับมา');
 
-  const putRes = await fetch(uploadUrl, {
+  const putRes = await httpFetch(uploadUrl, {
     method: 'PUT',
     headers: { 'Content-Type': mimeType, 'Content-Length': String(buffer.length) },
     body: buffer,
@@ -224,7 +241,7 @@ export async function deleteFile(fileId) {
 
 export async function exchangeCodeForTokens({ code, redirectUri }) {
   const { clientId, clientSecret } = getOAuthClientConfig();
-  const res = await fetch(TOKEN_URL, {
+  const res = await httpFetch(TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({

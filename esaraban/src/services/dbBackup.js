@@ -17,6 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
+import { DatabaseSync } from 'node:sqlite'; // แค่คลาสเปล่าๆ ไม่ได้เปิดฐานข้อมูลของระบบ ต่างจากการ import ../db.js
 import {
   isGoogleDriveEnabled, isGoogleDriveConnected, ensureBackupFolder, ensureFolderPath, listSubfolders,
   listFilesInFolder, uploadFile, downloadFileStream, deleteFile, getFileParents,
@@ -30,6 +31,10 @@ export const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', '..', '
 // ใช้จึงจะทำให้ฐานข้อมูลถูกสร้างขึ้น "ก่อน" restoreDatabaseIfMissing ได้ทำงาน ซึ่งทำให้การกู้คืนพังทั้งระบบ
 // (ดูคำอธิบายลำดับการบูตใน server.js) — ไฟล์นี้ถูกโหลดก่อน db.js เสมอ ค่านี้จึงตรงกับความจริงพอดี
 const STARTED_WITHOUT_DB = !fs.existsSync(DB_PATH);
+
+// ถ้าสำเนาล่าสุดใช้ไม่ได้ ให้ถอยไปลองของก่อนหน้าได้กี่ไฟล์ — มากกว่านี้แปลว่าเสียหายเป็นวงกว้าง
+// ซึ่งการไล่ดาวน์โหลดต่อไปเรื่อยๆ มีแต่จะถ่วงเวลาเปิดระบบโดยไม่ได้ช่วยอะไร
+const RESTORE_MAX_CANDIDATES = 5;
 
 // ค่าเริ่มต้น 5 นาที — Render free tier หลับหลังไม่มีคนใช้ราว 15 นาที ช่วงนี้จึงกันข้อมูลหายได้พอสมควร
 // โดยไม่ยิงขึ้น Drive ถี่จนเปลืองโควตา ปรับได้ด้วย env var BACKUP_INTERVAL_MINUTES
@@ -446,6 +451,48 @@ export async function deleteBackupNode(nodeId) {
 let restoredAtBoot = null; // ชื่อไฟล์สำเนาที่กู้มา, null = ไม่ได้กู้ (มีไฟล์อยู่แล้ว หรือเริ่มใหม่หมด)
 export function restoredFromBackupAtBoot() { return restoredAtBoot; }
 
+/**
+ * ตรวจว่าไฟล์ที่ดาวน์โหลดมาเป็นฐานข้อมูล SQLite ที่เปิดใช้ได้จริง — โยน error ถ้าไม่ใช่
+ *
+ * ทำไมไม่พอที่จะเขียนลงไฟล์ชั่วคราวแล้ว rename: การเขียนแล้ว rename กันได้แค่กรณี "เครื่องดับกลาง
+ * ระหว่างเขียน" เท่านั้น แต่ถ้าการดาวน์โหลดขาดกลางคันแล้ว "จบลงอย่างสงบ" (เน็ตสะดุด ตัวกลางตัดสาย
+ * ซึ่งเกิดได้ตลอดบนเครื่องที่เพิ่งตื่น) เราจะได้ไฟล์ที่ไม่ครบแต่ดูเหมือนดาวน์โหลดสำเร็จ แล้ว rename
+ * ทับเข้าไปเป็นฐานข้อมูลจริง — ทดสอบยืนยันแล้วว่าเกิดขึ้นจริง: log ขึ้นว่า "กู้คืน...เรียบร้อย"
+ * แต่พอเปิดฐานข้อมูลได้ "database disk image is malformed"
+ *
+ * และที่ร้ายกว่านั้นคือมันแก้เองไม่ได้ — พอไฟล์พังวางอยู่ที่เดิมแล้ว การกู้คืนรอบหน้าจะข้ามทันที
+ * (เพราะเงื่อนไขคือ "กู้เฉพาะตอนไม่มีไฟล์") restart กี่ครั้งก็ไม่หาย ทั้งที่สำเนาที่ดีอยู่บน Drive ครบ
+ */
+function assertUsableSqlite(file) {
+  const stat = fs.statSync(file);
+  if (stat.size < 512) throw new Error(`ไฟล์สำเนาเล็กผิดปกติ (${stat.size} ไบต์) น่าจะดาวน์โหลดมาไม่ครบ`);
+
+  const head = Buffer.alloc(16);
+  const fd = fs.openSync(file, 'r');
+  try {
+    fs.readSync(fd, head, 0, 16, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (head.toString('latin1') !== 'SQLite format 3\0') {
+    throw new Error('ไฟล์สำเนาไม่ใช่ฐานข้อมูล SQLite (ส่วนหัวไฟล์ไม่ถูกต้อง)');
+  }
+
+  // เปิดจริงแล้วให้ SQLite ตรวจโครงสร้างเอง — ใช้ quick_check ไม่ใช่ integrity_check เพราะจับการ
+  // ขาดหาย/โครงสร้างพังได้เหมือนกันแต่เร็วกว่ามาก และนี่อยู่บนเส้นทางเปิดระบบซึ่งต้องไม่ถ่วง
+  const probe = new DatabaseSync(file, { readOnly: true });
+  try {
+    const row = probe.prepare('PRAGMA quick_check').get();
+    const verdict = row ? Object.values(row)[0] : null;
+    if (verdict !== 'ok') throw new Error(`ฐานข้อมูลในสำเนาเสียหาย (${verdict || 'ตรวจไม่ผ่าน'})`);
+    // ต้องมีตารางของระบบอยู่จริง ไม่ใช่ไฟล์ SQLite เปล่าๆ ที่บังเอิญผ่าน quick_check
+    const users = probe.prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type='table' AND name='users'").get().c;
+    if (!users) throw new Error('ไฟล์สำเนาไม่มีตารางของระบบอยู่เลย');
+  } finally {
+    probe.close();
+  }
+}
+
 export async function restoreDatabaseIfMissing() {
   if (!isBackupEnabled()) return false;
   if (fs.existsSync(DB_PATH)) return false;
@@ -454,32 +501,53 @@ export async function restoreDatabaseIfMissing() {
     // ไล่จากโฟลเดอร์วันล่าสุดลงไป — วันล่าสุดอาจมีแต่โฟลเดอร์เปล่า (เช่นลบไฟล์ทิ้งไปเอง) จึงต้องหาต่อ
     // เปิดดูไฟล์ทีละวันตามที่จำเป็นจริงๆ ปกติเจอตั้งแต่วันแรก — ไม่ใช่อ่านไฟล์ของทุกวันมาก่อนแล้วค่อยเลือก
     // ซึ่งตอนเก็บครบปีจะกลายเป็น ~365 คำขอ ถ่วงเวลาเปิดระบบทุกครั้งที่โฮสต์ล้างดิสก์
+    //
+    // เก็บผู้สมัครไว้หลายตัว ไม่ใช่ตัวล่าสุดตัวเดียว — ถ้าสำเนาล่าสุดใช้ไม่ได้ (ดาวน์โหลดขาด/ไฟล์เสีย)
+    // ต้องถอยไปใช้ของก่อนหน้าได้ ดีกว่าเริ่มจากศูนย์ทั้งที่มีสำเนาที่ดีอยู่
     const days = flattenDays(await readBackupFolders());
-    let latest = null;
+    const candidates = [];
     for (const day of days) {
-      const files = await readBackupDayFiles(day.id);
-      if (files.length) { latest = files[0]; break; }
+      for (const f of await readBackupDayFiles(day.id)) {
+        candidates.push(f);
+        if (candidates.length >= RESTORE_MAX_CANDIDATES) break;
+      }
+      if (candidates.length >= RESTORE_MAX_CANDIDATES) break;
     }
-    if (!latest) {
+    if (!candidates.length) {
       log('ไม่พบสำเนาฐานข้อมูลบน Google Drive — เริ่มต้นด้วยฐานข้อมูลใหม่');
       return false;
     }
-    const stream = await downloadFileStream(latest.id);
-    if (!stream) {
-      log('เปิดสำเนาล่าสุดบน Google Drive ไม่ได้ — เริ่มต้นด้วยฐานข้อมูลใหม่');
-      return false;
-    }
-    const chunks = [];
-    for await (const chunk of Readable.fromWeb(stream)) chunks.push(chunk);
 
     fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-    // เขียนลงไฟล์ชั่วคราวก่อนแล้วค่อย rename — ถ้าดาวน์โหลดขาดกลางคัน จะไม่เหลือไฟล์ฐานข้อมูลพังๆ ไว้
     const tmp = `${DB_PATH}.restoring`;
-    fs.writeFileSync(tmp, Buffer.concat(chunks));
-    fs.renameSync(tmp, DB_PATH);
-    restoredAtBoot = latest.name;
-    log(`กู้คืนฐานข้อมูลจากสำเนา ${latest.name} เรียบร้อย`);
-    return true;
+    const problems = [];
+
+    for (const candidate of candidates) {
+      try {
+        const stream = await downloadFileStream(candidate.id);
+        if (!stream) throw new Error('เปิดไฟล์บน Google Drive ไม่ได้');
+        const chunks = [];
+        for await (const chunk of Readable.fromWeb(stream)) chunks.push(chunk);
+        fs.writeFileSync(tmp, Buffer.concat(chunks));
+
+        // ตรวจ "ก่อน" ย้ายเข้าที่เสมอ — ย้ายไปแล้วถอยกลับไม่ได้ เพราะรอบหน้าจะข้ามการกู้คืนทันที
+        assertUsableSqlite(tmp);
+
+        fs.renameSync(tmp, DB_PATH);
+        restoredAtBoot = candidate.name;
+        log(`กู้คืนฐานข้อมูลจากสำเนา ${candidate.name} เรียบร้อย`);
+        if (problems.length) log(`(ข้ามสำเนาที่ใช้ไม่ได้ ${problems.length} ไฟล์ก่อนหน้านี้: ${problems.join(' · ')})`);
+        return true;
+      } catch (err) {
+        // ไฟล์ชั่วคราวที่ค้างอยู่ต้องลบทุกครั้ง ไม่งั้นรอบถัดไปอาจเอาของเก่าที่ยังไม่ครบไปตรวจ
+        fs.rmSync(tmp, { force: true });
+        problems.push(`${candidate.name}: ${err.message}`);
+        log(`สำเนา ${candidate.name} ใช้ไม่ได้ (${err.message}) — ลองสำเนาก่อนหน้า`);
+      }
+    }
+
+    log(`สำเนาบน Google Drive ใช้ไม่ได้ทั้ง ${problems.length} ไฟล์ที่ลอง — เริ่มต้นด้วยฐานข้อมูลใหม่`);
+    return false;
   } catch (err) {
     // กู้คืนไม่สำเร็จต้องไม่ทำให้เปิดระบบไม่ได้ — ให้เริ่มด้วยฐานข้อมูลใหม่แล้วบันทึกไว้ใน log
     log(`กู้คืนฐานข้อมูลไม่สำเร็จ: ${err.message} — เริ่มต้นด้วยฐานข้อมูลใหม่`);
