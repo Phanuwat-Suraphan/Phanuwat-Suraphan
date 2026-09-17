@@ -395,6 +395,11 @@ const MAX_ATTEMPTS = 5;
 const MAX_AGE_HOURS = 24;
 // เก็บประวัติที่ส่งสำเร็จไว้พอให้ตามหาได้ว่าข้อความหายไปไหน แล้วลบทิ้ง ไม่ให้ตารางโตไปเรื่อยๆ
 const KEEP_SENT_DAYS = 14;
+// ข้อความที่เลิกส่งแล้ว (ครบจำนวนครั้งที่ลอง หรือค้างเกินหนึ่งวัน) ต้องถูกลบทิ้งด้วย — เดิมลบเฉพาะแถวที่
+// "ส่งสำเร็จ" แถวที่ล้มเหลวถาวรจึงค้างอยู่ตลอดกาล ถ้าไลน์ตั้งค่าผิดหรือครูบล็อกบัญชีทางการไว้ ทุกการ
+// แจ้งเตือนของคนนั้นจะกลายเป็นแถวตายวันละหลายสิบแถว สะสมไปเรื่อยๆ และติดไปกับสำเนาสำรองที่ส่งขึ้น
+// Google Drive ทุก 5 นาทีด้วย — เก็บไว้นานกว่าของที่ส่งสำเร็จ เพราะเป็นหลักฐานว่าใครไม่ได้รับอะไรบ้าง
+const KEEP_GIVEN_UP_DAYS = 30;
 
 function hoursAgoIso(h) { return new Date(Date.now() - h * 3600000).toISOString(); }
 
@@ -435,6 +440,8 @@ export async function flushLineOutbox({ limit = 25 } = {}) {
 
   db.prepare('DELETE FROM line_outbox WHERE sent_at IS NOT NULL AND sent_at < ?')
     .run(hoursAgoIso(KEEP_SENT_DAYS * 24));
+  result.purgedGivenUp = db.prepare('DELETE FROM line_outbox WHERE sent_at IS NULL AND attempts >= ? AND created_at < ?')
+    .run(MAX_ATTEMPTS, hoursAgoIso(KEEP_GIVEN_UP_DAYS * 24)).changes;
   return result;
 }
 
@@ -683,4 +690,4 @@ export function usersWithoutLine(limit = 50) {
   `).all(limit);
 }
 
-export const _internals = { MAX_ATTEMPTS, MAX_AGE_HOURS, CODE_LENGTH, extractCode };
+export const _internals = { MAX_ATTEMPTS, MAX_AGE_HOURS, KEEP_GIVEN_UP_DAYS, CODE_LENGTH, extractCode };

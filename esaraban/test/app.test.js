@@ -6874,6 +6874,31 @@ describe('แจ้งเตือนเข้าไลน์', () => {
       assert.equal(outbound.length, 1, 'ยิงซ้ำทั้งที่รู้แล้วว่าไม่มีทางผ่าน');
     });
 
+    // เดิมลบเฉพาะแถวที่ "ส่งสำเร็จ" แถวที่เลิกส่งแล้วจึงค้างอยู่ตลอดกาล — ถ้าไลน์ตั้งค่าผิดหรือครู
+    // บล็อกบัญชีทางการไว้ ทุกการแจ้งเตือนของคนนั้นกลายเป็นแถวตายวันละหลายสิบแถว สะสมไปเรื่อยๆ
+    // และติดไปกับสำเนาสำรองที่ส่งขึ้น Google Drive ทุก 5 นาทีด้วย
+    test('ข้อความที่เลิกส่งแล้วต้องถูกลบทิ้งเมื่อเก่าพอ ไม่ค้างตลอดกาล', async () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-รับแจ้งเตือน');
+      notifyUserForTest({ userId: target, title: 'ฉบับที่เลิกส่งแล้ว', message: 'x' });
+      nextReply = { ok: false, status: 403, error: 'ครูบล็อกบัญชีทางการ' };
+      await ln.flushLineOutbox();
+      assert.equal(outboxOf(target).length, 1, 'ยังต้องเก็บไว้ก่อน เป็นหลักฐานว่าใครไม่ได้รับอะไร');
+
+      // เพิ่งเลิกส่งเมื่อกี้ ต้องยังไม่ถูกลบ — ผู้ดูแลต้องมีเวลาเห็นและตามแก้ก่อน
+      const fresh = await ln.flushLineOutbox();
+      assert.equal(fresh.purgedGivenUp, 0, 'ของที่เพิ่งล้มเหลวต้องยังอยู่');
+      assert.equal(outboxOf(target).length, 1);
+
+      // ย้อนวันให้เก่ากว่าอายุที่เก็บไว้ แล้วต้องถูกเก็บกวาด
+      db.prepare('UPDATE line_outbox SET created_at = ? WHERE user_id = ?')
+        .run(new Date(Date.now() - (ln._internals.KEEP_GIVEN_UP_DAYS + 1) * 86400000).toISOString(), target);
+      const purged = await ln.flushLineOutbox();
+      assert.equal(purged.purgedGivenUp, 1, 'ของเก่าที่เลิกส่งแล้วต้องถูกลบ');
+      assert.equal(outboxOf(target).length, 0);
+    });
+
     // LINE ล่มยาวข้ามคืนแล้วกลับมา ถ้าไม่ตัดของเก่าทิ้ง ครูจะโดนถล่มด้วยข้อความเมื่อวานเป็นสิบฉบับรวดเดียว
     test('ข้อความที่ค้างเกินหนึ่งวันต้องเลิกส่ง', async () => {
       reset();
