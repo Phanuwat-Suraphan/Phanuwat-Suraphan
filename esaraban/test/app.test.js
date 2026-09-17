@@ -3902,6 +3902,29 @@ describe('รายงานสรุป: แยกตามปีงบปร�
       for (const id of [stale, manual, other]) db.prepare('DELETE FROM documents WHERE id = ?').run(id);
     });
 
+    // ทะเบียนหนังสือรับแสดง "วันที่รับ" ส่วนใบที่พิมพ์ออกมาเคยใช้เวลาที่พิมพ์เข้าระบบ — เอกสารราชการ
+    // สองใบของเรื่องเดียวกันจึงขัดกันเอง เห็นชัดทันทีเวลาลงทะเบียนย้อนหลัง
+    test('ใบที่พิมพ์ออกมาต้องใช้วันที่รับเดียวกับทะเบียน', async () => {
+      const doc = makeDoc({ title: 'หนังสือที่ลงทะเบียนย้อนหลัง' });
+      db.prepare("UPDATE documents SET received_date = '2026-09-11' WHERE id = ?").run(doc.id);
+      const res = await dispatchGet(registrarUser, `/documents/${doc.id}/print`, {});
+      assert.equal(res.status, 200);
+      assert.match(res.body, /วันที่<\/span> 11 กันยายน 2569/,
+        'ใบที่พิมพ์ต้องใช้วันที่รับ ไม่ใช่วันที่พิมพ์เข้าระบบ');
+    });
+
+    test('หนังสือส่งไม่มีวันที่รับ ต้องยังใช้วันที่ออกเลขตามเดิม', async () => {
+      const out = await dispatchPost(registrarUser, '/documents', {
+        title: `หนังสือส่งสำหรับหน้าพิมพ์ ${Date.now()}`, departmentId: deptId,
+        correspondentName: 'สพป.', direction: 'outgoing',
+      });
+      const outId = /\/documents\/([0-9a-f-]{36})/.exec(out.body)?.[1];
+      assert.equal(db.prepare('SELECT received_date r FROM documents WHERE id = ?').get(outId).r, null);
+      const res = await dispatchGet(registrarUser, `/documents/${outId}/print`, {});
+      assert.equal(res.status, 200);
+      assert.match(res.body, /วันที่<\/span> \S/, 'ต้องยังมีวันที่ขึ้นบนใบที่พิมพ์');
+    });
+
     test('ตัวกรองช่วงวันของทะเบียนต้องหาเจอด้วยวันที่ตามปฏิทินไทย', async () => {
       // กรองวันที่ 1 ต.ค. 2569 วันเดียว — ต้องเจอหนังสือฉบับนี้
       const hit = await dispatchGet(registrarUser, '/documents',

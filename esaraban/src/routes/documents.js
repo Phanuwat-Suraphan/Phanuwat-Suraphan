@@ -1201,7 +1201,11 @@ router.get('/documents/:id/print', requirePage((ctx) => {
   <p><span class="field-label">ส่วนราชการ</span> ${esc(doc.dept_name)} ${esc(schoolName())}</p>
   <div class="header-row">
     <p><span class="field-label">ที่</span> ${esc(doc.doc_number_display)}</p>
-    <p><span class="field-label">วันที่</span> ${fmtThaiDateLong(doc.created_at)}</p>
+    <!-- หนังสือรับใช้ "วันที่รับ" ที่บันทึกไว้ ไม่ใช่เวลาที่พิมพ์เข้าระบบ — ทะเบียนหนังสือรับแสดงวันที่รับ
+         ถ้าใบที่พิมพ์ออกมาใช้คนละวัน เอกสารราชการสองใบของเรื่องเดียวกันจะขัดกันเอง ซึ่งเห็นชัดทันที
+         เวลาลงทะเบียนย้อนหลัง (หนังสือมาถึงวันศุกร์ มาลงวันจันทร์) ส่วนหนังสือส่งไม่มีวันที่รับ
+         จึงตกกลับไปใช้วันที่ออกเลขตามเดิม -->
+    <p><span class="field-label">วันที่</span> ${fmtThaiDateLong(doc.received_date || doc.created_at)}</p>
   </div>
   <p><span class="field-label">เรื่อง</span> ${esc(doc.title)}</p>
   <p><span class="field-label">เรียน</span> ${esc(addressee)}</p>
