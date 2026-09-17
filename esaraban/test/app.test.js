@@ -6016,6 +6016,54 @@ describe('สำรองฐานข้อมูล: สำเนาต้อ�
       assert.ok(r.foldersKept.includes('2569') && r.foldersKept.includes('2569-09'));
       assert.ok(r.foldersKept.includes('สำเนาฐานข้อมูล (ห้ามลบ)'), 'โฟลเดอร์รากของสำเนาต้องไม่ถูกลบ');
     });
+
+    // เครื่องจริงของโรงเรียนตั้ง STORAGE_PROVIDER=google_drive ไฟล์แนบทุกไฟล์จึงอยู่บน Drive ไม่ใช่
+    // บนดิสก์ แต่เทสต์ทั้งชุดรันในโหมดเก็บลงดิสก์ — เส้นทางที่ใช้งานจริงจึงไม่เคยถูกทดสอบเลยสักข้อ
+    // ถ้าเส้นนี้พัง หนังสือราชการจะไม่มีไฟล์สแกนให้เปิด ทั้งที่ทะเบียนบอกว่ามีไฟล์แนบอยู่
+    describe('ไฟล์แนบบน Google Drive (โหมดที่ใช้งานจริง)', () => {
+      let r;
+      before(() => {
+        const out = execFileSync(process.execPath, ['--no-warnings', 'test/driveAttachments.mjs'], {
+          cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', timeout: 60_000,
+        });
+        const lines = out.trim().split('\n');
+        r = JSON.parse(lines[lines.length - 1]);
+      });
+
+      test('ไฟล์แนบต้องขึ้น Drive จริง ไม่ตกค้างบนดิสก์ชั่วคราว', () => {
+        assert.ok(!r.fatal, r.fatal + '\n' + (r.stack || ''));
+        assert.equal(r.created, 201);
+        assert.equal(r.storageProvider, 'google_drive', 'ต้องบันทึกว่าเก็บบน Drive');
+        assert.equal(r.hasDriveId, true, 'ต้องมีรหัสไฟล์บน Drive');
+        assert.equal(r.filepathIsNull, true, 'ต้องไม่มี path บนดิสก์');
+        // ถ้าไฟล์หลุดลงดิสก์ในโหมดนี้ deploy ครั้งหน้าไฟล์นั้นจะหายไปเงียบๆ ทั้งที่ทะเบียนบอกว่ามีอยู่
+        assert.equal(r.strayFilesOnDisk, 0, 'ต้องไม่มีไฟล์หลุดลงดิสก์เลย');
+        assert.ok(r.filesOnDrive.includes('ระบบสารบรรณอิเล็กทรอนิกส์ (esaraban)'), 'ต้องเก็บในโฟลเดอร์ของระบบ');
+      });
+
+      test('เปิดไฟล์กลับมาต้องได้ไบต์เดิมเป๊ะ', () => {
+        assert.equal(r.hashMatches, true, 'hash ที่บันทึกไว้ต้องตรงกับไฟล์ต้นฉบับ');
+        assert.equal(r.openStatus, 200);
+        assert.match(r.openContentType || '', /application\/pdf/);
+        assert.equal(r.bytesMatch, true, 'ไฟล์ที่เปิดกลับมาต้องเหมือนต้นฉบับทุกไบต์');
+        assert.equal(r.openedHash, true);
+      });
+
+      // ส่งไฟล์เปล่าที่ดูเหมือน PDF เสียออกไป อันตรายกว่าบอกว่าผิดพลาด เพราะผู้ใช้จะคิดว่าไฟล์สแกนเสีย
+      // แล้วไปตามหาต้นฉบับกระดาษ แทนที่จะรู้ว่าเป็นปัญหาการเชื่อมต่อซึ่งเดี๋ยวก็หาย
+      test('Drive ล่มตอนเปิดไฟล์ ต้องบอกว่าผิดพลาด ไม่ใช่ส่งไฟล์เสียออกไป', () => {
+        assert.equal(r.brokenStatus, 502);
+        assert.equal(r.brokenIsHtml, true, 'ต้องเป็นหน้าเว็บบอกข้อผิดพลาด ไม่ใช่ content-type ของ PDF');
+        assert.equal(r.brokenSaysError, true);
+      });
+
+      // โทเคนหมดอายุทุก 7 วันถ้าแอปบน Google Cloud ยังเป็นสถานะ Testing — เป็นสาเหตุอันดับหนึ่ง
+      // ที่ทำให้ไฟล์แนบและการสำรองข้อมูลหยุดทำงานพร้อมกันทั้งระบบ ข้อความจึงต้องบอกวิธีแก้ให้ครบ
+      test('โทเคน Google หมดอายุ ต้องบอกวิธีแก้ ไม่ใช่ error ภาษาอังกฤษดิบๆ', () => {
+        assert.equal(r.expiredStatus, 502);
+        assert.equal(r.expiredExplains, true, 'ต้องบอกให้ไป PUBLISH APP ซึ่งเป็นวิธีแก้ถาวร');
+      });
+    });
   });
 
   test('ยังไม่ได้เชื่อมต่อ Drive ต้องไม่พังและไม่ทำอะไรเลย', async () => {
