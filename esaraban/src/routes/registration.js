@@ -233,10 +233,69 @@ router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
           .then(function(x){
             if (!x.ok) throw new Error(x.d.error);
             toast('สร้างบัญชีให้ ' + x.d.employeeCode + ' แล้ว', 'success');
-            setTimeout(function(){ location.reload(); }, 900);
+            // ไม่รีโหลดทันที — ถ้ารีโหลด การ์ดนี้จะหายไปพร้อมกับปุ่มแจ้งครู แล้วผู้ดูแลจะไม่มีทาง
+            // บอกเจ้าตัวได้เลยว่าอนุมัติแล้ว (ระบบส่งถึงมือเองไม่ได้ ดูเหตุผลใน routes/registration.js)
+            showApproved(id, x.d);
           })
           .catch(function(e){ toast(e.message, 'danger'); window.restoreBtn(btn); });
       }
+      function showApproved(id, d) {
+        var card = document.getElementById('req-' + id);
+        if (!card) { location.reload(); return; }
+        card.innerHTML = '';
+        var box = document.createElement('div');
+        box.className = 'alert alert-success';
+
+        var head = document.createElement('p');
+        head.style.margin = '0 0 .5rem';
+        head.innerHTML = '<strong>✅ สร้างบัญชีให้ ' + d.fullName + ' แล้ว</strong>';
+        box.appendChild(head);
+
+        var note = document.createElement('p');
+        note.className = 'help-text';
+        note.style.margin = '0 0 .6rem';
+        note.textContent = 'เจ้าตัวยังไม่รู้ว่าอนุมัติแล้ว — ระบบส่งบอกเองไม่ได้ เพราะตอนสมัครยังไม่มีบัญชี'
+          + ' จึงยังไม่มีไลน์ผูกไว้ กรุณาส่งบอกด้วยปุ่มนี้ (ข้อความไม่มีรหัสผ่านอยู่ในนั้น ส่งในกลุ่มได้)';
+        box.appendChild(note);
+
+        var row = document.createElement('div');
+        row.className = 'chip-row';
+
+        var line = document.createElement('a');
+        line.className = 'btn btn-primary btn-sm';
+        line.href = d.notifyLineUrl;
+        line.target = '_blank';
+        line.rel = 'noopener';
+        line.textContent = '💬 แจ้งเจ้าตัวทางไลน์';
+        row.appendChild(line);
+
+        var copy = document.createElement('button');
+        copy.type = 'button';
+        copy.className = 'btn btn-outline btn-sm';
+        copy.textContent = '📋 คัดลอกข้อความ';
+        copy.onclick = function () {
+          if (navigator.clipboard) navigator.clipboard.writeText(d.notifyText).then(function () { toast('คัดลอกแล้ว', 'success'); });
+          else toast('เบราว์เซอร์นี้คัดลอกให้ไม่ได้ กรุณาเลือกข้อความเอง', 'info');
+        };
+        row.appendChild(copy);
+
+        var done = document.createElement('button');
+        done.type = 'button';
+        done.className = 'btn btn-outline btn-sm';
+        done.textContent = 'แจ้งแล้ว ปิดรายการนี้';
+        done.onclick = function () { location.reload(); };
+        row.appendChild(done);
+
+        box.appendChild(row);
+
+        var pre = document.createElement('pre');
+        pre.style.cssText = 'white-space:pre-wrap;font-size:.82rem;margin:.6rem 0 0;opacity:.85';
+        pre.textContent = d.notifyText;
+        box.appendChild(pre);
+
+        card.appendChild(box);
+      }
+
       function rejectReq(id, btn) {
         var reason = prompt('เหตุผลที่ปฏิเสธ (ไม่บังคับ)');
         if (reason === null) return;
@@ -258,7 +317,19 @@ router.post('/admin/registrations/:id/approve', ADMIN_ONLY(requireApi((ctx) => {
   const res = approveRegistration({
     requestId: ctx.params.id, roleId: ctx.body?.roleId, departmentId: ctx.body?.departmentId, actorUser: ctx.user,
   });
-  json(ctx, 200, { ok: true, ...res });
+  // ข้อความสำเร็จรูปให้ผู้ดูแลส่งบอกเจ้าตัว — ระบบส่งถึงมือเองไม่ได้ เพราะตอนสมัครยังไม่มีบัญชีจึงยัง
+  // ไม่มีไลน์ผูกไว้ และโรงเรียนไม่มีเซิร์ฟเวอร์อีเมล ช่องทางที่ใช้จริงคือผู้ดูแลส่งในไลน์ให้
+  //
+  // ห้ามมีรหัสผ่านอยู่ในข้อความเด็ดขาด — รหัสนั้นเจ้าตัวตั้งเองมาแต่ต้น ผู้ดูแลไม่เคยรู้และไม่ควรรู้
+  // ข้อความนี้จึงมีแต่ข้อมูลที่ไม่เป็นความลับ ส่งในกลุ่มไลน์ของโรงเรียนได้โดยไม่มีอะไรรั่ว
+  const loginUrl = `${ctx.req.headers['x-forwarded-proto'] || 'https'}://${ctx.req.headers.host || ''}/login`;
+  const notifyText = [
+    `✅ ${res.fullName} — บัญชีใช้งานระบบสารบรรณ ${schoolName()} ได้รับอนุมัติแล้ว`,
+    `เข้าใช้งานได้ที่ ${loginUrl}`,
+    `รหัสพนักงาน: ${res.employeeCode}`,
+    'รหัสผ่านคือรหัสที่ตั้งไว้เองตอนลงทะเบียน (ระบบไม่เก็บไว้ให้ใครดู)',
+  ].join('\n');
+  json(ctx, 200, { ok: true, ...res, notifyText, notifyLineUrl: lineShareUrl(notifyText) });
 })));
 
 router.post('/admin/registrations/:id/reject', ADMIN_ONLY(requireApi((ctx) => {

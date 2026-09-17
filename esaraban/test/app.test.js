@@ -2319,6 +2319,70 @@ describe('คำขอลงทะเบียนที่ค้างอยู�
     assert.ok(text.includes(schoolName()), 'ต้องบอกชื่อโรงเรียน เพราะครูอาจอยู่หลายกลุ่ม');
   });
 
+  // ตอนสมัครครูยังไม่มีบัญชี จึงยังไม่มีไลน์ผูกไว้ และโรงเรียนไม่มีเซิร์ฟเวอร์อีเมล ระบบจึงส่งบอก
+  // เจ้าตัวเองไม่ได้ — เดิมครูต้องเดาเองว่าอนุมัติหรือยัง แล้วลองล็อกอินไปเรื่อยๆ
+  describe('อนุมัติแล้วต้องมีทางแจ้งเจ้าตัว', () => {
+    const password = 'RahatKruManee2569';
+    let requestId;
+    before(() => {
+      requestId = uuid();
+      db.prepare(`INSERT INTO registration_requests
+          (id, employee_code, prefix, first_name, last_name, department_id, requested_role, status,
+           created_at, password_hash, pin_hash)
+        VALUES (?, 'krunotify', 'นาง', 'มานี', 'ชูใจ', ?, 'teacher', 'pending', ?, ?, ?)`)
+        .run(requestId, deptId, nowIso(), hashSecret(password), hashSecret('473812'));
+    });
+
+    test('ผู้ดูแลต้องได้ข้อความสำเร็จรูปพร้อมลิงก์แชร์เข้าไลน์', async () => {
+      const roleId = db.prepare("SELECT id FROM roles WHERE name = 'teacher'").get().id;
+      const res = await dispatchPost(adminUser, `/admin/registrations/${requestId}/approve`, { roleId, departmentId: deptId });
+      assert.equal(res.status, 200, res.body);
+      assert.equal(res.json.employeeCode, 'krunotify');
+      assert.match(res.json.fullName, /มานี ชูใจ/, 'ต้องบอกชื่อเจ้าตัวให้ผู้ดูแลส่งต่อได้');
+      assert.ok(res.json.notifyText, 'ต้องมีข้อความสำเร็จรูป');
+      assert.match(res.json.notifyText, /krunotify/, 'ต้องบอกรหัสพนักงาน');
+      assert.match(res.json.notifyText, /\/login/, 'ต้องมีลิงก์เข้าระบบ');
+      assert.match(res.json.notifyLineUrl || '', /^https:\/\/line\.me\/R\/share\?text=/, 'ต้องมีลิงก์แชร์เข้าไลน์');
+    });
+
+    // รหัสผ่านนั้นเจ้าตัวตั้งเองมาแต่ต้น ผู้ดูแลไม่เคยรู้และไม่ควรรู้ — ข้อความนี้ถูกส่งต่อในกลุ่มไลน์
+    // ถ้ามีรหัสผ่านติดไปด้วย ก็เท่ากับรั่วให้ทุกคนในกลุ่มเห็น
+    test('ข้อความที่จะส่งต้องไม่มีรหัสผ่านหรือ PIN อยู่ในนั้นเด็ดขาด', async () => {
+      const row = db.prepare('SELECT created_user_id FROM registration_requests WHERE id = ?').get(requestId);
+      assert.ok(row.created_user_id, 'ต้องสร้างบัญชีแล้ว');
+      const again = await dispatchPost(adminUser, `/admin/registrations/${requestId}/approve`, {});
+      assert.equal(again.status, 404, 'กดอนุมัติซ้ำต้องไม่ผ่าน');
+
+      // ตรวจข้อความจากครั้งที่อนุมัติสำเร็จ (เก็บไว้ในเทสต์ก่อนหน้าไม่ได้ จึงสร้างคำขอใหม่มาตรวจ)
+      const id2 = uuid();
+      const pw2 = 'AikRahatLapMak2569';
+      db.prepare(`INSERT INTO registration_requests
+          (id, employee_code, prefix, first_name, last_name, department_id, requested_role, status,
+           created_at, password_hash, pin_hash)
+        VALUES (?, 'krunotify2', 'นาย', 'สมชาย', 'ใจดี', ?, 'teacher', 'pending', ?, ?, ?)`)
+        .run(id2, deptId, nowIso(), hashSecret(pw2), hashSecret('918273'));
+      const roleId = db.prepare("SELECT id FROM roles WHERE name = 'teacher'").get().id;
+      const res = await dispatchPost(adminUser, `/admin/registrations/${id2}/approve`, { roleId, departmentId: deptId });
+      assert.equal(res.status, 200);
+      const blob = `${res.json.notifyText}\n${res.json.notifyLineUrl}`;
+      assert.ok(!blob.includes(pw2), 'รหัสผ่านต้องไม่อยู่ในข้อความ');
+      assert.ok(!blob.includes('918273'), 'PIN ต้องไม่อยู่ในข้อความ');
+      assert.match(res.json.notifyText, /ตั้งไว้เองตอนลงทะเบียน/, 'ต้องบอกเจ้าตัวว่าใช้รหัสที่ตั้งเอง');
+    });
+
+    test('เจ้าตัวต้องมีข้อความต้อนรับรออยู่ตั้งแต่เข้าระบบครั้งแรก', () => {
+      const userId = db.prepare('SELECT created_user_id u FROM registration_requests WHERE id = ?').get(requestId).u;
+      const n = db.prepare('SELECT title, message FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 1').get(userId);
+      assert.ok(n, 'ต้องมีแจ้งเตือนรออยู่');
+      assert.match(n.title, /ยินดีต้อนรับ/);
+      assert.match(n.message, /ผูกบัญชีไลน์/, 'ควรชวนให้ผูกไลน์ เพื่อให้ครั้งต่อไปแจ้งถึงมือได้จริง');
+    });
+
+    test('ครูที่อนุมัติแล้วต้องเข้าระบบได้ด้วยรหัสที่ตั้งเอง', () => {
+      assert.equal(login('krunotify', password, '127.0.0.1', 'test').ok, true);
+    });
+  });
+
   // ฐานข้อมูลที่ยังไม่ได้ migrate ตารางนี้ต้องไม่ทำให้ทุกหน้าพัง เพราะตัวนับถูกเรียกทุกครั้งที่เรนเดอร์
   test('ตารางคำขอหายไปต้องไม่ทำให้หน้าพัง', async () => {
     db.exec('ALTER TABLE registration_requests RENAME TO registration_requests_tmp');

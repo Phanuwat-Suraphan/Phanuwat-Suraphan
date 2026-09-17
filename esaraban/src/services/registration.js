@@ -226,7 +226,23 @@ export function approveRegistration({ requestId, roleId, departmentId, actorUser
 
   audit({ userId: actorUser.id, action: 'registration_approved', tableName: 'registration_requests', recordId: req.id,
     detail: { employeeCode: req.employee_code, role: role.name, createdUserId: userId } });
-  return { userId, employeeCode: req.employee_code };
+
+  // แจ้งเจ้าตัวรอไว้ในระบบ — ยังส่งถึงมือทันทีไม่ได้ เพราะตอนสมัครยังไม่มีบัญชีจึงยังไม่มีไลน์ผูกไว้
+  // และโรงเรียนไม่มีเซิร์ฟเวอร์อีเมล แต่ข้อความนี้จะรออยู่ให้เห็นทันทีที่เข้าระบบครั้งแรก และถ้าเจ้าตัว
+  // ผูกบัญชีไลน์ทีหลัง การแจ้งเตือนครั้งต่อๆ ไปก็จะเด้งเข้าไลน์ให้เอง
+  notifyUser({
+    userId,
+    linkUrl: '/profile',
+    title: 'ยินดีต้อนรับ — บัญชีของคุณได้รับอนุมัติแล้ว',
+    message: 'เข้าใช้งานได้ด้วยรหัสพนักงานและรหัสผ่านที่คุณตั้งไว้เอง แนะนำให้ผูกบัญชีไลน์ที่หน้าโปรไฟล์ เพื่อรับแจ้งเตือนหนังสือที่ต้องดำเนินการ',
+    priority: 'info',
+  });
+
+  return {
+    userId,
+    employeeCode: req.employee_code,
+    fullName: `${req.prefix || ''}${req.first_name} ${req.last_name}`.trim(),
+  };
 }
 
 export function rejectRegistration({ requestId, reason, actorUser }) {
