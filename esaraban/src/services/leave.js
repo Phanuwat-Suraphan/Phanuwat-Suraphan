@@ -26,6 +26,40 @@ export function decisionVerb(leaveType) {
 // เพดานของใบลาหนึ่งใบ — ลาคลอด/ลาอุปสมบทที่ยาวที่สุดตามระเบียบก็ไม่เกินไม่กี่เดือน ที่ยาวกว่า 1 ปี
 // แปลว่าพิมพ์ปีผิด (ทดสอบแล้วเกิดขึ้นจริง: พิมพ์ 2126 แทน 2026 ได้ใบลา 36,526 วันโดยไม่มีอะไรฟ้อง)
 const MAX_LEAVE_DAYS = 366;
+
+/**
+ * จำนวนวันลาตามระเบียบสำนักนายกรัฐมนตรีว่าด้วยการลาของข้าราชการ พ.ศ. 2555 ข้อ 6
+ *
+ *   "การนับวันลาเพื่อประโยชน์ในการเสนอหรือจัดส่งใบลา อนุญาตให้ลา และคำนวณวันลา ให้นับต่อเนื่องกัน
+ *    โดยนับวันหยุดราชการที่อยู่ในระหว่างวันลาประเภทเดียวกันรวมเป็นวันลาด้วย
+ *    เว้นแต่การนับเพื่อประโยชน์ในการคำนวณวันลาสำหรับ...การลาพักผ่อน...ให้นับเฉพาะวันทำการ"
+ *
+ * แปลว่า ลาป่วย/ลากิจ/ลาคลอด/ลาอุปสมบท นับวันหยุดที่คั่นกลางรวมด้วย (= วันตามปฏิทิน) ส่วน
+ * "ลาพักผ่อน" นับเฉพาะวันทำการ — เดิมระบบนับวันตามปฏิทินให้ทุกประเภทเหมือนกันหมด ลาพักผ่อนจึงถูก
+ * หักสิทธิ์เกินจริง เช่น ลาจันทร์ถึงศุกร์สองสัปดาห์ติดกัน ถูกนับ 12 วันแทนที่จะเป็น 10 วัน
+ * ซึ่งสำคัญเพราะลาพักผ่อนมีสิทธิ์จำกัดปีละ 10 วันทำการ (สะสมได้ตามเงื่อนไข)
+ *
+ * ข้อจำกัดที่ต้องรู้: ระบบไม่มีปฏิทินวันหยุดนักขัตฤกษ์/วันหยุดชดเชย จึงหักได้เฉพาะเสาร์-อาทิตย์
+ * ถ้าช่วงที่ลามีวันหยุดราชการอื่นคั่นอยู่ ตัวเลขจะสูงกว่าความจริงเท่าจำนวนวันหยุดนั้น —
+ * หน้ากรอกใบลาบอกเรื่องนี้ไว้ให้ผู้ใช้ทราบ ไม่ปล่อยให้เข้าใจว่าระบบหักให้ครบแล้ว
+ */
+export const WORKING_DAY_LEAVE_TYPES = new Set(['vacation']);
+
+export function countWorkingDays(startDate, endDate) {
+  let n = 0;
+  for (let t = Date.parse(`${startDate}T00:00:00Z`); t <= Date.parse(`${endDate}T00:00:00Z`); t += 86400000) {
+    const dow = new Date(t).getUTCDay(); // 0 = อาทิตย์, 6 = เสาร์
+    if (dow !== 0 && dow !== 6) n++;
+  }
+  return n;
+}
+
+export function leaveDaysCount(leaveType, startDate, endDate, calendarDays) {
+  if (!WORKING_DAY_LEAVE_TYPES.has(leaveType)) return calendarDays;
+  // ลาพักผ่อนที่ตกอยู่ในวันหยุดสุดสัปดาห์ล้วน ยังต้องนับอย่างน้อย 1 วัน ไม่ใช่ 0 —
+  // ใบลา 0 วันไม่มีความหมาย และจะทำให้รายงานวันลาสะสมเพี้ยน
+  return Math.max(1, countWorkingDays(startDate, endDate));
+}
 const MAX_LEAVE_REASON = 2000;
 const MAX_LEAVE_TEXT = 500; // สถานที่ไปราชการ / ข้อมูลติดต่อ
 
@@ -78,7 +112,7 @@ export function createLeaveRequest({ requesterId, leaveType, startDate, endDate,
   });
   startDate = range.start;
   endDate = range.end;
-  const daysCount = range.days;
+  const daysCount = leaveDaysCount(leaveType, range.start, range.end, range.days);
   if (!reason?.trim()) throw httpError(400, 'กรุณาระบุเหตุผล');
   assertMaxLength(reason, MAX_LEAVE_REASON, 'เหตุผล');
   assertMaxLength(destination, MAX_LEAVE_TEXT, 'สถานที่ไปราชการ');

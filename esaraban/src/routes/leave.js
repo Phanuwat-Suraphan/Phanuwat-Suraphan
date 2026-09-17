@@ -113,6 +113,9 @@ router.get('/leave/new', requirePage((ctx) => {
             <input type="date" id="endDate" required />
           </div>
         </div>
+        <!-- ทวนจำนวนวันที่ระบบจะนับให้ก่อนกดส่ง — การนับต่างกันตามประเภทการลาตามระเบียบ ถ้าไม่บอก
+             ผู้ใช้จะเห็นตัวเลขอีกทีตอนใบลาถูกบันทึกไปแล้ว และไม่รู้ว่าทำไมได้เท่านั้น -->
+        <div class="callout-tip" id="dayCountHint" style="display:none"></div>
         <div class="field" id="destinationField" style="display:none">
           <label>สถานที่ไปราชการ</label>
           <input type="text" id="destination" placeholder="เช่น สพฐ., โรงแรม..." />
@@ -135,6 +138,40 @@ router.get('/leave/new', requirePage((ctx) => {
       </form>
     </div>
     <script>
+      // นับวันให้ตรงกับฝั่งเซิร์ฟเวอร์เป๊ะ (ดู leaveDaysCount ใน services/leave.js) — ลาพักผ่อนนับเฉพาะ
+      // วันทำการตามระเบียบการลา ข้อ 6 ส่วนประเภทอื่นนับวันหยุดที่คั่นกลางรวมด้วย
+      function countLeaveDays(type, from, to) {
+        if (!from || !to || to < from) return null;
+        var start = Date.parse(from + 'T00:00:00Z');
+        var end = Date.parse(to + 'T00:00:00Z');
+        if (isNaN(start) || isNaN(end)) return null;
+        var calendar = Math.floor((end - start) / 86400000) + 1;
+        if (type !== 'vacation') return { days: calendar, workingOnly: false };
+        var n = 0;
+        for (var t = start; t <= end; t += 86400000) {
+          var d = new Date(t).getUTCDay();
+          if (d !== 0 && d !== 6) n++;
+        }
+        return { days: Math.max(1, n), workingOnly: true, calendar: calendar };
+      }
+      function updateDayCountHint() {
+        var type = document.getElementById('leaveType').value;
+        var box = document.getElementById('dayCountHint');
+        var r = countLeaveDays(type, document.getElementById('startDate').value, document.getElementById('endDate').value);
+        if (!r) { box.style.display = 'none'; return; }
+        box.style.display = '';
+        box.innerHTML = r.workingOnly
+          ? '📅 นับเป็น <strong>' + r.days + ' วันทำการ</strong> (จากช่วงที่เลือก ' + r.calendar + ' วัน) —'
+            + ' ลาพักผ่อนนับเฉพาะวันทำการตามระเบียบการลา ข้อ 6<br/>'
+            + '<span style="font-size:.85rem">⚠️ ระบบหักให้เฉพาะเสาร์-อาทิตย์ <strong>ไม่ได้หักวันหยุดนักขัตฤกษ์</strong>'
+            + ' ถ้าช่วงนี้มีวันหยุดราชการคั่นอยู่ ให้แจ้งผู้อนุญาตเพื่อปรับจำนวนวันด้วย</span>'
+          : '📅 นับเป็น <strong>' + r.days + ' วัน</strong> — การลาประเภทนี้นับวันหยุดที่คั่นอยู่ระหว่างวันลารวมด้วย'
+            + ' ตามระเบียบการลา ข้อ 6';
+      }
+      ['leaveType', 'startDate', 'endDate'].forEach(function (id) {
+        document.getElementById(id).addEventListener('change', updateDayCountHint);
+      });
+
       document.getElementById('leaveForm').addEventListener('submit', function(e){
         e.preventDefault();
         var payload = {

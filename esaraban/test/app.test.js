@@ -30,7 +30,7 @@ const { buildXlsx } = await import('../src/services/xlsxWrite.js');
 const { parseUploadedWorkbook, looksLikeHeader } = await import('../src/services/dailySummaryParse.js');
 const {
   createLeaveRequest, approveLeaveRequest, rejectLeaveRequest, cancelLeaveRequest, canSeeLeaveRequest, getLeaveRequest,
-  canApproveLeave, leaveStatsForFiscalYear, fiscalYearRange,
+  canApproveLeave, leaveStatsForFiscalYear, fiscalYearRange, leaveDaysCount, countWorkingDays,
 } = await import('../src/services/leave.js');
 const { SCHOOL_POSITIONS } = await import('../src/services/positions.js');
 const { planUserImport, MAX_IMPORT_ROWS } = await import('../src/services/userImport.js');
@@ -3520,6 +3520,55 @@ describe('ใบลา: ช่วงวันที่ต้องสมเห�
   const submit = (over = {}) => createLeaveRequest({
     requesterId: teacherUser.id, leaveType: 'personal', reason: 'ทดสอบช่วงวันลา',
     approverId: seed.userIds.director01, startDate: dayOffset(400), endDate: dayOffset(401), ...over,
+  });
+
+  // ระเบียบสำนักนายกรัฐมนตรีว่าด้วยการลาของข้าราชการ พ.ศ. 2555 ข้อ 6 — การนับวันลาให้นับต่อเนื่องกัน
+  // โดยนับวันหยุดราชการที่คั่นอยู่รวมด้วย "เว้นแต่...การลาพักผ่อน...ให้นับเฉพาะวันทำการ"
+  //
+  // เดิมระบบนับวันตามปฏิทินให้ทุกประเภทเหมือนกันหมด ลาพักผ่อนจึงถูกหักสิทธิ์เกินจริง ซึ่งสำคัญเพราะ
+  // ลาพักผ่อนมีสิทธิ์จำกัดปีละ 10 วันทำการ
+  describe('นับวันลาตามระเบียบ — ลาพักผ่อนนับเฉพาะวันทำการ', () => {
+    // 14 ก.ย. 2569 = วันจันทร์, 25 ก.ย. = วันศุกร์ของสัปดาห์ถัดไป (คร่อมเสาร์-อาทิตย์หนึ่งชุด)
+    const MON = '2026-09-14'; const FRI2 = '2026-09-25';
+
+    test('ลาพักผ่อนสองสัปดาห์ (จ.–ศ.) ต้องนับ 10 วัน ไม่ใช่ 12', () => {
+      assert.equal(leaveDaysCount('vacation', MON, FRI2, 12), 10);
+    });
+
+    test('ลาป่วยช่วงเดียวกันต้องนับ 12 วัน เพราะนับวันหยุดที่คั่นอยู่รวมด้วย', () => {
+      for (const type of ['sick', 'personal', 'maternity', 'ordination']) {
+        assert.equal(leaveDaysCount(type, MON, FRI2, 12), 12, `${type} ต้องนับวันตามปฏิทิน`);
+      }
+    });
+
+    test('ลาพักผ่อนหนึ่งสัปดาห์ทำงาน (จ.–ศ.) ต้องนับ 5 วัน', () => {
+      assert.equal(leaveDaysCount('vacation', MON, '2026-09-18', 5), 5);
+    });
+
+    // ใบลา 0 วันไม่มีความหมาย และจะทำให้รายงานวันลาสะสมเพี้ยน
+    test('ลาพักผ่อนที่ตกในเสาร์-อาทิตย์ล้วน ต้องนับอย่างน้อย 1 วัน ไม่ใช่ 0', () => {
+      assert.equal(leaveDaysCount('vacation', '2026-09-19', '2026-09-20', 2), 1);
+    });
+
+    test('ใบลาที่บันทึกจริงต้องได้จำนวนวันตามกฎนี้', () => {
+      const r = createLeaveRequest({
+        requesterId: teacherUser.id, leaveType: 'vacation', reason: 'ลาพักผ่อนประจำปี',
+        approverId: seed.userIds.director01, startDate: MON, endDate: FRI2,
+      });
+      assert.equal(r.daysCount, 10, 'ต้องบันทึกเป็นวันทำการ');
+      assert.equal(db.prepare('SELECT days_count d FROM leave_requests WHERE id = ?').get(r.id).d, 10);
+      // ไม่ลบทิ้ง — มีตารางอื่นอ้างถึงใบลานี้อยู่ (แจ้งเตือน/การมอบหมายรักษาการแทน) และช่วงวันที่ใช้
+      // ไม่ทับกับเทสต์อื่นในชุดนี้ซึ่งใช้วันที่ล่วงหน้าเป็นร้อยวัน
+    });
+
+    // ระบบไม่มีปฏิทินวันหยุดนักขัตฤกษ์ จึงหักได้เฉพาะเสาร์-อาทิตย์ — ต้องบอกผู้ใช้ตรงๆ
+    // ไม่ปล่อยให้เข้าใจว่าระบบหักให้ครบแล้ว
+    test('หน้ากรอกใบลาต้องบอกว่าไม่ได้หักวันหยุดนักขัตฤกษ์ให้', async () => {
+      const res = await dispatchGet(teacherUser, '/leave/new', {});
+      assert.equal(res.status, 200);
+      assert.match(res.body, /ไม่ได้หักวันหยุดนักขัตฤกษ์/, 'ต้องบอกข้อจำกัดให้ผู้ใช้ทราบ');
+      assert.match(res.body, /วันทำการ/, 'ต้องอธิบายว่าลาพักผ่อนนับเฉพาะวันทำการ');
+    });
   });
 
   test('ยื่นใบลาทับช่วงเดิมของตัวเองไม่ได้ ไม่ว่าจะทับหัว ทับท้าย หรือคร่อมทั้งช่วง', () => {
