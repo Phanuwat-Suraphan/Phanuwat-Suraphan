@@ -7,6 +7,7 @@ import { positionInput } from '../services/positions.js';
 import {
   submitRegistration, listPendingRegistrations, recentReviewedRegistrations,
   approveRegistration, rejectRegistration, selfRegistrationEnabled, SELF_REQUESTABLE_ROLES,
+  purgeOldReviewedRegistrations,
 } from '../services/registration.js';
 
 const ADMIN_ONLY = requireRole('admin');
@@ -105,6 +106,9 @@ router.post('/register', (ctx) => {
 // ───────────────────────────── หน้าผู้ดูแล: ตรวจและอนุมัติ ─────────────────────────────
 
 router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
+  // เก็บกวาดคำขอเก่าที่ตรวจไปแล้วตรงนี้ — เกิดนานๆ ครั้ง ไม่ต้องมีตัวจับเวลาแยก และเป็นจังหวะที่
+  // ผู้ดูแลกำลังดูรายการอยู่พอดี (ดูเหตุผลเรื่องอายุการเก็บใน services/registration.js)
+  purgeOldReviewedRegistrations();
   const pending = listPendingRegistrations();
   const reviewed = recentReviewedRegistrations();
   const roles = db.prepare('SELECT id, name, name_th FROM roles ORDER BY level DESC').all();

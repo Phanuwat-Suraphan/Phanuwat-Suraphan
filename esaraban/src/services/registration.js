@@ -139,6 +139,18 @@ export function registrationStatusFor({ employeeCode, password }) {
   };
 }
 
+// คำขอที่ตรวจไปแล้วเก็บไว้เท่าที่จำเป็น — พอให้ผู้ดูแลย้อนดูได้ว่าใครถูกปฏิเสธเพราะอะไร และพอให้
+// เจ้าตัวที่ถูกปฏิเสธเข้ามาดูเหตุผลทัน แต่ไม่เก็บถาวร เพราะแถวที่ถูกปฏิเสธยังมีรหัสผ่านของคนที่ไม่เคย
+// เป็นผู้ใช้ของระบบนี้เลยติดอยู่ ยิ่งเก็บนานยิ่งไม่มีเหตุผลรองรับ
+const REVIEWED_KEEP_DAYS = 90;
+
+/** ลบคำขอที่ตรวจไปแล้วและเก่าเกินกำหนด — เรียกตอนผู้ดูแลเปิดหน้าคำขอ ซึ่งนานๆ ครั้งและไม่ถ่วงอะไร */
+export function purgeOldReviewedRegistrations() {
+  const cutoff = new Date(Date.now() - REVIEWED_KEEP_DAYS * 86400000).toISOString();
+  return db.prepare("DELETE FROM registration_requests WHERE status != 'pending' AND reviewed_at IS NOT NULL AND reviewed_at < ?")
+    .run(cutoff).changes;
+}
+
 /** คำขอที่ยังรอตรวจ พร้อมธงว่าชนกับบัญชีที่มีอยู่แล้วหรือไม่ — ผู้ดูแลต้องเห็นก่อนกดอนุมัติ */
 export function listPendingRegistrations(limit = 100) {
   return db.prepare(`
@@ -197,8 +209,13 @@ export function approveRegistration({ requestId, roleId, departmentId, actorUser
       // ไม่มีใครอื่นเคยรู้ ซึ่งต่างจากบัญชีที่ผู้ดูแลออกรหัสชั่วคราวให้
       req.password_hash, req.pin_hash, nowIso(), nowIso());
     db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)').run(userId, role.id);
+    // ล้างรหัสผ่าน/PIN ออกจากแถวคำขอทันทีที่ยกไปใส่บัญชีจริงแล้ว — ตั้งแต่วินาทีนี้เป็นสำเนาส่วนเกิน
+    // ที่ไม่มีใครใช้อีก แต่ยังนอนอยู่ในฐานข้อมูลและติดไปกับสำเนาสำรองทุกชุดที่ส่งขึ้น Google Drive
+    // ของลับที่ไม่มีใครต้องใช้แล้ว ไม่ควรมีอยู่ (คอลัมน์เป็น NOT NULL จึงใส่ค่าว่าง ซึ่ง verifySecret
+    // ปฏิเสธเสมออยู่แล้วเพราะเช็ค !stored เป็นอย่างแรก)
     db.prepare(`
-      UPDATE registration_requests SET status = 'approved', reviewed_by = ?, reviewed_at = ?, created_user_id = ?
+      UPDATE registration_requests SET status = 'approved', reviewed_by = ?, reviewed_at = ?, created_user_id = ?,
+        password_hash = '', pin_hash = ''
       WHERE id = ?
     `).run(actorUser.id, nowIso(), userId, req.id);
     db.exec('COMMIT');
@@ -216,8 +233,11 @@ export function rejectRegistration({ requestId, reason, actorUser }) {
   const req = db.prepare("SELECT * FROM registration_requests WHERE id = ? AND status = 'pending'").get(requestId);
   if (!req) throw httpError(404, 'ไม่พบคำขอนี้ หรือมีคนตรวจไปแล้ว');
   const clean = typeof reason === 'string' ? reason.trim().slice(0, MAX_NOTE) : '';
+  // ล้าง PIN ทิ้งได้เลย เพราะไม่มีเส้นทางไหนใช้อีกแล้ว ส่วนรหัสผ่านต้องเก็บไว้ เพราะใช้ยืนยันว่าคนที่มา
+  // ถามสถานะคือเจ้าของคำขอจริง (ดู registrationStatusFor) — แถวที่ตรวจแล้วจะถูกลบทิ้งตามอายุอยู่ดี
   db.prepare(`
-    UPDATE registration_requests SET status = 'rejected', reviewed_by = ?, reviewed_at = ?, reject_reason = ?
+    UPDATE registration_requests SET status = 'rejected', reviewed_by = ?, reviewed_at = ?, reject_reason = ?,
+      pin_hash = ''
     WHERE id = ?
   `).run(actorUser.id, nowIso(), clean || null, req.id);
   audit({ userId: actorUser.id, action: 'registration_rejected', tableName: 'registration_requests', recordId: req.id,

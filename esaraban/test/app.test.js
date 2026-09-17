@@ -7012,6 +7012,57 @@ describe('ลงทะเบียนเอง + ผู้ดูแลอนุ�
     });
   });
 
+  // แถวคำขอเก็บรหัสผ่านและ PIN ที่ครูตั้งไว้ พอยกไปใส่บัญชีจริงแล้วสำเนาในแถวคำขอก็ไม่มีใครใช้อีก
+  // แต่ยังนอนอยู่ในฐานข้อมูลและติดไปกับสำเนาสำรองทุกชุดที่ส่งขึ้น Google Drive
+  describe('ไม่เก็บรหัสผ่าน/PIN ไว้เกินจำเป็น', () => {
+    const hashesOf = (code) => db.prepare('SELECT password_hash, pin_hash FROM registration_requests WHERE employee_code = ?').get(code);
+
+    test('อนุมัติแล้วต้องล้างทั้งรหัสผ่านและ PIN ออกจากแถวคำขอ', () => {
+      const input = validReq();
+      reg.submitRegistration(input, {});
+      const row = db.prepare('SELECT id FROM registration_requests WHERE employee_code = ?').get(input.employeeCode);
+      assert.ok(hashesOf(input.employeeCode).password_hash, 'ก่อนอนุมัติต้องยังมีอยู่ ไม่งั้นสร้างบัญชีไม่ได้');
+
+      reg.approveRegistration({ requestId: row.id, roleId: rolesByName('teacher'), actorUser: adminUser });
+
+      const after = hashesOf(input.employeeCode);
+      assert.equal(after.password_hash, '', 'รหัสผ่านในแถวคำขอเป็นสำเนาส่วนเกินแล้ว ต้องล้างทิ้ง');
+      assert.equal(after.pin_hash, '', 'PIN ก็เช่นกัน');
+      // ต้องยังล็อกอินได้ตามปกติ — ล้างผิดที่แล้วบัญชีที่เพิ่งสร้างจะใช้ไม่ได้
+      assert.ok(login(input.employeeCode, input.password, '1.2.3.4', 'ua').ok,
+        'ล้างของในแถวคำขอต้องไม่กระทบบัญชีจริงที่สร้างไปแล้ว');
+    });
+
+    // รหัสผ่านยังต้องเก็บไว้ เพราะใช้ยืนยันว่าคนที่มาถามสถานะคือเจ้าของคำขอจริง แต่ PIN ไม่มีใครใช้อีก
+    test('ปฏิเสธแล้วล้าง PIN ทิ้ง แต่ยังต้องดูสถานะของตัวเองได้', () => {
+      const input = validReq();
+      reg.submitRegistration(input, {});
+      const row = db.prepare('SELECT id FROM registration_requests WHERE employee_code = ?').get(input.employeeCode);
+      reg.rejectRegistration({ requestId: row.id, reason: 'ไม่ใช่บุคลากร', actorUser: adminUser });
+
+      assert.equal(hashesOf(input.employeeCode).pin_hash, '', 'PIN ไม่มีเส้นทางไหนใช้อีกแล้ว');
+      assert.equal(reg.registrationStatusFor({ employeeCode: input.employeeCode, password: input.password })?.status,
+        'rejected', 'ยังต้องดูเหตุผลที่ถูกปฏิเสธได้ ไม่งั้นกลับไปเป็นทางตันเหมือนเดิม');
+    });
+
+    test('คำขอที่ตรวจไปแล้วและเก่าเกินกำหนด ต้องถูกลบทิ้ง แต่ของที่ยังรอตรวจต้องอยู่', () => {
+      const oldOne = validReq();
+      reg.submitRegistration(oldOne, {});
+      const row = db.prepare('SELECT id FROM registration_requests WHERE employee_code = ?').get(oldOne.employeeCode);
+      reg.rejectRegistration({ requestId: row.id, reason: 'เก่าแล้ว', actorUser: adminUser });
+      db.prepare('UPDATE registration_requests SET reviewed_at = ? WHERE id = ?')
+        .run(new Date(Date.now() - 200 * 86400000).toISOString(), row.id);
+
+      const stillWaiting = validReq();
+      reg.submitRegistration(stillWaiting, {});
+
+      reg.purgeOldReviewedRegistrations();
+      assert.equal(db.prepare('SELECT COUNT(*) c FROM registration_requests WHERE employee_code = ?').get(oldOne.employeeCode).c, 0);
+      assert.equal(db.prepare('SELECT COUNT(*) c FROM registration_requests WHERE employee_code = ?').get(stillWaiting.employeeCode).c, 1,
+        'คำขอที่ยังรอตรวจต้องไม่ถูกลบไปด้วยเด็ดขาด');
+    });
+  });
+
   test('ผู้ดูแลเท่านั้นที่เปิดหน้าคำขอได้', async () => {
     assert.equal((await dispatchGet(adminUser, '/admin/registrations')).status, 200);
     assert.equal((await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/admin/registrations')).status, 403);
