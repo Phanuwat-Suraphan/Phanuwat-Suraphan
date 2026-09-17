@@ -3,7 +3,7 @@
 // ต้องแยกโปรเซส เพราะเทสต์ชุดหลักใช้ไฟล์ฐานข้อมูลร่วมกันทั้งชุดและเปิดค้างไว้ตลอด จะลบทิ้งกลางคัน
 // เพื่อจำลอง "ดิสก์ถูกล้าง" ไม่ได้ — และการแยกโปรเซสยังได้ทดสอบลำดับการบูตจริงไปด้วยในตัว
 //
-// รับชื่อสถานการณ์ทาง argv[2]: ok | download-fails | truncated | no-backup
+// รับชื่อสถานการณ์ทาง argv[2]: ok | download-fails | truncated | fallback | no-backup | guard
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -35,6 +35,45 @@ try {
   if (scenario === 'no-backup') {
     out.restoredWithNothingOnDrive = await backupMod.restoreDatabaseIfMissing();
     out.dbExistsAfter = fs.existsSync(dbPath);
+    console.log(JSON.stringify(out));
+    cleanupPaths.forEach((p) => fs.rmSync(p, { force: true }));
+    process.exit(0);
+  }
+
+  // --- สถานการณ์ "ตัวกันการสำรองทับ" ---
+  // จำลองกับดักของการย้ายเซิร์ฟเวอร์: บน Drive มีสำเนาที่ดีอยู่แล้ว แต่เครื่องนี้เริ่มด้วยฐานข้อมูล
+  // เปล่าและกู้คืนไม่สำเร็จ ถ้าปล่อยให้สำรองต่อ ความว่างเปล่าจะทับสำเนาที่ใช้กู้คืนได้จนหมด
+  if (scenario === 'guard') {
+    // วางสำเนาที่ดีไว้บน Drive ก่อน โดยใช้ฐานข้อมูลชั่วคราวอีกไฟล์หนึ่ง
+    const seedDb = new DatabaseSync(`${dbPath}.seed`);
+    seedDb.exec('CREATE TABLE users (id TEXT); INSERT INTO users VALUES (\'x\')');
+    seedDb.close();
+    const { ensureBackupFolder, ensureFolderPath, uploadFile } = await import('../src/services/googleDrive.js');
+    const root = await ensureBackupFolder();
+    const folder = await ensureFolderPath(root, ['2569', '2569-09', '2569-09-16']);
+    await uploadFile({
+      buffer: fs.readFileSync(`${dbPath}.seed`), filename: 'esaraban-0900.db',
+      mimeType: 'application/x-sqlite3', folderId: folder,
+    });
+    fs.rmSync(`${dbPath}.seed`, { force: true });
+    out.goodBackupsOnDrive = drive.backupFiles().length;
+
+    // เครื่องนี้กู้คืนไม่สำเร็จ (จำลองว่าดาวน์โหลดล้ม) แล้วสร้างฐานข้อมูลเปล่าขึ้นมาเอง
+    drive.faults.failDownload = true;
+    out.restoreFailed = !(await backupMod.restoreDatabaseIfMissing());
+    drive.faults.failDownload = false;
+    await import('../src/db.js'); // สร้างฐานข้อมูลใหม่พร้อมข้อมูลตัวอย่าง
+
+    out.driveHasBackups = await backupMod.checkDriveHasBackups();
+    out.blockedReason = backupMod.backupBlockedReason();
+    out.backupRefused = !(await backupMod.backupNow('ควรถูกปฏิเสธ'));
+    out.filesAfterRefusedBackup = drive.backupFiles().length;
+
+    // ผู้ดูแลยืนยันว่าตั้งใจเริ่มใหม่ — ต้องสำรองต่อได้
+    backupMod.confirmStartFreshOverBackups();
+    out.backupAfterConfirm = await backupMod.backupNow('หลังยืนยัน');
+    out.filesAfterConfirm = drive.backupFiles().length;
+
     console.log(JSON.stringify(out));
     cleanupPaths.forEach((p) => fs.rmSync(p, { force: true }));
     process.exit(0);

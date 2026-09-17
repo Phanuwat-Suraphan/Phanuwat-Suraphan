@@ -5970,6 +5970,52 @@ describe('สำรองฐานข้อมูล: สำเนาต้อ�
       assert.equal(r.restoredWithNothingOnDrive, false);
       assert.equal(r.dbExistsAfter, false);
     });
+
+    // กับดักของการย้ายเซิร์ฟเวอร์: เครื่องใหม่เริ่มด้วยฐานข้อมูลเปล่าและกู้คืนไม่สำเร็จ ถ้าปล่อยให้
+    // สำรองต่อ ความว่างเปล่าจะทับสำเนาที่ใช้กู้คืนได้จนหมดภายในชั่วโมงเดียว (สำรองทุก 5 นาที
+    // เก็บวันละ 12 ชุด) — ข้อนี้ทดสอบทั้งเส้นจริง ไม่ใช่แค่ตัวตัดสินใจล้วนๆ
+    test('เริ่มด้วยฐานข้อมูลเปล่าแล้วกู้คืนไม่สำเร็จ ต้องไม่สำรองทับสำเนาที่ดีอยู่แล้ว', () => {
+      const r = run('guard');
+      assert.ok(!r.fatal, r.fatal + '\n' + (r.stack || ''));
+      assert.equal(r.goodBackupsOnDrive, 1, 'ต้องมีสำเนาที่ดีวางอยู่บน Drive ก่อน');
+      assert.equal(r.restoreFailed, true, 'สถานการณ์นี้คือกู้คืนไม่สำเร็จ');
+      assert.ok(r.blockedReason, 'ต้องมีเหตุผลที่หยุดสำรอง');
+      assert.equal(r.backupRefused, true, 'ต้องปฏิเสธการสำรอง');
+      assert.equal(r.filesAfterRefusedBackup, 1, 'สำเนาที่ดีต้องยังอยู่ครบ ไม่ถูกทับ');
+
+      // แต่ต้องไม่กันตาย — โรงเรียนที่ตั้งใจเริ่มใหม่จริงๆ ต้องสั่งให้เดินต่อได้
+      assert.equal(r.backupAfterConfirm, true, 'ยืนยันแล้วต้องสำรองได้');
+      assert.equal(r.filesAfterConfirm, 2);
+    });
+
+    // planBackupCleanup/splitByCutoff มีเทสต์แบบฟังก์ชันบริสุทธิ์อยู่แล้ว แต่นั่นคือ "การตัดสินใจ"
+    // ส่วนตัวที่ลบของจริงคือการเดินโฟลเดอร์ ปี → เดือน → วัน → ไฟล์ ถ้าเดินผิดชั้นหรือคิดเส้นตายผิด
+    // จะลบสำเนาที่ยังต้องเก็บทิ้งไปโดยไม่มีอะไรฟ้อง และเรียกคืนไม่ได้
+    test('ตัวเก็บกวาดลบเฉพาะสำเนาที่เกินกำหนดจริง ไม่แตะของที่ยังต้องเก็บ', () => {
+      const out = execFileSync(process.execPath, ['--no-warnings', 'test/pruneWalk.mjs', '3', '3'], {
+        cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', timeout: 60_000,
+      });
+      const lines = out.trim().split('\n');
+      const r = JSON.parse(lines[lines.length - 1]);
+      assert.ok(!r.fatal, r.fatal + '\n' + (r.stack || ''));
+
+      const [today, d1, d2, d3, d5, d40, d400] = r.daysPlaced;
+      // เก็บ 3 วัน = วันนี้ + ย้อนหลัง 2 วัน
+      for (const keep of [today, d1, d2]) {
+        assert.ok(r.foldersKept.includes(keep), `วัน ${keep} ต้องยังอยู่`);
+      }
+      for (const gone of [d3, d5, d40, d400]) {
+        assert.ok(!r.foldersKept.includes(gone), `วัน ${gone} เกินกำหนดแล้ว ต้องถูกลบ`);
+      }
+      // วันนี้เก็บได้หลายชุด (keepRecent=3) วันที่ผ่านมาแล้วเหลือวันละชุด → 3 + 1 + 1
+      assert.equal(r.after.total, 5, `จำนวนไฟล์ที่เหลือไม่ตรง: ${JSON.stringify(r.after)}`);
+      // โฟลเดอร์เดือน/ปีที่ไม่เหลืออะไรข้างในต้องถูกเก็บกวาดด้วย ไม่ให้รกสะสม
+      assert.ok(!r.foldersKept.includes('2568'), 'ปีที่ไม่เหลือสำเนาแล้วต้องถูกลบ');
+      assert.ok(!r.foldersKept.includes('2569-08'), 'เดือนที่ไม่เหลือสำเนาแล้วต้องถูกลบ');
+      // แต่ห้ามลบโฟลเดอร์ที่ยังมีของอยู่ข้างใน และห้ามแตะโฟลเดอร์ราก
+      assert.ok(r.foldersKept.includes('2569') && r.foldersKept.includes('2569-09'));
+      assert.ok(r.foldersKept.includes('สำเนาฐานข้อมูล (ห้ามลบ)'), 'โฟลเดอร์รากของสำเนาต้องไม่ถูกลบ');
+    });
   });
 
   test('ยังไม่ได้เชื่อมต่อ Drive ต้องไม่พังและไม่ทำอะไรเลย', async () => {
