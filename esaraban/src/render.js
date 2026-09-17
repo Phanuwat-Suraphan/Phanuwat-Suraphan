@@ -1,4 +1,4 @@
-import { todayInBangkok, TEST_MODE_ON, starterModeActive } from './db.js';
+import { db, todayInBangkok, TEST_MODE_ON, starterModeActive } from './db.js';
 
 export function esc(str) {
   if (str === null || str === undefined) return '';
@@ -161,9 +161,31 @@ export function rowLink(href, innerHtml) {
   return `<a class="row-link" href="${esc(href)}">${innerHtml}</a>`;
 }
 
-function navItem(href, icon, label, currentPath) {
+/**
+ * จำนวนคำขอลงทะเบียนที่ยังรอตรวจ — ใช้ขึ้นป้ายตัวเลขบนเมนูของผู้ดูแลระบบ
+ *
+ * ถามฐานข้อมูลตรงนี้เลยแทนการ import services/registration.js เพื่อไม่ให้เกิดวงจร import
+ * (registration.js เรียก notify.js ซึ่งดึงตัวช่วยจากไฟล์นี้อยู่) — เป็นคำสั่งนับแถวบนคอลัมน์ที่มี
+ * index อยู่แล้ว ราคาถูกพอที่จะเรียกทุกครั้งที่เรนเดอร์หน้า
+ *
+ * ทำไมต้องมี: คำขอที่ค้างอยู่แปลว่ามีครูรอเข้าใช้งานไม่ได้อยู่จริงๆ เดิมผู้ดูแลต้องนึกได้เองว่าต้อง
+ * เข้าไปดูหน้านั้น (มีแจ้งเตือนตอนยื่นครั้งเดียว ถ้าพลาดไปก็เงียบไปเลย) ครูก็ได้แต่รอโดยไม่รู้ว่า
+ * ต้องรออีกนานแค่ไหน
+ */
+function pendingRegistrations() {
+  try {
+    return db.prepare("SELECT COUNT(*) c FROM registration_requests WHERE status = 'pending'").get().c;
+  } catch {
+    return 0; // ฐานข้อมูลที่ยังไม่ได้ migrate ตารางนี้ — ไม่ใช่เหตุให้ทั้งหน้าพัง
+  }
+}
+
+function navItem(href, icon, label, currentPath, count = 0) {
   const active = currentPath === href || (href !== '/' && currentPath.startsWith(href));
-  return `<a class="nav-link${active ? ' active' : ''}" href="${href}"><span class="icon">${icon}</span><span>${esc(label)}</span></a>`;
+  // ป้ายตัวเลขบนเมนู — ใช้กับของที่ "ค้างรอคนทำ" เท่านั้น ไม่ใช่ทุกเมนู ไม่งั้นจะกลายเป็นสิ่งที่ทุกคน
+  // มองข้ามไปหมด (คำขอลงทะเบียนที่ค้างอยู่แปลว่ามีครูรอเข้าใช้งานไม่ได้อยู่จริงๆ)
+  const badge = count > 0 ? `<span class="nav-count">${count > 99 ? '99+' : count}</span>` : '';
+  return `<a class="nav-link${active ? ' active' : ''}" href="${href}"><span class="icon">${icon}</span><span>${esc(label)}</span>${badge}</a>`;
 }
 
 // อวตาร: ถ้าผู้ใช้เลือกอิโมจิไว้ (UX Bible Part 21 §8) ใช้อิโมจินั้น ไม่งั้น fallback เป็นตัวอักษรย่อชื่อ
@@ -246,7 +268,7 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
     <div class="nav-section-label">ระบบ</div>
     ${user.roleCodes.includes('admin') ? navItem('/admin/settings', '🏫', 'ตั้งค่าโรงเรียน', currentPath) : ''}
     ${user.roleCodes.includes('admin') ? navItem('/admin/users', '⚙️', 'จัดการผู้ใช้', currentPath) : ''}
-    ${user.roleCodes.includes('admin') ? navItem('/admin/registrations', '📝', 'คำขอลงทะเบียน', currentPath) : ''}
+    ${user.roleCodes.includes('admin') ? navItem('/admin/registrations', '📝', 'คำขอลงทะเบียน', currentPath, pendingRegistrations()) : ''}
     ${user.roleCodes.includes('admin') ? navItem('/admin/audit', '🧾', 'Audit Log', currentPath) : ''}
     ${user.roleCodes.includes('admin') ? navItem('/admin/google-drive', '🗂️', 'เชื่อมต่อ Google Drive', currentPath) : ''}
     ${user.roleCodes.includes('admin') ? navItem('/admin/line', '💬', 'แจ้งเตือนเข้าไลน์', currentPath) : ''}

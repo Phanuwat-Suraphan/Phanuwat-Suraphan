@@ -2276,6 +2276,62 @@ describe('หน้าช่วยย้ายเซิร์ฟเวอร์'
   });
 });
 
+// คำขอที่ค้างอยู่แปลว่ามีครูรอเข้าใช้งานไม่ได้อยู่จริงๆ เดิมผู้ดูแลต้องนึกได้เองว่าต้องเข้าไปดูหน้านั้น
+// (มีแจ้งเตือนตอนยื่นครั้งเดียว ถ้าพลาดไปก็เงียบไปเลย) ส่วนครูก็ได้แต่รอโดยไม่รู้ว่าต้องรออีกนานแค่ไหน
+describe('คำขอลงทะเบียนที่ค้างอยู่ต้องเห็นได้โดยไม่ต้องเข้าไปเปิดหน้านั้น', () => {
+  const pendingIds = [];
+  const addPending = (code) => {
+    const id = uuid();
+    db.prepare(`INSERT INTO registration_requests
+        (id, employee_code, first_name, last_name, department_id, requested_role, status, created_at, password_hash, pin_hash)
+      VALUES (?, ?, 'รอ', 'ตรวจ', ?, 'teacher', 'pending', ?, ?, ?)`)
+      .run(id, code, deptId, nowIso(), hashSecret('RahatPanTest2569'), hashSecret('473812'));
+    pendingIds.push(id);
+    return id;
+  };
+  after(() => { for (const id of pendingIds) db.prepare('DELETE FROM registration_requests WHERE id = ?').run(id); });
+
+  test('เมนูของผู้ดูแลต้องขึ้นจำนวนคำขอที่รอตรวจ', async () => {
+    const before = await dispatchGet(adminUser, '/', {});
+    assert.ok(!/nav-count/.test(before.body), 'ไม่มีคำขอค้างก็ต้องไม่ขึ้นป้าย');
+
+    addPending(`pend-${Date.now()}-1`);
+    addPending(`pend-${Date.now()}-2`);
+    const after = await dispatchGet(adminUser, '/', {});
+    assert.match(after.body, /<span class="nav-count">2<\/span>/, 'ต้องขึ้นจำนวนคำขอที่รอตรวจบนเมนู');
+  });
+
+  test('คนที่ไม่ใช่ผู้ดูแลต้องไม่เห็นป้ายนี้ เพราะกดเข้าไปทำอะไรไม่ได้อยู่ดี', async () => {
+    const res = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/', {});
+    assert.ok(!/nav-count/.test(res.body), 'ครูต้องไม่เห็นป้ายคำขอลงทะเบียน');
+  });
+
+  // ช่องทางที่โรงเรียนใช้สื่อสารกันจริงคือกลุ่มไลน์ — การให้คัดลอกลิงก์ไปวางเองเป็นขั้นที่คนมักไม่ทำ
+  test('หน้าคำขอต้องมีปุ่มส่งลิงก์เข้ากลุ่มไลน์พร้อมข้อความ', async () => {
+    const res = await dispatchGet(adminUser, '/admin/registrations', {});
+    assert.equal(res.status, 200);
+    assert.match(res.body, /ส่งลิงก์เข้ากลุ่มไลน์/, 'ต้องมีปุ่มส่งเข้าไลน์');
+    const href = /href="(https:\/\/line\.me\/R\/share\?text=[^"]*)"/.exec(res.body)?.[1];
+    assert.ok(href, 'ต้องเป็นลิงก์แชร์ของ LINE');
+    const text = decodeURIComponent(href.split('text=')[1]).replace(/&amp;/g, '&');
+    assert.match(text, /\/register/, 'ข้อความที่แชร์ต้องมีลิงก์หน้าลงทะเบียน');
+    assert.match(text, /ลงทะเบียน/, 'ต้องบอกว่าเป็นลิงก์ทำอะไร ไม่ใช่ลิงก์เปล่าๆ');
+    assert.ok(text.includes(schoolName()), 'ต้องบอกชื่อโรงเรียน เพราะครูอาจอยู่หลายกลุ่ม');
+  });
+
+  // ฐานข้อมูลที่ยังไม่ได้ migrate ตารางนี้ต้องไม่ทำให้ทุกหน้าพัง เพราะตัวนับถูกเรียกทุกครั้งที่เรนเดอร์
+  test('ตารางคำขอหายไปต้องไม่ทำให้หน้าพัง', async () => {
+    db.exec('ALTER TABLE registration_requests RENAME TO registration_requests_tmp');
+    try {
+      const res = await dispatchGet(adminUser, '/', {});
+      assert.equal(res.status, 200, 'หน้าต้องยังเปิดได้');
+      assert.ok(!/nav-count/.test(res.body));
+    } finally {
+      db.exec('ALTER TABLE registration_requests_tmp RENAME TO registration_requests');
+    }
+  });
+});
+
 // ไอคอนบนแท็บเคยเป็นไฟล์นิ่งที่เขียนตัวย่อ "จพ" ของโรงเรียนอื่นฝังไว้ตายตัว แก้จากในระบบไม่ได้เลย
 test('ไอคอนบนแท็บต้องใช้ตัวย่อของโรงเรียนที่ตั้งไว้จริง', async () => {
   const res = await dispatchGet(null, '/favicon.svg', {});

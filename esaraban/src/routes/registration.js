@@ -1,9 +1,10 @@
 // หน้าลงทะเบียนด้วยตัวเองของครู และหน้าตรวจ/อนุมัติของผู้ดูแล
 import { router, html, json, redirect } from '../router.js';
-import { layout, esc, fmtDate } from '../render.js';
+import { layout, esc, fmtDate, schoolName } from '../render.js';
 import { requireApi, requireRole, requirePage } from '../middleware.js';
 import { db } from '../db.js';
 import { positionInput } from '../services/positions.js';
+import { lineShareUrl } from '../services/line.js';
 import {
   submitRegistration, listPendingRegistrations, recentReviewedRegistrations,
   approveRegistration, rejectRegistration, selfRegistrationEnabled, SELF_REQUESTABLE_ROLES,
@@ -124,6 +125,13 @@ router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
   const roles = db.prepare('SELECT id, name, name_th FROM roles ORDER BY level DESC').all();
   const depts = departments();
 
+  const registerUrl = `${ctx.req.headers['x-forwarded-proto'] || 'https'}://${ctx.req.headers.host || ''}/register`;
+  const registerShareText = [
+    `ลงทะเบียนขอใช้งานระบบสารบรรณอิเล็กทรอนิกส์ ${schoolName()}`,
+    'กรอกข้อมูลและตั้งรหัสผ่านของตัวเองได้เลย แล้วรอผู้ดูแลระบบอนุมัติ',
+    registerUrl,
+  ].join('\n');
+
   const card = (r) => `
     <div class="card" id="req-${esc(r.id)}">
       <div class="card-header">
@@ -176,10 +184,18 @@ router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
     <div class="card">
       <h3 class="mt-0">ลิงก์สำหรับส่งให้ครู</h3>
       <div class="flex gap-2 items-center">
-        <input type="text" id="regUrl" readonly value="${esc(`${ctx.req.headers['x-forwarded-proto'] || 'https'}://${ctx.req.headers.host || ''}/register`)}" style="flex:1" />
+        <input type="text" id="regUrl" readonly value="${esc(registerUrl)}" style="flex:1" />
         <button class="btn btn-outline btn-sm" type="button" onclick="copyRegUrl()">คัดลอก</button>
       </div>
-      <div class="help-text">ส่งลิงก์นี้ในกลุ่มไลน์โรงเรียนได้เลย ครูกรอกเองแล้วมารอคุณอนุมัติที่หน้านี้</div>
+      <!-- ช่องทางที่โรงเรียนใช้สื่อสารกันจริงคือกลุ่มไลน์ — ปุ่มนี้เปิดหน้าต่างแชร์ของ LINE พร้อม
+           ข้อความและลิงก์ให้เสร็จ ผู้ดูแลเลือกกลุ่มแล้วกดส่งได้เลย ไม่ต้องคัดลอกไปวางเอง
+           (ใช้ตัวแชร์ตัวเดียวกับที่หน้าประกาศใช้อยู่แล้ว) -->
+      <div class="chip-row" style="margin-top:.6rem">
+        <a class="btn btn-primary btn-sm" href="${esc(lineShareUrl(registerShareText))}" target="_blank" rel="noopener">
+          💬 ส่งลิงก์เข้ากลุ่มไลน์
+        </a>
+      </div>
+      <div class="help-text">ครูกรอกเองแล้วมารอคุณอนุมัติที่หน้านี้ — ลิงก์นี้ใช้ซ้ำได้เรื่อยๆ ไม่มีวันหมดอายุ</div>
     </div>
 
     <h3>รอตรวจ ${pending.length ? `<span class="badge badge-warning">${pending.length}</span>` : ''}</h3>
