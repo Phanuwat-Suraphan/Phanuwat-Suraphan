@@ -40,7 +40,7 @@ const { asText, asTextOrNull } = await import('../src/services/validate.js');
 const { setSetting, getSetting, invalidateSettingsCache } = await import('../src/services/settings.js');
 const { schoolName, schoolShortName, schoolInitials } = await import('../src/render.js');
 const { createDelegation, cancelDelegation } = await import('../src/services/delegation.js');
-const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, planBackupCleanup, thaiDateParts } = await import('../src/services/dbBackup.js');
+const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, planBackupCleanup, thaiDateParts, decideBackupBlock } = await import('../src/services/dbBackup.js');
 const sqliteModule = await import('node:sqlite');
 const { createDestructionBatch, approveDestructionBatch, ELIGIBLE_PAGE_SIZE } = await import('../src/services/retention.js');
 const { MAX_STAMP_TEXT } = await import('../src/services/pdfStamp.js');
@@ -2200,6 +2200,79 @@ describe('วันที่รับและเลขทะเบียน ก
     db.prepare("UPDATE documents SET status = 'destroyed' WHERE id = ?").run(id);
     const res = await dispatchPost(registrarUser, `/documents/${id}/register-info`, { docNumberDisplay: 'แก้หลังทำลาย' });
     assert.equal(res.status, 403, 'รายการทะเบียนที่เหลืออยู่คือหลักฐานการทำลาย ห้ามแก้');
+  });
+});
+
+// กับดักตอนย้ายเซิร์ฟเวอร์ที่ร้ายแรงที่สุด: สร้าง service ใหม่แล้วลืมใส่ GOOGLE_OAUTH_REFRESH_TOKEN
+// ตั้งแต่บูตแรก ระบบจึงกู้คืนจาก Drive ไม่ได้ แล้วสร้างฐานข้อมูลเปล่าขึ้นมาแทน พอมาเติมตัวแปรทีหลัง
+// ไฟล์ฐานข้อมูลมีอยู่แล้ว การกู้คืนจึงไม่ทำงานอีก — และระบบจะเริ่มสำรอง "ฐานข้อมูลเปล่า" ทับขึ้นไป
+// ทุก 5 นาที จนสำเนาของวันนี้ที่เป็นของจริงถูกตัดทิ้งหมดภายในชั่วโมงเดียว
+describe('ห้ามเอาฐานข้อมูลเปล่าไปทับสำเนาที่ดีอยู่แล้วบน Drive', () => {
+  const base = { startedWithoutDb: true, restored: null, overridden: false, driveHasBackups: true };
+
+  test('เริ่มด้วยฐานข้อมูลเปล่าทั้งที่ Drive มีสำเนาอยู่แล้ว ต้องหยุดสำรองไว้ก่อน', () => {
+    const reason = decideBackupBlock(base);
+    assert.ok(reason, 'ต้องบล็อก');
+    assert.match(reason, /ฐานข้อมูลเปล่า/);
+  });
+
+  test('กู้คืนมาแล้วต้องสำรองได้ตามปกติ', () => {
+    assert.equal(decideBackupBlock({ ...base, restored: 'esaraban-1530.db' }), null);
+  });
+
+  test('เซิร์ฟเวอร์ที่ทำงานอยู่เดิม (มีไฟล์ฐานข้อมูลอยู่แล้ว) ต้องไม่ถูกบล็อก', () => {
+    assert.equal(decideBackupBlock({ ...base, startedWithoutDb: false }), null);
+  });
+
+  test('โรงเรียนที่เพิ่งติดตั้งใหม่จริงๆ (Drive ยังไม่มีสำเนา) ต้องสำรองได้ทันที', () => {
+    assert.equal(decideBackupBlock({ ...base, driveHasBackups: false }), null);
+  });
+
+  // ถ้าเรียก Drive ไม่ติดชั่วคราวแล้วเหมาว่าต้องบล็อก เซิร์ฟเวอร์ที่ทำงานปกติจะหยุดสำรองเงียบๆ
+  // ซึ่งอันตรายกว่าปัญหาที่กำลังกันอยู่ เพราะข้อมูลใหม่จะไม่มีที่สำรองเลย
+  test('ตรวจ Drive ไม่ได้ ต้องไม่บล็อก', () => {
+    assert.equal(decideBackupBlock({ ...base, driveHasBackups: null }), null);
+  });
+
+  test('ผู้ดูแลยืนยันว่าตั้งใจเริ่มใหม่ ต้องสำรองต่อได้', () => {
+    assert.equal(decideBackupBlock({ ...base, overridden: true }), null);
+  });
+});
+
+// ตัวแปรสภาพแวดล้อมไม่ได้อยู่ในโค้ดเลยสักตัว อยู่ในหน้าตั้งค่าของโฮสต์เท่านั้น ยกไปไม่ครบแล้วเซิร์ฟเวอร์
+// ใหม่จะบูตขึ้นมาแบบ "ดูเหมือนทำงานได้" แต่กู้ข้อมูลเดิมไม่ได้
+describe('หน้าช่วยย้ายเซิร์ฟเวอร์', () => {
+  test('ต้องบอกชื่อตัวแปรที่ต้องยกไป และตัวที่ห้ามยกไป', async () => {
+    const res = await dispatchGet(adminUser, '/admin/migrate', {});
+    assert.equal(res.status, 200);
+    for (const name of ['GOOGLE_OAUTH_REFRESH_TOKEN', 'SESSION_SECRET', 'STORAGE_PROVIDER', 'LINE_CHANNEL_SECRET']) {
+      assert.ok(res.body.includes(name), `ต้องมี ${name} ในรายการ`);
+    }
+    assert.match(res.body, /TEST_MODE_PASSWORD/, 'ต้องเตือนเรื่องตัวแปรที่ห้ามยกไป');
+  });
+
+  // ค่าพวกนี้คือรหัสผ่านและโทเคน ถ้าโผล่บนหน้าเว็บก็รั่วทันทีที่มีคนแคปหน้าจอส่งต่อ ซึ่งเกิดง่ายมาก
+  // เวลาขอความช่วยเหลือกัน — หน้านี้ต้องบอกแค่ "ตั้งไว้แล้วหรือยัง" ไม่ใช่ค่าจริง
+  test('ต้องไม่แสดงค่าจริงของตัวแปรเด็ดขาด', async () => {
+    const secret = 'ค่าลับที่ห้ามโผล่บนหน้าเว็บ-9f3a2b';
+    const saved = process.env.LINE_CHANNEL_SECRET;
+    process.env.LINE_CHANNEL_SECRET = secret;
+    try {
+      const res = await dispatchGet(adminUser, '/admin/migrate', {});
+      assert.ok(!res.body.includes(secret), 'ค่าของตัวแปรต้องไม่ปรากฏบนหน้าเว็บ');
+      assert.match(res.body, /ตั้งไว้แล้ว/, 'แต่ต้องบอกได้ว่าตั้งไว้แล้ว');
+    } finally {
+      if (saved === undefined) delete process.env.LINE_CHANNEL_SECRET;
+      else process.env.LINE_CHANNEL_SECRET = saved;
+    }
+  });
+
+  test('คนที่ไม่ใช่แอดมินต้องเปิดไม่ได้', async () => {
+    for (const code of ['reg001', 'teacher001', 'director01']) {
+      const res = await dispatchGet(loadUserForTest(seed.userIds[code]), '/admin/migrate', {});
+      assert.ok(res.status === 403 || res.status === 302,
+        `${code} ต้องเปิดหน้านี้ไม่ได้ แต่ได้ ${res.status}`);
+    }
   });
 });
 

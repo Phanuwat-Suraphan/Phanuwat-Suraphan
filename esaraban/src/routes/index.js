@@ -12,6 +12,7 @@ import './announcements.js';
 import './delegation.js';
 import './dailySummary.js';
 import './backups.js';
+import './migrate.js';
 import './privacy.js';
 import './manifest.js';
 import './line.js';

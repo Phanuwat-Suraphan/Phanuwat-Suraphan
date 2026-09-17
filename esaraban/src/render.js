@@ -251,6 +251,7 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
     ${user.roleCodes.includes('admin') ? navItem('/admin/google-drive', '🗂️', 'เชื่อมต่อ Google Drive', currentPath) : ''}
     ${user.roleCodes.includes('admin') ? navItem('/admin/line', '💬', 'แจ้งเตือนเข้าไลน์', currentPath) : ''}
     ${user.roleCodes.some((r) => ['admin', 'registrar'].includes(r)) ? navItem('/admin/backups', '💾', 'สำเนาสำรองข้อมูล', currentPath) : ''}
+    ${user.roleCodes.includes('admin') ? navItem('/admin/migrate', '🚚', 'ย้ายเซิร์ฟเวอร์', currentPath) : ''}
     ${navItem('/profile', '👤', 'โปรไฟล์ของฉัน', currentPath)}
     <a class="nav-link" href="/logout">${'<span class="icon">🚪</span><span>ออกจากระบบ</span>'}</a>
   </aside>

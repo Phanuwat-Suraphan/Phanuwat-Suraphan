@@ -25,6 +25,12 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', '..', 'data', 'esaraban.db');
 
+// "โปรเซสนี้เริ่มโดยยังไม่มีไฟล์ฐานข้อมูลเลยหรือไม่" — ต้องคิดตรงนี้ ไม่ใช่ import DB_WAS_NEW จาก db.js
+// เพราะ db.js เปิดไฟล์ฐานข้อมูลทันทีที่ถูก import และ ESM ยก import ขึ้นไปทำก่อนเสมอ การ import มา
+// ใช้จึงจะทำให้ฐานข้อมูลถูกสร้างขึ้น "ก่อน" restoreDatabaseIfMissing ได้ทำงาน ซึ่งทำให้การกู้คืนพังทั้งระบบ
+// (ดูคำอธิบายลำดับการบูตใน server.js) — ไฟล์นี้ถูกโหลดก่อน db.js เสมอ ค่านี้จึงตรงกับความจริงพอดี
+const STARTED_WITHOUT_DB = !fs.existsSync(DB_PATH);
+
 // ค่าเริ่มต้น 5 นาที — Render free tier หลับหลังไม่มีคนใช้ราว 15 นาที ช่วงนี้จึงกันข้อมูลหายได้พอสมควร
 // โดยไม่ยิงขึ้น Drive ถี่จนเปลืองโควตา ปรับได้ด้วย env var BACKUP_INTERVAL_MINUTES
 const BACKUP_INTERVAL_MS = Math.max(1, Number(process.env.BACKUP_INTERVAL_MINUTES) || 5) * 60_000;
@@ -180,10 +186,76 @@ export function getBackupStatus() {
   return { state: status.lastOkAt ? 'ok' : 'pending', ephemeral: looksEphemeral(), ...status };
 }
 
+/**
+ * กันเซิร์ฟเวอร์ที่เริ่มด้วยฐานข้อมูลเปล่า ไม่ให้เอาความว่างเปล่าไปทับสำเนาที่ดีอยู่แล้วบน Drive
+ *
+ * สถานการณ์ที่เกิดจริงและร้ายแรงที่สุดตอนย้ายเซิร์ฟเวอร์: สร้าง service ใหม่แล้วลืมใส่
+ * GOOGLE_OAUTH_REFRESH_TOKEN ตั้งแต่บูตแรก ระบบจึงกู้คืนจาก Drive ไม่ได้ (restoreDatabaseIfMissing
+ * ทำงานเฉพาะตอนที่เชื่อม Drive ไว้แล้ว) แล้วสร้างฐานข้อมูลใหม่พร้อมข้อมูลตัวอย่างขึ้นมาแทน
+ * พอมาเติมตัวแปรทีหลัง ไฟล์ฐานข้อมูลมีอยู่แล้ว การกู้คืนจึงไม่ทำงานอีก — และระบบจะเริ่มสำรอง
+ * "ฐานข้อมูลเปล่า" ทับขึ้นไปทุก 5 นาที จนสำเนาของวันนี้ที่เป็นของจริงถูกตัดทิ้งหมดภายในชั่วโมงเดียว
+ *
+ * ตรงนี้จึงหยุดการสำรองไว้ก่อนเมื่อเข้าเงื่อนไขทั้งสามข้อพร้อมกัน แล้วให้ผู้ดูแลเป็นคนตัดสินใจ
+ * ว่าจะกู้คืนของเดิม หรือยืนยันว่าตั้งใจเริ่มใหม่จริง (โรงเรียนใหม่ที่ใช้ Drive โฟลเดอร์เดิม)
+ */
+let startedEmptyOverride = false;
+let driveHasBackupsAtBoot = null; // null = ยังไม่ได้ตรวจ
+
+export function confirmStartFreshOverBackups() {
+  startedEmptyOverride = true;
+  log('ผู้ดูแลยืนยันให้เริ่มใหม่ทับสำเนาเดิมบน Drive — เปิดการสำรองข้อมูลต่อ');
+}
+
+/**
+ * การตัดสินใจล้วนๆ ว่าต้องหยุดสำรองไว้ก่อนหรือไม่ — แยกออกมาเป็นฟังก์ชันบริสุทธิ์เพื่อทดสอบได้ครบทุกทาง
+ * โดยไม่ต้องบูตเซิร์ฟเวอร์ใหม่หรือต่อ Google Drive จริง (แนวเดียวกับ planBackupCleanup/splitByCutoff)
+ *
+ * driveHasBackups === null แปลว่า "ยังตรวจไม่ได้" ต้องไม่บล็อก — เซิร์ฟเวอร์ที่ทำงานปกติอยู่และ
+ * บังเอิญเรียก Drive ไม่ติดชั่วคราว ต้องไม่ถูกหยุดสำรองเพราะเหตุนั้น
+ */
+export function decideBackupBlock({ startedWithoutDb, restored, overridden, driveHasBackups }) {
+  if (!startedWithoutDb || restored || overridden) return null;
+  if (driveHasBackups !== true) return null;
+  return 'เซิร์ฟเวอร์นี้เริ่มทำงานด้วยฐานข้อมูลเปล่า แต่บน Google Drive มีสำเนาข้อมูลเดิมอยู่แล้ว'
+    + ' — หยุดการสำรองไว้ก่อน เพื่อไม่ให้ความว่างเปล่าทับสำเนาที่ใช้กู้คืนได้';
+}
+
+export function backupBlockedReason() {
+  return decideBackupBlock({
+    startedWithoutDb: STARTED_WITHOUT_DB,
+    restored: restoredAtBoot,
+    overridden: startedEmptyOverride,
+    driveHasBackups: driveHasBackupsAtBoot,
+  });
+}
+
+/** ตรวจครั้งเดียวตอนบูตว่า Drive มีสำเนาอยู่แล้วหรือยัง — ใช้ตัดสินว่าต้องหยุดสำรองไว้ก่อนไหม */
+export async function checkDriveHasBackups() {
+  if (!isBackupEnabled()) { driveHasBackupsAtBoot = false; return false; }
+  try {
+    const days = flattenDays(await readBackupFolders());
+    for (const day of days) {
+      if ((await readBackupDayFiles(day.id)).length) { driveHasBackupsAtBoot = true; return true; }
+    }
+    driveHasBackupsAtBoot = false;
+    return false;
+  } catch (err) {
+    // ตรวจไม่ได้ต้องไม่ไปหยุดการสำรองของเซิร์ฟเวอร์ที่ทำงานปกติอยู่ — ถือว่ายังไม่รู้ ไม่บล็อก
+    log(`ตรวจสำเนาบน Drive ไม่สำเร็จ: ${err.message}`);
+    driveHasBackupsAtBoot = null;
+    return false;
+  }
+}
+
 let backingUp = false;
 /** สำรองฐานข้อมูลขึ้น Drive หนึ่งครั้ง — คืน true ถ้าสำรองจริง, false ถ้าข้าม (ยังไม่ได้เปิดใช้/กำลังทำอยู่) */
 export async function backupNow(reason = 'manual') {
   if (!isBackupEnabled() || backingUp) return false;
+  const blocked = backupBlockedReason();
+  if (blocked) {
+    status.lastError = { message: blocked, at: Date.now() };
+    return false;
+  }
   backingUp = true;
   status.lastAttemptAt = Date.now();
   try {
@@ -424,6 +496,14 @@ export function startAutoBackup() {
   const timer = setInterval(() => { backupNow('ตามเวลา'); }, BACKUP_INTERVAL_MS);
   timer.unref(); // อย่าให้ timer ค้างจนโปรเซสปิดตัวไม่ได้
   log(`เปิดการสำรองอัตโนมัติทุก ${BACKUP_INTERVAL_MS / 60000} นาที`);
+
+  // ถ้าโปรเซสนี้เริ่มด้วยฐานข้อมูลเปล่าทั้งที่บน Drive มีสำเนาอยู่แล้ว ต้องรู้ให้ได้ "ก่อน" การสำรอง
+  // รอบแรกจะทำงาน (อีก 30 วินาที) ไม่งั้นความว่างเปล่าจะขึ้นไปทับสำเนาของวันนี้ทันที
+  if (STARTED_WITHOUT_DB && !restoredAtBoot) {
+    checkDriveHasBackups().then((has) => {
+      if (has) log(`⚠️ ${backupBlockedReason()}`);
+    });
+  }
 
   // สำรองรอบแรกหลังเปิดเซิร์ฟเวอร์ไม่นาน เพื่อให้รู้เร็วว่าการเชื่อมต่อ Drive ใช้ได้จริงไหม —
   // ไม่ต้องรอครบรอบแรกของ interval ถึงจะเห็นว่า token ใช้ไม่ได้แล้ว
