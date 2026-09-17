@@ -1,7 +1,7 @@
 import { router, html, contentDispositionHeader } from '../router.js';
 import { layout, esc, fmtDate, fmtThaiDateShort, statusBadge, LABELS } from '../render.js';
 import { requirePage } from '../middleware.js';
-import { db, audit, todayInBangkok } from '../db.js';
+import { db, audit, todayInBangkok, bangkokDateSql } from '../db.js';
 import { visibleDocumentsSqlFilter, canUserSeeDocument } from '../services/workflow.js';
 import { fiscalYearRange } from '../services/leave.js';
 
@@ -27,7 +27,7 @@ function resolveRange(query) {
     label: `ปีงบประมาณ ${chosen.yearBe}`,
     // เทียบกับ created_at ซึ่งคือ "วันลงรับ/ลงทะเบียน" — ปีงบประมาณของหนังสือคือปีที่ลงทะเบียน
     // ไม่ใช่ปีที่ปิดเรื่อง (หนังสือที่ลงรับ ก.ย. แล้วปิด ต.ค. ยังนับเป็นปีงบประมาณที่ลงรับ)
-    where: " AND date(d.created_at) BETWEEN :fyStart AND :fyEnd",
+    where: ` AND ${bangkokDateSql('d.created_at')} BETWEEN :fyStart AND :fyEnd`,
     params: { fyStart: chosen.start, fyEnd: chosen.end },
   };
 }
@@ -35,7 +35,8 @@ function resolveRange(query) {
 /** ปีงบประมาณที่มีหนังสืออยู่จริง ใช้สร้างตัวเลือกในหน้าเว็บ — ไม่ต้องเดาว่าโรงเรียนเริ่มใช้ระบบปีไหน */
 function availableFiscalYears(visible) {
   const rows = db.prepare(`
-    SELECT DISTINCT CAST(strftime('%Y', d.created_at) AS INTEGER) y, CAST(strftime('%m', d.created_at) AS INTEGER) m
+    SELECT DISTINCT CAST(strftime('%Y', ${bangkokDateSql('d.created_at')}) AS INTEGER) y,
+                    CAST(strftime('%m', ${bangkokDateSql('d.created_at')}) AS INTEGER) m
     FROM documents d WHERE d.deleted_at IS NULL AND ${visible.sql}`).all(visible.params);
   const years = new Set(rows.map((r) => (r.m >= 10 ? r.y + 1 : r.y) + 543));
   years.add(fiscalYearRange(todayInBangkok()).yearBe);

@@ -3,7 +3,7 @@
 // สามที่นี้ต้องให้ผลตรงกันเป๊ะ ถ้าปล่อยให้ต่างคนต่างประกอบ SQL เอง สิ่งที่จะเกิดคือธุรการกรองบนหน้าเว็บ
 // ได้ 40 ฉบับ แต่กด "ออก Excel" แล้วได้ 63 ฉบับ (หรือแย่กว่านั้นคือไฟล์ที่ส่งออกมีหนังสือลับที่คนนั้น
 // ไม่มีสิทธิ์เห็นติดไปด้วย) โดยไม่มีอะไรฟ้องเลยจนกว่าจะมีคนเอาสองอันมาเทียบกัน
-import { db, todayInBangkok, beYear, arabicDigits } from '../db.js';
+import { db, todayInBangkok, beYear, arabicDigits, bangkokDateSql } from '../db.js';
 import { LABELS, fmtThaiDateLong } from '../render.js';
 import { visibleDocumentsSqlFilter } from './workflow.js';
 
@@ -76,8 +76,10 @@ export function buildDocumentQuery(user, query = {}) {
   if (f.secret) { where.push('d.secret_level = :secret'); params.secret = f.secret; }
   // created_at เก็บเป็น ISO เต็ม (มีเวลาต่อท้าย) การเทียบกับวันที่ล้วนต้องตัดเอาเฉพาะ 10 ตัวแรก
   // ไม่งั้น "ถึงวันที่ 31 ส.ค." จะไม่รวมเอกสารที่ลงทะเบียนตอนบ่ายของวันที่ 31 เอง
-  if (f.from) { where.push('substr(d.created_at, 1, 10) >= :from'); params.from = f.from; }
-  if (f.to) { where.push('substr(d.created_at, 1, 10) <= :to'); params.to = f.to; }
+  // วันที่ที่ธุรการกรอกเป็นวันที่ตามปฏิทินไทย ส่วน created_at เก็บเป็น UTC — ต้องแปลงก่อนเทียบ
+  // ไม่งั้นหนังสือที่ลงทะเบียนก่อน 7 โมงเช้าจะหลุดออกจากช่วงที่กรองไว้ (ดู bangkokDateSql ใน db.js)
+  if (f.from) { where.push(`${bangkokDateSql('d.created_at')} >= :from`); params.from = f.from; }
+  if (f.to) { where.push(`${bangkokDateSql('d.created_at')} <= :to`); params.to = f.to; }
   // ไม่นับไฟล์ที่ถูกทำลายตามระเบียบไปแล้ว — ตัวไฟล์ไม่มีอยู่จริงแล้ว ถ้ายังนับอยู่ ตัวกรอง "เฉพาะที่มีไฟล์แนบ"
   // จะพาไปเจอหนังสือที่เปิดไฟล์ไม่ได้ ซึ่งตรงข้ามกับที่ตัวกรองนี้มีไว้เพื่ออะไร
   if (f.hasFile) where.push('EXISTS (SELECT 1 FROM attachments ax WHERE ax.document_id = d.id AND ax.destroyed_at IS NULL)');

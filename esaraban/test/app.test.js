@@ -14,7 +14,7 @@ const tmpDb = path.join(os.tmpdir(), `esaraban-test-${Date.now()}-${Math.random(
 process.env.DB_PATH = tmpDb;
 process.env.SESSION_SECRET = 'test-secret-not-for-production';
 
-const { db, computeRetentionUntil, beYear, todayInBangkok, hashSecret, verifySecret, isWeakPin, nowIso, migrate, uuid } = await import('../src/db.js');
+const { db, computeRetentionUntil, beYear, todayInBangkok, hashSecret, verifySecret, isWeakPin, nowIso, migrate, uuid, bangkokDateSql } = await import('../src/db.js');
 const { login, getSessionUser, revokeOtherSessions, verifyPin, sessionCookieHeader } = await import('../src/auth.js');
 const { contentDispositionHeader } = await import('../src/router.js');
 const { daysUntil, fmtDate, fmtThaiDateShort, fmtThaiDateLong, stampDateThai, stampTimeThai, bangkokHour } = await import('../src/render.js');
@@ -3815,8 +3815,10 @@ describe('เวลาที่ดำเนินการเสร็จสิ�
 describe('รายงานสรุป: แยกตามปีงบประมาณ', () => {
   const admin = () => loadUserForTest(seed.userIds.admin);
   const totalOf = (body) => Number(/kpi-value">(\d+)<\/div><div class="kpi-label">เอกสารทั้งหมด/.exec(body)?.[1]);
+  // ต้องแปลงเป็นวันที่ตามปฏิทินไทยก่อนเทียบ เหมือนที่โค้ดจริงทำ — created_at เก็บเป็น UTC
   const countInRange = (start, end) => db.prepare(
-    'SELECT COUNT(*) c FROM documents WHERE deleted_at IS NULL AND date(created_at) BETWEEN ? AND ?').get(start, end).c;
+    `SELECT COUNT(*) c FROM documents WHERE deleted_at IS NULL AND ${bangkokDateSql('created_at')} BETWEEN ? AND ?`)
+    .get(start, end).c;
 
   test('ปีงบประมาณไทยเริ่ม 1 ตุลาคม — ตัวเลขต้องตรงกับที่นับจากฐานข้อมูลจริง', async () => {
     const fy = fiscalYearRange(todayInBangkok());
@@ -3832,6 +3834,51 @@ describe('รายงานสรุป: แยกตามปีงบปร�
     const one = totalOf((await dispatchGet(admin(), '/reports', { fy: String(fy.yearBe) })).body);
     assert.ok(all >= one, `ทั้งหมด (${all}) ต้องไม่น้อยกว่าปีเดียว (${one})`);
     assert.equal(all, db.prepare('SELECT COUNT(*) c FROM documents WHERE deleted_at IS NULL').get().c);
+  });
+
+  // เวลาทุกคอลัมน์เก็บเป็น UTC แต่คนใช้งานคิดเป็นเวลาไทยเสมอ ถ้าเทียบตรงๆ วันที่จะช้าไป 7 ชั่วโมง —
+  // หนังสือที่ลงทะเบียนระหว่างเที่ยงคืนถึง 7 โมงเช้าเวลาไทยจะถูกนับเป็นของ "เมื่อวาน" ทั้งหมด
+  // และตอนข้ามปีงบประมาณจะไปโผล่ในรายงานของปีที่แล้ว ซึ่งเป็นตัวเลขที่ส่งให้ สพป. และใช้ทำ SAR
+  // (แดชบอร์ดแปลงถูกอยู่แล้ว แต่รายงานกับตัวกรองทะเบียนเคยตกหล่น)
+  describe('หนังสือที่ลงรับเช้ามืดต้องอยู่ในปีงบประมาณที่ถูกต้อง', () => {
+    // 1 ต.ค. 2569 เวลา 06:00 น. ตามเวลาไทย = 2026-09-30T23:00:00Z — วันแรกของปีงบประมาณ 2570
+    const createdUtc = '2026-09-30T23:00:00.000Z';
+    let docId;
+    before(() => {
+      docId = uuid();
+      db.prepare(`INSERT INTO documents (id, direction, running_number, year_be, doc_number_display, title,
+          doc_type_id, department_id, status, created_by, created_at, updated_at)
+        VALUES (?, 'incoming', 9901, 2570, '9901/2570', 'หนังสือลงรับเช้าวันที่ 1 ตุลาคม', ?, ?, 'registered', ?, ?, ?)`)
+        .run(docId, db.prepare('SELECT id FROM document_types LIMIT 1').get().id, deptId,
+          seed.userIds.reg001, createdUtc, createdUtc);
+    });
+    after(() => { db.prepare('DELETE FROM documents WHERE id = ?').run(docId); });
+
+    test('ต้องถูกนับในปีงบประมาณ 2570 ไม่ใช่ 2569', async () => {
+      const inNew = await dispatchGet(admin(), '/reports', { fy: '2570' });
+      const inOld = await dispatchGet(admin(), '/reports', { fy: '2569' });
+      const countNew = totalOf(inNew.body);
+      const countOld = totalOf(inOld.body);
+      // นับเฉพาะฉบับนี้ไม่ได้โดยตรง จึงเทียบกับจำนวนที่นับด้วยการแปลงเวลาแบบเดียวกัน
+      const fy2570 = fiscalYearRange('2026-10-01');
+      const fy2569 = fiscalYearRange('2025-10-01');
+      assert.equal(countNew, countInRange(fy2570.start, fy2570.end),
+        'รายงานปี 2570 ต้องตรงกับที่นับด้วยวันที่ตามปฏิทินไทย');
+      assert.equal(countOld, countInRange(fy2569.start, fy2569.end));
+      assert.ok(countNew >= 1, 'หนังสือที่ลงรับ 1 ต.ค. เช้ามืด ต้องอยู่ในปีงบประมาณ 2570');
+    });
+
+    test('ตัวกรองช่วงวันของทะเบียนต้องหาเจอด้วยวันที่ตามปฏิทินไทย', async () => {
+      // กรองวันที่ 1 ต.ค. 2569 วันเดียว — ต้องเจอหนังสือฉบับนี้
+      const hit = await dispatchGet(registrarUser, '/documents',
+        { direction: 'incoming', from: '2026-10-01', to: '2026-10-01' });
+      assert.match(hit.body, /9901\/2570/, 'ต้องเจอหนังสือที่ลงรับเช้าวันนั้น');
+
+      // กรองวันก่อนหน้า — ต้องไม่เจอ (ถ้าเทียบด้วย UTC จะไปโผล่ที่วันนี้แทน)
+      const miss = await dispatchGet(registrarUser, '/documents',
+        { direction: 'incoming', from: '2026-09-30', to: '2026-09-30' });
+      assert.ok(!miss.body.includes('9901/2570'), 'ต้องไม่โผล่ในวันก่อนหน้า');
+    });
   });
 
   test('ปีที่ไม่มีหนังสือเลยต้องได้ 0 ไม่ใช่ตกกลับไปนับทั้งหมด', async () => {
