@@ -659,6 +659,80 @@ describe('สรุปงานรายวัน: แตกไฟล์เป�
     const loneRow = after.body.split('<tr').find((r) => r.includes('16 มิถุนายน 2569'));
     assert.ok(loneRow && !loneRow.includes('ชุด</span>'), 'วันที่มีชุดเดียวต้องไม่ติดป้ายเตือน');
   });
+
+  // ปุ่มบันทึกส่ง "ทั้งตาราง" มาแทนที่ของเดิมทั้งชุด ถ้าสองคนเปิดสรุปงานวันเดียวกันพร้อมกัน คนที่กด
+  // บันทึกทีหลังจะล้างงานของคนแรกทิ้งทั้งหมด แล้วได้ข้อความเขียว "บันทึกการแก้ไขแล้ว" เหมือนสำเร็จปกติ
+  // ทั้งสองฝ่าย — ไม่มีใครรู้ว่าข้อมูลหาย นี่เกิดง่ายมากเพราะช่อง "ทำแล้ว" คือสิ่งที่ทุกคนเข้ามาติ๊ก
+  describe('สองคนแก้สรุปงานวันเดียวกันพร้อมกัน ต้องไม่ล้างงานของอีกฝ่ายเงียบๆ', () => {
+    const threeItems = [
+      { priority: 'ปกติ', task_name: 'งานที่หนึ่ง', action_needed: '', schedule: '', detail: '', source_ref: '', is_done: 0 },
+      { priority: 'ปกติ', task_name: 'งานที่สอง', action_needed: '', schedule: '', detail: '', source_ref: '', is_done: 0 },
+      { priority: 'ปกติ', task_name: 'งานที่สาม', action_needed: '', schedule: '', detail: '', source_ref: '', is_done: 0 },
+    ];
+    const newSummary = () => {
+      const id = uuid();
+      db.prepare(`INSERT INTO daily_summaries (id, summary_date, uploaded_by, created_at, updated_at)
+        VALUES (?, '2026-08-20', ?, ?, ?)`).run(id, registrarUser.id, nowIso(), nowIso());
+      return id;
+    };
+    const tokenOn = (body) => body.match(/id="summaryVersion"[^>]*value="([^"]*)"/)?.[1];
+    const doneNames = (id) => db.prepare('SELECT task_name FROM daily_summary_items WHERE summary_id = ? AND is_done = 1').all(id).map((r) => r.task_name);
+
+    test('คนที่บันทึกทีหลังด้วยข้อมูลเก่าต้องถูกปฏิเสธ ไม่ใช่ทับของคนแรก', async () => {
+      const id = newSummary();
+      await dispatchPost(registrarUser, `/daily-summary/${id}/items`, { items: threeItems });
+
+      // ทั้งคู่เปิดหน้าเดียวกันตอนเดียวกัน จึงถือ token เดียวกัน
+      const page = await dispatchGet(registrarUser, `/daily-summary/${id}`, {});
+      const shared = tokenOn(page.body);
+      assert.ok(shared, 'หน้าแก้ไขต้องมี token ของรุ่นข้อมูลไว้ให้ส่งกลับมาตอนบันทึก');
+
+      // ธุรการติ๊กว่า "งานที่หนึ่ง" ทำแล้ว
+      const first = await dispatchPost(registrarUser, `/daily-summary/${id}/items`, {
+        summaryVersion: shared,
+        items: threeItems.map((r, i) => (i === 0 ? { ...r, is_done: 1 } : r)),
+      });
+      assert.equal(first.status, 200, first.body);
+      assert.deepEqual(doneNames(id), ['งานที่หนึ่ง']);
+
+      // ผู้ดูแลระบบที่เปิดหน้าไว้ก่อนหน้านั้นกดบันทึกตาม โดยยังถือตารางรุ่นเก่าที่ยังไม่มีใครติ๊ก
+      const stale = await dispatchPost(adminUser, `/daily-summary/${id}/items`, {
+        summaryVersion: shared,
+        items: threeItems.map((r, i) => (i === 2 ? { ...r, is_done: 1 } : r)),
+      });
+      assert.equal(stale.status, 409, `ต้องปฏิเสธการบันทึกทับ แต่ได้ HTTP ${stale.status}`);
+      assert.match(stale.json.error || '', /มีคนอื่น/, 'ต้องบอกให้รู้ว่ามีคนอื่นบันทึกไปก่อน');
+      assert.deepEqual(doneNames(id), ['งานที่หนึ่ง'], 'งานที่ธุรการติ๊กไว้ต้องยังอยู่ ไม่ถูกล้าง');
+    });
+
+    test('เปิดหน้าใหม่แล้วบันทึกต่อได้ตามปกติ', async () => {
+      const id = newSummary();
+      await dispatchPost(registrarUser, `/daily-summary/${id}/items`, { items: threeItems });
+      const fresh = tokenOn((await dispatchGet(adminUser, `/daily-summary/${id}`, {})).body);
+      const res = await dispatchPost(adminUser, `/daily-summary/${id}/items`, {
+        summaryVersion: fresh, items: threeItems.map((r, i) => (i === 1 ? { ...r, is_done: 1 } : r)),
+      });
+      assert.equal(res.status, 200, res.body);
+      assert.deepEqual(doneNames(id), ['งานที่สอง']);
+    });
+
+    // บันทึกสองครั้งติดกันจากหน้าเดิมโดยไม่รีโหลด เป็นการใช้งานปกติ (แก้ไปบันทึกไป) ต้องไม่ถูกมองว่าชน
+    test('บันทึกซ้ำจากหน้าเดิมโดยไม่รีโหลดต้องยังทำได้', async () => {
+      const id = newSummary();
+      await dispatchPost(registrarUser, `/daily-summary/${id}/items`, { items: threeItems });
+      let token = tokenOn((await dispatchGet(registrarUser, `/daily-summary/${id}`, {})).body);
+
+      const first = await dispatchPost(registrarUser, `/daily-summary/${id}/items`, { summaryVersion: token, items: threeItems });
+      assert.equal(first.status, 200, first.body);
+      assert.ok(first.json.summaryVersion, 'ต้องส่ง token ใหม่กลับไปให้หน้าเดิมใช้บันทึกครั้งถัดไป');
+
+      const second = await dispatchPost(registrarUser, `/daily-summary/${id}/items`, {
+        summaryVersion: first.json.summaryVersion, items: threeItems.map((r, i) => (i === 0 ? { ...r, is_done: 1 } : r)),
+      });
+      assert.equal(second.status, 200, second.body);
+      assert.deepEqual(doneNames(id), ['งานที่หนึ่ง']);
+    });
+  });
 });
 
 // หน้าเว็บทั้งหมดพังได้เงียบๆ ถ้าเทมเพลตอ้างตัวแปรผิดชื่อ เพราะ template string จะระเบิดตอน "เรนเดอร์"

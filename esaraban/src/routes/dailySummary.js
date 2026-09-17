@@ -272,6 +272,10 @@ router.get('/daily-summary/:id', requirePage((ctx) => {
       ${['ด่วนที่สุด', 'ด่วนมาก', 'ด่วน', 'สูง', 'ปานกลาง', 'ปกติ'].map((p) => `<option value="${p}"></option>`).join('')}
     </datalist>
 
+    <!-- รุ่นของข้อมูลที่หน้านี้โหลดมา — ส่งกลับไปตอนบันทึกเพื่อให้เซิร์ฟเวอร์รู้ว่ามีคนบันทึกคั่นหรือยัง -->
+    <input type="hidden" name="summaryVersion" id="summaryVersion" value="${esc(s.updated_at || '')}" />
+    <div id="conflictBox"></div>
+
     <div class="card">
       <div class="table-wrap"><table id="itemsTable">
         <thead><tr>${COLUMNS.map((c) => `<th style="min-width:${c.width}">${esc(c.label)}</th>`).join('')}<th>ทำแล้ว</th><th></th></tr></thead>
@@ -321,19 +325,70 @@ router.get('/daily-summary/:id', requirePage((ctx) => {
           '<td><button type="button" class="btn btn-outline btn-sm" onclick="this.closest(\\'tr\\').remove()">ลบ</button></td>';
         tb.appendChild(tr);
       };
-      window.saveAll = function(btn){
+      window.saveAll = function(btn, force){
         window.setBtnLoading(btn, 'กำลังบันทึก...');
         fetch('/daily-summary/${s.id}/items', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items: collectRows() }),
-        }).then(function(r){ return r.json().then(function(d){ return { ok: r.ok, d: d }; }); })
+          body: JSON.stringify({
+            items: collectRows(),
+            summaryVersion: document.getElementById('summaryVersion').value,
+            force: force ? 1 : 0,
+          }),
+        }).then(function(r){ return r.json().then(function(d){ return { ok: r.ok, status: r.status, d: d }; }); })
           .then(function(res){
+            // มีคนบันทึกคั่นไปแล้ว — ห้ามรีโหลดหน้าทิ้ง เพราะสิ่งที่ผู้ใช้เพิ่งพิมพ์ยังอยู่แค่ในช่องกรอก
+            // ถ้ารีโหลดคือทำข้อมูลหายด้วยตัวเอง ทั้งที่กำลังเตือนเรื่องข้อมูลหายอยู่พอดี
+            if (res.status === 409) { showConflict(res.d.error); window.restoreBtn(btn); return; }
             if (!res.ok) throw new Error(res.d.error || 'บันทึกไม่สำเร็จ');
+            document.getElementById('summaryVersion').value = res.d.summaryVersion || '';
+            document.getElementById('conflictBox').innerHTML = '';
             window.toast('บันทึกการแก้ไขแล้ว', 'success');
             window.restoreBtn(btn);
           })
           .catch(function(e){ window.toast(e.message, 'danger'); window.restoreBtn(btn); });
       };
+
+      function showConflict(msg){
+        var box = document.getElementById('conflictBox');
+        box.innerHTML = '';
+        var div = document.createElement('div');
+        div.className = 'alert alert-warning';
+        var p = document.createElement('p');
+        p.style.margin = '0 0 .6rem';
+        p.textContent = msg || 'มีคนอื่นบันทึกไปก่อนแล้ว';
+        div.appendChild(p);
+
+        var note = document.createElement('p');
+        note.className = 'help-text';
+        note.style.margin = '0 0 .6rem';
+        note.textContent = 'สิ่งที่คุณพิมพ์ไว้ยังอยู่ครบในตารางด้านล่าง ยังไม่ได้ถูกบันทึกและยังไม่หายไปไหน';
+        div.appendChild(note);
+
+        var row = document.createElement('div');
+        row.className = 'chip-row';
+
+        var open = document.createElement('a');
+        open.className = 'btn btn-outline btn-sm';
+        open.href = location.pathname;
+        open.target = '_blank';
+        open.rel = 'noopener';
+        open.textContent = '🔍 เปิดของล่าสุดในแท็บใหม่ (ไม่กระทบสิ่งที่พิมพ์ไว้)';
+        row.appendChild(open);
+
+        var over = document.createElement('button');
+        over.type = 'button';
+        over.className = 'btn btn-danger btn-sm';
+        over.textContent = '⚠️ ยืนยันบันทึกทับ';
+        over.onclick = function(){
+          if (!confirm('ยืนยันบันทึกทับ? งานที่คนอื่นเพิ่งแก้ไว้จะหายทั้งหมด')) return;
+          window.saveAll(over, true);
+        };
+        row.appendChild(over);
+
+        div.appendChild(row);
+        box.appendChild(div);
+        box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
       window.deleteSummary = function(){
         if (!confirm('ยืนยันลบสรุปงานของวันนี้ทั้งหมด? การกระทำนี้ย้อนกลับไม่ได้')) return;
         fetch('/daily-summary/${s.id}/delete', { method: 'POST' })
@@ -365,7 +420,25 @@ router.post('/daily-summary/:id/items', requireApi((ctx) => {
   const rows = ctx.body.items;
   if (rows.length > MAX_ITEM_ROWS) throw httpError(400, `จำนวนรายการมากเกินไป (สูงสุด ${MAX_ITEM_ROWS} แถว)`);
 
+  // กันการบันทึกทับกันเงียบๆ — คำขอนี้ "แทนที่ทั้งตาราง" ด้วยสิ่งที่เบราว์เซอร์ส่งมา ถ้าธุรการกับ ผอ.
+  // เปิดสรุปงานวันเดียวกันค้างไว้พร้อมกัน (ซึ่งเป็นเรื่องปกติมาก เพราะช่อง "ทำแล้ว" คือสิ่งที่ทุกคน
+  // เข้ามาติ๊ก) คนที่กดบันทึกทีหลังจะล้างงานของคนแรกทิ้งทั้งหมด แล้วทั้งคู่ได้ข้อความเขียวว่าสำเร็จ
+  // เหมือนกัน — ไม่มีใครรู้เลยว่าข้อมูลหาย (ทดสอบยืนยันแล้วว่าเกิดขึ้นจริง: ติ๊กงานที่หนึ่งไว้ แล้ว
+  // กลายเป็นงานที่สามแทน โดยได้ HTTP 200 ทั้งสองครั้ง)
+  //
+  // หน้าแก้ไขจึงพก updated_at ของตอนที่โหลดหน้ามาด้วย ถ้าไม่ตรงกับของจริงแปลว่ามีคนบันทึกคั่นไปแล้ว
+  // — ตอบ 409 ให้หน้าเว็บถามผู้ใช้ก่อน แทนที่จะทับให้เงียบๆ (หน้าเว็บเก็บสิ่งที่พิมพ์ไว้ให้ครบ
+  // ไม่รีโหลดทิ้ง และมีปุ่มยืนยันทับให้ถ้าตั้งใจจริง ซึ่งจะส่ง force มา)
+  //
+  // ไม่ส่ง summaryVersion มาเลยถือว่าผ่าน (ไม่ตอบ 400) — หน้าที่ถูก service worker แคชไว้ตั้งแต่ก่อน
+  // อัปเดตจะยังไม่รู้จักฟิลด์นี้ ถ้าปฏิเสธไปเลยครูจะกดบันทึกไม่ได้เลยจนกว่าจะล้างแคช ซึ่งแย่กว่า
+  const clientVersion = ctx.body.summaryVersion;
+  if (!ctx.body.force && clientVersion && clientVersion !== s.updated_at) {
+    throw httpError(409, 'มีคนอื่นบันทึกสรุปงานของวันนี้ไปแล้วหลังจากที่คุณเปิดหน้านี้ — ถ้าบันทึกทับตอนนี้ งานที่เขาเพิ่งแก้จะหายทั้งหมด');
+  }
+
   const clean = (v) => (typeof v === 'string' ? v.trim().slice(0, 4000) : '');
+  const newVersion = nowIso();
   db.exec('BEGIN IMMEDIATE');
   try {
     // แทนที่ทั้งชุด — ง่ายและตรงกับ UI ที่ส่งทั้งตารางมาในครั้งเดียว (เพิ่ม/แก้/ลบ จบในคำขอเดียว)
@@ -375,14 +448,16 @@ router.post('/daily-summary/:id/items', requireApi((ctx) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     rows.forEach((r, i) => ins.run(uuid(), s.id, i, clean(r.priority), clean(r.task_name), clean(r.action_needed),
       clean(r.schedule), clean(r.detail), clean(r.source_ref), r.is_done ? 1 : 0));
-    db.prepare('UPDATE daily_summaries SET updated_at = ? WHERE id = ?').run(nowIso(), s.id);
+    db.prepare('UPDATE daily_summaries SET updated_at = ? WHERE id = ?').run(newVersion, s.id);
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
   }
-  audit({ userId: ctx.user.id, action: 'daily_summary_edited', tableName: 'daily_summaries', recordId: s.id, detail: { items: rows.length } });
-  json(ctx, 200, { ok: true });
+  audit({ userId: ctx.user.id, action: 'daily_summary_edited', tableName: 'daily_summaries', recordId: s.id, detail: { items: rows.length, forced: Boolean(ctx.body.force) } });
+  // ส่ง version ใหม่กลับไปให้หน้าเดิมใช้บันทึกครั้งถัดไป — ไม่งั้นการ "แก้ไปบันทึกไป" หลายรอบจาก
+  // หน้าเดิมโดยไม่รีโหลด (ซึ่งเป็นการใช้งานปกติ) จะถูกมองว่าชนกันเองตั้งแต่ครั้งที่สอง
+  json(ctx, 200, { ok: true, summaryVersion: newVersion });
 }));
 
 router.post('/daily-summary/:id/delete', requireApi((ctx) => {
