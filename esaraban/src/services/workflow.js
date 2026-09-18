@@ -357,6 +357,33 @@ export function currentStep(documentId) {
   `).get(documentId);
 }
 
+/**
+ * ขั้นตอนที่ค้างอยู่ "ของคนที่กำลังเปิดดู" — ไม่ใช่ขั้นตอนล่าสุดของเอกสารเฉยๆ
+ *
+ * จำเป็นตั้งแต่ ผอ. ส่งเรื่องให้หลายคนพร้อมกันได้ เพราะตอนนี้หนังสือหนึ่งฉบับมีขั้นตอนที่ค้างอยู่
+ * พร้อมกันได้หลายอัน ถ้ายังใช้ currentStep เดิม (เอาอันบนสุดอันเดียว) คนที่ถูกสั่งการคนที่ 2-4 จะเปิด
+ * หน้าหนังสือแล้วเห็นว่าเป็นงานของคนอื่น กดรับทราบไม่ได้เลย ทั้งที่ ผอ. สั่งถึงตัวเองด้วย
+ *
+ * ลำดับการเลือก: ขั้นตอนของตัวเอง → ขั้นตอนของคนที่ตัวเองรักษาการแทนอยู่ → ขั้นตอนล่าสุดของเอกสาร
+ * (อันสุดท้ายไว้ให้คนนอกที่แค่เปิดดู ยังเห็นว่าตอนนี้เรื่องอยู่ที่ใคร)
+ */
+export function currentStepFor(documentId, userId) {
+  const mine = db.prepare(`
+    SELECT * FROM workflow_steps WHERE document_id = ? AND status = 'waiting' AND assignee_id = ?
+    ORDER BY step_order DESC LIMIT 1
+  `).get(documentId, userId);
+  if (mine) return mine;
+  const today = todayInBangkok();
+  const delegated = db.prepare(`
+    SELECT ws.* FROM workflow_steps ws
+    JOIN user_delegations ud ON ud.delegator_id = ws.assignee_id
+    WHERE ws.document_id = ? AND ws.status = 'waiting' AND ud.delegate_id = ? AND ud.cancelled_at IS NULL
+      AND ud.start_date <= ? AND ud.end_date >= ?
+    ORDER BY ws.step_order DESC LIMIT 1
+  `).get(documentId, userId, today, today);
+  return delegated || currentStep(documentId);
+}
+
 // ผู้รับงานต้องเป็นบัญชีที่ยังใช้งานได้จริง — ไม่งั้นเรื่องจะค้างอยู่กับคนที่ล็อกอินเข้ามาทำงานไม่ได้แล้ว
 // (เช่น ครูที่ย้ายออกไปและถูกระงับบัญชี) ไม่มีใครดำเนินการต่อได้ และไม่มีอะไรบอกว่าทำไมเรื่องไม่เดิน
 // ถ้าไม่ตรวจตรงนี้ ค่าที่ไม่มีตัวตนจะไปตกที่ FOREIGN KEY constraint ของ SQLite แล้วเด้งข้อความอังกฤษดิบใส่ผู้ใช้
@@ -573,37 +600,76 @@ function assertOwnsStep(step, actorUser) {
   throw httpError(403, 'คุณไม่มีสิทธิ์ดำเนินการขั้นตอนนี้ (ผู้ไม่มีสิทธิ์ไม่สามารถข้ามขั้น Workflow ได้)');
 }
 
-export function approveAndForward({ stepId, nextAssigneeId, comment, actorUser }) {
+// ส่งต่อพร้อมกันได้สูงสุดกี่คน — ตรายาง "รับทราบและปฏิบัติตามคำสั่ง" มีบรรทัดให้ลงชื่อ 4 บรรทัด
+// (ระบบขยายบรรทัดลงมาให้เองถ้าเกิน) เพดานนี้จึงไม่ใช่ข้อจำกัดของตรา แต่กันการกดพลาดเลือกยกโรงเรียน
+// ซึ่งจะทำให้หนังสือฉบับเดียวไปโผล่เป็นงานค้างของทุกคนพร้อมกันโดยไม่มีใครตั้งใจ
+export const MAX_PARALLEL_ASSIGNEES = 10;
+
+/**
+ * อนุมัติแล้วส่งต่อ — ส่งให้หลายคนพร้อมกันได้
+ *
+ * ผอ. สั่งการถึงครูหลายคนพร้อมกันเป็นเรื่องปกติของโรงเรียน (ตรายาง "รับทราบและปฏิบัติตามคำสั่ง" ถึงมี
+ * บรรทัดให้ลงชื่อ 4 บรรทัด) เดิมระบบส่งต่อได้ทีละคนเท่านั้น เรื่องจึงกลายเป็นวิ่งต่อกันเป็นทอดๆ
+ * คนที่สองต้องรอคนแรกกดเสร็จก่อน ทั้งที่บนกระดาษทุกคนได้รับพร้อมกัน
+ *
+ * ทุกคนได้ step_order เดียวกัน = อยู่ขั้นเดียวกันจริงๆ ไม่ใช่ไล่ลำดับกัน — ไทม์ไลน์จึงแสดงว่า
+ * "ขั้นที่ N" มีหลายคน ซึ่งตรงกับความเป็นจริง
+ */
+export function approveAndForward({ stepId, nextAssigneeId, nextAssigneeIds, comment, actorUser }) {
   assertMaxLength(comment, MAX_STEP_TEXT, 'ความเห็น');
   const step = db.prepare('SELECT * FROM workflow_steps WHERE id = ?').get(stepId);
   assertOwnsStep(step, actorUser);
-  assertAssignableUser(nextAssigneeId);
-  // ส่งต่อให้ตัวเอง/ให้คนที่ถือเรื่องอยู่แล้ว เรื่องจะวนกลับมาที่เดิมโดยไม่คืบหน้า และดูเหมือนระบบทำงานผิด —
-  // ถ้าตั้งใจจะจบเรื่องที่ตัวเอง ต้องกด "รับทราบ/ปิดเรื่อง" ไม่ใช่ "อนุมัติและส่งต่อ"
-  if (nextAssigneeId === actorUser.id || nextAssigneeId === step.assignee_id) {
-    throw httpError(400, 'ส่งต่อให้ตัวเองไม่ได้ — ถ้าต้องการจบเรื่องที่คุณ ให้กด "รับทราบ/ปิดเรื่อง" แทน');
+
+  // รับได้ทั้งแบบเดิม (คนเดียว) และแบบใหม่ (หลายคน) — ตัดค่าซ้ำออก เพราะติ๊กคนเดียวกันสองที่แล้วได้
+  // ขั้นตอนซ้อนสองอันให้คนคนเดียว จะกดรับทราบแล้วยังค้างอยู่อีกอันโดยไม่มีอะไรบอกว่าทำไม
+  const raw = Array.isArray(nextAssigneeIds) && nextAssigneeIds.length ? nextAssigneeIds : [nextAssigneeId];
+  const targets = [...new Set(raw.filter((id) => typeof id === 'string' && id))];
+  if (!targets.length) throw httpError(400, 'กรุณาเลือกผู้รับที่จะส่งต่อ');
+  if (targets.length > MAX_PARALLEL_ASSIGNEES) {
+    throw httpError(400, `ส่งต่อพร้อมกันได้ครั้งละไม่เกิน ${MAX_PARALLEL_ASSIGNEES} คน (เลือกมา ${targets.length} คน)`);
+  }
+  // ตรวจให้ครบทุกคน "ก่อน" ลงมือ — ถ้าตรวจไปทำไป คนที่ผ่านด่านก่อนจะได้งานไปแล้วแต่คนหลังพัง
+  // กลายเป็นส่งต่อครึ่งๆ กลางๆ ที่ผู้ใช้ไม่รู้ว่าสุดท้ายใครได้บ้าง
+  for (const id of targets) {
+    assertAssignableUser(id);
+    // ส่งต่อให้ตัวเอง/ให้คนที่ถือเรื่องอยู่แล้ว เรื่องจะวนกลับมาที่เดิมโดยไม่คืบหน้า และดูเหมือนระบบทำงานผิด —
+    // ถ้าตั้งใจจะจบเรื่องที่ตัวเอง ต้องกด "รับทราบ/ปิดเรื่อง" ไม่ใช่ "อนุมัติและส่งต่อ"
+    if (id === actorUser.id || id === step.assignee_id) {
+      throw httpError(400, 'ส่งต่อให้ตัวเองไม่ได้ — ถ้าต้องการจบเรื่องที่คุณ ให้กด "รับทราบ/ปิดเรื่อง" แทน');
+    }
   }
   const doc = documentOfStep(step);
 
-  db.prepare(`UPDATE workflow_steps SET status = 'approved', instruction = COALESCE(instruction,'') || ?, decided_at = ? WHERE id = ?`)
-    .run(comment ? `\n[เกษียณ] ${comment}` : '', nowIso(), stepId);
+  const nextOrder = step.step_order + 1;
+  const now = nowIso();
+  // ปิดขั้นของตัวเองและเปิดขั้นของทุกคนต้องสำเร็จหรือล้มไปด้วยกัน ไม่งั้นอาจได้ขั้นที่ปิดแล้วแต่ไม่มีใครรับต่อ
+  // = หนังสือค้างถาวรโดยไม่มีใครเห็นว่ามันค้างอยู่
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare(`UPDATE workflow_steps SET status = 'approved', instruction = COALESCE(instruction,'') || ?, decided_at = ? WHERE id = ?`)
+      .run(comment ? `\n[เกษียณ] ${comment}` : '', now, stepId);
+    const ins = db.prepare(`
+      INSERT INTO workflow_steps (id, document_id, step_order, assignee_id, instruction, status, created_at)
+      VALUES (?, ?, ?, ?, ?, 'waiting', ?)
+    `);
+    for (const id of targets) ins.run(uuid(), step.document_id, nextOrder, id, comment || null, now);
+    db.prepare(`UPDATE documents SET updated_at = ? WHERE id = ?`).run(now, step.document_id);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  // อยู่นอกธุรกรรม เพราะเขียนลายเซ็น/ส่งแจ้งเตือนแล้วล้ม ไม่ควรย้อนการส่งต่อที่สำเร็จไปแล้วทิ้ง
   snapshotSignature(stepId, actorUser.id);
 
-  const nextOrder = step.step_order + 1;
-  const nextId = uuid();
-  db.prepare(`
-    INSERT INTO workflow_steps (id, document_id, step_order, assignee_id, instruction, status, created_at)
-    VALUES (?, ?, ?, ?, ?, 'waiting', ?)
-  `).run(nextId, step.document_id, nextOrder, nextAssigneeId, comment || null, nowIso());
+  for (const id of targets) {
+    notifyUser({
+      userId: id, documentId: step.document_id,
+      title: `ส่งต่อถึงคุณ: ${doc.doc_number_display}`, message: doc.title, priority: 'info',
+    });
+  }
 
-  db.prepare(`UPDATE documents SET updated_at = ? WHERE id = ?`).run(nowIso(), step.document_id);
-
-  notifyUser({
-    userId: nextAssigneeId, documentId: step.document_id,
-    title: `ส่งต่อถึงคุณ: ${doc.doc_number_display}`, message: doc.title, priority: 'info',
-  });
-
-  audit({ userId: actorUser.id, action: 'workflow_approved_forward', tableName: 'workflow_steps', recordId: stepId, detail: { nextAssigneeId, comment } });
+  audit({ userId: actorUser.id, action: 'workflow_approved_forward', tableName: 'workflow_steps', recordId: stepId, detail: { nextAssigneeIds: targets, comment } });
 }
 
 export function acknowledgeAndComplete({ stepId, comment, actorUser }) {
@@ -615,21 +681,38 @@ export function acknowledgeAndComplete({ stepId, comment, actorUser }) {
   db.prepare(`UPDATE workflow_steps SET status = 'acknowledged', instruction = COALESCE(instruction,'') || ?, decided_at = ? WHERE id = ?`)
     .run(comment ? `\n[รับทราบ] ${comment}` : '', nowIso(), stepId);
   snapshotSignature(stepId, actorUser.id);
-  // completed_at ต้องเป็นคอลัมน์แยกของตัวเอง ห้ามใช้ updated_at แทน — updated_at ขยับทุกครั้งที่มีการ
-  // แตะเอกสารทีหลัง (กดจัดเก็บเข้าแฟ้ม เลื่อนตำแหน่งตราประทับ หรือทำลายเมื่อครบอายุอีก 10 ปีข้างหน้า)
-  // ตัวเลข "ระยะเวลาเฉลี่ยจนเสร็จสิ้น" บนแดชบอร์ดและหน้ารายงานจึงพองตาม (วัดจริงแล้ว: หนังสือที่เสร็จ
-  // ภายใน 1 วัน พอกดจัดเก็บอีก 90 วันให้หลัง กลายเป็น 2,160 ชั่วโมง) ซึ่งเป็นตัวเลขที่โรงเรียนรายงาน สพฐ.
-  db.prepare(`UPDATE documents SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`)
-    .run(nowIso(), nowIso(), step.document_id);
+
+  // ปิดเรื่องได้ต่อเมื่อ "ไม่เหลือใครต้องทำต่อแล้ว" เท่านั้น
+  //
+  // ตั้งแต่ ผอ. ส่งเรื่องให้หลายคนพร้อมกันได้ หนังสือหนึ่งฉบับมีขั้นตอนค้างพร้อมกันได้หลายอัน ถ้ายังปิดเรื่อง
+  // ทันทีที่มีคนแรกกดรับทราบ อีกสามคนที่ ผอ. สั่งถึงจะเหลืองานค้างอยู่ในหนังสือที่ขึ้นว่า "เสร็จสิ้น" แล้ว
+  // — หายไปจากรายการงานของธุรการ ไม่มีใครตามต่อ และตราบนกระดาษก็จะมีชื่อคนเดียวจากสี่บรรทัด
+  const stillWaiting = db.prepare(`SELECT COUNT(*) c FROM workflow_steps WHERE document_id = ? AND status = 'waiting'`)
+    .get(step.document_id).c;
+  const who = `${actorUser.prefix || ''}${actorUser.first_name} ${actorUser.last_name}`.trim();
+  if (!stillWaiting) {
+    // completed_at ต้องเป็นคอลัมน์แยกของตัวเอง ห้ามใช้ updated_at แทน — updated_at ขยับทุกครั้งที่มีการ
+    // แตะเอกสารทีหลัง (กดจัดเก็บเข้าแฟ้ม เลื่อนตำแหน่งตราประทับ หรือทำลายเมื่อครบอายุอีก 10 ปีข้างหน้า)
+    // ตัวเลข "ระยะเวลาเฉลี่ยจนเสร็จสิ้น" บนแดชบอร์ดและหน้ารายงานจึงพองตาม (วัดจริงแล้ว: หนังสือที่เสร็จ
+    // ภายใน 1 วัน พอกดจัดเก็บอีก 90 วันให้หลัง กลายเป็น 2,160 ชั่วโมง) ซึ่งเป็นตัวเลขที่โรงเรียนรายงาน สพฐ.
+    db.prepare(`UPDATE documents SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`)
+      .run(nowIso(), nowIso(), step.document_id);
+  } else {
+    db.prepare(`UPDATE documents SET updated_at = ? WHERE id = ?`).run(nowIso(), step.document_id);
+  }
 
   notifyUser({
     userId: doc.created_by, documentId: doc.id,
-    title: `รับทราบและดำเนินการเสร็จสิ้น: ${doc.doc_number_display}`,
-    message: `${actorUser.prefix || ''}${actorUser.first_name} ${actorUser.last_name} ได้รับทราบและปิดเรื่องแล้ว`,
-    priority: 'success',
+    title: stillWaiting
+      ? `รับทราบแล้ว 1 คน (เหลืออีก ${stillWaiting} คน): ${doc.doc_number_display}`
+      : `รับทราบและดำเนินการเสร็จสิ้น: ${doc.doc_number_display}`,
+    message: stillWaiting
+      ? `${who} ได้รับทราบแล้ว — ยังรอผู้รับผิดชอบอีก ${stillWaiting} คน`
+      : `${who} ได้รับทราบและปิดเรื่องแล้ว`,
+    priority: stillWaiting ? 'info' : 'success',
   });
 
-  audit({ userId: actorUser.id, action: 'workflow_acknowledged_completed', tableName: 'workflow_steps', recordId: stepId, detail: { comment } });
+  audit({ userId: actorUser.id, action: 'workflow_acknowledged_completed', tableName: 'workflow_steps', recordId: stepId, detail: { comment, stillWaiting } });
 }
 
 export function rejectStep({ stepId, reason, actorUser }) {

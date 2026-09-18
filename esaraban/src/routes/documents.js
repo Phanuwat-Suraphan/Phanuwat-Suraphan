@@ -4,7 +4,7 @@ import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, nowIso, audit, todayInBangkok, RETENTION_LABEL } from '../db.js';
 import {
   createDocument, createDocumentsBulk, MAX_BULK_DOCUMENTS,
-  getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, currentStep,
+  getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, currentStep, currentStepFor,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
   voidDocument, archiveDocument, forceDeleteDocument, httpError, assertStepBelongsToDocument,
   isSignedStep, signerIdentity, inactiveStepHolder, reassignStuckStep,
@@ -134,6 +134,21 @@ function listUserOptions(excludeId) {
   `).all()
     .filter((u) => u.id !== excludeId)
     .map((u) => `<option value="${u.id}">${esc(u.prefix || '')}${esc(u.first_name)} ${esc(u.last_name)} — ${esc(u.role_names || u.position || '')}</option>`).join('');
+}
+
+/** รายชื่อผู้รับงานแบบติ๊กได้หลายคน — ใช้ที่การ์ดดำเนินการ ซึ่งส่งต่อพร้อมกันได้หลายคน */
+function listUserCheckboxes(excludeId) {
+  return db.prepare(`
+    SELECT u.*, GROUP_CONCAT(r.name_th) as role_names FROM users u
+    LEFT JOIN user_roles ur ON ur.user_id = u.id LEFT JOIN roles r ON r.id = ur.role_id
+    WHERE u.deleted_at IS NULL AND u.status = 'active' GROUP BY u.id ORDER BY u.first_name
+  `).all()
+    .filter((u) => u.id !== excludeId)
+    .map((u) => `<label class="check-inline assignee-row">
+      <input type="checkbox" class="nextAssignee" value="${esc(u.id)}" onchange="window.updateAssigneeHint && window.updateAssigneeHint()" />
+      <span>${esc(u.prefix || '')}${esc(u.first_name)} ${esc(u.last_name)}
+        <span class="text-muted" style="font-size:.82rem">— ${esc(u.role_names || u.position || '')}</span></span>
+    </label>`).join('');
 }
 
 // ---------------- list ----------------
@@ -1246,7 +1261,9 @@ router.get('/documents/:id', requirePage((ctx) => {
   // เพราะไฟล์ที่ถูกทำลายตามระเบียบยังมีแถวอยู่ (เก็บไว้เป็นหลักฐาน) แต่ตัวไฟล์ไม่มีแล้ว
   const liveAttachments = attachments.filter((a) => !a.destroyed_at);
   const steps = getWorkflowSteps(doc.id);
-  const step = currentStep(doc.id);
+  // ต้องเป็นขั้นตอน "ของคนที่เปิดดู" ไม่ใช่ขั้นล่าสุดของเอกสาร — ตั้งแต่ ผอ. ส่งให้หลายคนพร้อมกันได้
+  // หนังสือฉบับเดียวมีขั้นตอนค้างพร้อมกันได้หลายอัน (ดู currentStepFor)
+  const step = currentStepFor(doc.id, ctx.user.id);
   const comments = db.prepare(`
     SELECT c.*, u.first_name, u.last_name FROM comments c JOIN users u ON u.id = c.user_id
     WHERE c.document_id = ? ORDER BY c.created_at`).all(doc.id);
@@ -1315,7 +1332,15 @@ router.get('/documents/:id', requirePage((ctx) => {
       <div class="stack">
         <div>
           <label><span class="step-num">1</span> ${isDirectorDecision ? 'ส่งต่อ/อนุมัติไปยัง' : 'มอบหมายให้'} <span class="text-muted" style="font-weight:400">(ไม่เลือกก็ได้ ถ้าจบที่คุณ)</span></label>
-          <select id="nextAssignee"><option value="">— ไม่ส่งต่อ จบเรื่องที่ฉัน —</option>${listUserOptions(ctx.user.id)}</select>
+          <!-- ติ๊กได้หลายคน เพราะ ผอ. สั่งการถึงครูหลายคนพร้อมกันเป็นเรื่องปกติของโรงเรียน (ตรายาง
+               "รับทราบและปฏิบัติตามคำสั่ง" ถึงมีบรรทัดให้ลงชื่อ 4 บรรทัด) เดิมเป็น <select> เลือกได้
+               คนเดียว เรื่องจึงต้องวิ่งต่อกันเป็นทอดๆ คนที่สองต้องรอคนแรกกดเสร็จก่อน ทั้งที่บนกระดาษ
+               ทุกคนได้รับพร้อมกัน — ใช้ช่องติ๊กไม่ใช่ <select multiple> เพราะบนมือถือ (ซึ่งครูใช้จริง)
+               การเลือกหลายรายการใน <select> ต้องกดค้าง/ลาก ซึ่งแทบไม่มีใครรู้ว่าทำได้ -->
+          <div class="assignee-pick" id="nextAssigneeList">
+            ${listUserCheckboxes(ctx.user.id)}
+          </div>
+          <div class="help-text" id="nextAssigneeHint">ยังไม่ได้เลือกใคร — ถ้าจบเรื่องที่คุณ ให้กด "รับทราบ/ปิดเรื่อง"</div>
         </div>
         ${attachments.length && isRegistrarComment ? `
         <div class="field">
@@ -1381,7 +1406,9 @@ router.get('/documents/:id', requirePage((ctx) => {
             <button class="btn btn-outline btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="doReject(this)">✖️ ไม่อนุมัติ</button>
           </div>` : `
           <button class="btn btn-success btn-lg" data-pin-title="ยืนยัน PIN เพื่อมอบหมายให้" onclick="doApprove(this)">➡️ มอบหมายให้</button>
-          <button class="btn btn-primary btn-lg" data-pin-title="ยืนยัน PIN เพื่อทราบ" onclick="doAcknowledge(this)">✔️ ทราบ</button>`}
+          <!-- ถ้อยคำต้องตรงกับตราที่ปุ่มนี้ปั๊มลงไปจริง ("รับทราบและปฏิบัติตามคำสั่ง") — เดิมปุ่มเขียนว่า
+               "ทราบ" เฉยๆ ตามตราเก่าที่เป็นคำว่าทราบคำเดียว ตอนนี้คนละความหมายกันแล้ว -->
+          <button class="btn btn-primary btn-lg" data-pin-title="ยืนยัน PIN เพื่อรับทราบและปฏิบัติตามคำสั่ง" onclick="doAcknowledge(this)">✔️ รับทราบและปฏิบัติ</button>`}
         </div>
         <div class="help-text" style="text-align:center">ทุกปุ่มต้องยืนยันด้วย PIN 6 หลักก่อนเสมอ</div>
       </div>
@@ -1411,11 +1438,22 @@ router.get('/documents/:id', requirePage((ctx) => {
         if (!allMarks.length || document.querySelectorAll('.decisionMark:checked').length) return true;
         return confirm('คุณยังไม่ได้ติ๊กเครื่องหมายใดๆ บนตราประทับเลย ต้องการดำเนินการต่อโดยไม่ติ๊กเครื่องหมายหรือไม่?');
       }
+      function pickedAssignees(){
+        return Array.prototype.slice.call(document.querySelectorAll('.nextAssignee:checked')).map(function(el){ return el.value; });
+      }
+      window.updateAssigneeHint = function(){
+        var el = document.getElementById('nextAssigneeHint');
+        if (!el) return;
+        var n = pickedAssignees().length;
+        el.textContent = n
+          ? 'ส่งต่อถึง ' + n + ' คนพร้อมกัน — ทุกคนจะได้รับเรื่องทันที ไม่ต้องรอกันเป็นทอดๆ'
+          : 'ยังไม่ได้เลือกใคร — ถ้าจบเรื่องที่คุณ ให้กด "รับทราบ/ปิดเรื่อง"';
+      };
       function doApprove(btn){
-        var next = document.getElementById('nextAssignee').value;
-        if (!next) { toast('กรุณาเลือกผู้รับที่จะส่งต่อ ก่อนกดอนุมัติ (ถ้าเป็นผู้รับคนสุดท้ายให้กด "รับทราบ/ปิดเรื่อง" แทน)', 'warning'); return; }
+        var next = pickedAssignees();
+        if (!next.length) { toast('กรุณาเลือกผู้รับที่จะส่งต่อ ก่อนกดอนุมัติ (ถ้าเป็นผู้รับคนสุดท้ายให้กด "รับทราบ/ปิดเรื่อง" แทน)', 'warning'); return; }
         if (!confirmIfNoMarksChecked()) return;
-        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/approve', Object.assign({ nextAssigneeId: next }, stampPositionFields()));
+        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/approve', Object.assign({ nextAssigneeIds: next }, stampPositionFields()));
       }
       function doAcknowledge(btn){
         if (!confirmIfNoMarksChecked()) return;
@@ -2085,13 +2123,16 @@ function parseRegistrarMarks(raw) {
 
 
 router.post('/documents/:id/workflow/:stepId/approve', requireApi(async (ctx) => {
-  const { pin, nextAssigneeId, comment, markX, markY, decisionX, decisionY, decisionNote, decisionMarks, decisionNotify, registrarNote, registrarMarks, registrarUnit, registrarX, registrarY } = ctx.body;
+  const { pin, nextAssigneeId, nextAssigneeIds, comment, markX, markY, decisionX, decisionY, decisionNote, decisionMarks, decisionNotify, registrarNote, registrarMarks, registrarUnit, registrarX, registrarY } = ctx.body;
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
-  if (!nextAssigneeId) throw httpError(400, 'กรุณาเลือกผู้รับที่จะส่งต่อ');
+  // ตรวจว่ามีใครให้ส่งต่อไหม ปล่อยให้ approveAndForward เป็นคนตรวจรายละเอียดที่เหลือ (ที่เดียว)
+  if (!nextAssigneeId && !(Array.isArray(nextAssigneeIds) && nextAssigneeIds.length)) {
+    throw httpError(400, 'กรุณาเลือกผู้รับที่จะส่งต่อ');
+  }
   assertStampTextFits({ decisionNote, registrarNote });
   assertStepBelongsToDocument(ctx.params.id, ctx.params.stepId);
-  approveAndForward({ stepId: ctx.params.stepId, nextAssigneeId, comment, actorUser: ctx.user });
+  approveAndForward({ stepId: ctx.params.stepId, nextAssigneeId, nextAssigneeIds, comment, actorUser: ctx.user });
   const warning1 = await stampAcknowledgeMarkIfApplicable({ documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, markX: parsePercent(markX), markY: parsePercent(markY) });
   // ผอ./ผู้รักษาการแทน ผอ. ที่กด "อนุมัติและส่งต่อ" ก็ยังใส่ checkbox/ความเห็น ลงตราประทับได้เหมือนกด
   // รับทราบ/ไม่อนุมัติ — เดิม endpoint นี้ไม่เรียก stampDirectorDecisionIfApplicable เลย ทำให้ check/ข้อความ

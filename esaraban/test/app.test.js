@@ -21,6 +21,7 @@ const { daysUntil, fmtDate, fmtThaiDateShort, fmtThaiDateLong, stampDateThai, st
 const {
   createDocument, createDocumentsBulk, MAX_BULK_DOCUMENTS, getDocument, canUserSeeDocument, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep, voidDocument, archiveDocument,
+  MAX_PARALLEL_ASSIGNEES,
   assertStepBelongsToDocument, forceDeleteDocument, inactiveStepHolder, reassignStuckStep,
   broadcastDocument, listBroadcasts,
 } = await import('../src/services/workflow.js');
@@ -275,6 +276,105 @@ describe('document lifecycle: assign -> approve -> acknowledge', () => {
 
     acknowledgeAndComplete({ stepId: step.id, comment: 'รับทราบแล้ว', actorUser: adminUser });
     assert.equal(getDocument(doc.id).status, 'completed');
+  });
+
+  // ผอ. สั่งการถึงครูหลายคนพร้อมกันเป็นเรื่องปกติของโรงเรียน (ตรายาง "รับทราบและปฏิบัติตามคำสั่ง" ถึงมี
+  // บรรทัดให้ลงชื่อ 4 บรรทัด) เดิมระบบส่งต่อได้ทีละคน เรื่องจึงต้องวิ่งเป็นทอดๆ คนที่สองรอคนแรกกดเสร็จก่อน
+  describe('ผอ. ส่งต่อให้หลายคนพร้อมกัน', () => {
+    const waiting = (docId) => db.prepare("SELECT * FROM workflow_steps WHERE document_id = ? AND status = 'waiting' ORDER BY assignee_id").all(docId);
+    const forwardTo = (doc, ids, actor) => {
+      const step = currentStep(doc.id);
+      approveAndForward({ stepId: step.id, nextAssigneeIds: ids, comment: 'มอบทุกท่านดำเนินการ', actorUser: actor });
+      return step;
+    };
+
+    test('ทุกคนได้รับเรื่องพร้อมกันในขั้นเดียวกัน ไม่ใช่ไล่ต่อกันเป็นทอดๆ', () => {
+      const doc = makeDoc({ title: 'คำสั่งถึงครูหลายคนพร้อมกัน' });
+      assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+      forwardTo(doc, [adminUser.id, seed.userIds.head_acad, seed.userIds.vicedir01], teacherUser);
+
+      const rows = waiting(doc.id);
+      assert.equal(rows.length, 3, 'ต้องได้ขั้นตอนค้างคนละอัน ครบทุกคนที่เลือก');
+      assert.equal(new Set(rows.map((r) => r.step_order)).size, 1,
+        'ทุกคนต้องอยู่ "ขั้นเดียวกัน" ไม่ใช่ไล่ลำดับกัน ไม่งั้นไทม์ไลน์จะอ่านเหมือนส่งต่อกันเป็นทอดๆ');
+      assert.deepEqual(rows.map((r) => r.assignee_id).sort(), [adminUser.id, seed.userIds.head_acad, seed.userIds.vicedir01].sort());
+      // ทุกคนต้องได้แจ้งเตือน ไม่ใช่เฉพาะคนแรก
+      for (const id of [adminUser.id, seed.userIds.head_acad, seed.userIds.vicedir01]) {
+        const n = db.prepare("SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND document_id = ?").get(id, doc.id).c;
+        assert.ok(n > 0, 'ผู้รับทุกคนต้องได้รับแจ้งเตือน');
+      }
+    });
+
+    // ถ้าปิดเรื่องทันทีที่คนแรกกดรับทราบ อีกสามคนจะเหลืองานค้างในหนังสือที่ขึ้นว่า "เสร็จสิ้น" แล้ว
+    // หายไปจากรายการงานของธุรการ ไม่มีใครตามต่อ และตราบนกระดาษจะมีชื่อคนเดียวจากสี่บรรทัด
+    test('คนแรกกดรับทราบ ต้องยังไม่ปิดเรื่อง จนกว่าจะครบทุกคน', () => {
+      const doc = makeDoc({ title: 'ปิดเรื่องได้ต่อเมื่อครบทุกคน' });
+      assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+      forwardTo(doc, [adminUser.id, seed.userIds.head_acad], teacherUser);
+
+      const rows = waiting(doc.id);
+      acknowledgeAndComplete({ stepId: rows[0].id, comment: 'รับทราบ', actorUser: loadUserForTest(rows[0].assignee_id) });
+      assert.notEqual(getDocument(doc.id).status, 'completed', 'ยังมีคนค้างอยู่ ห้ามปิดเรื่อง');
+      assert.equal(waiting(doc.id).length, 1, 'อีกคนต้องยังมีงานค้างอยู่');
+
+      const last = waiting(doc.id)[0];
+      acknowledgeAndComplete({ stepId: last.id, comment: 'รับทราบ', actorUser: loadUserForTest(last.assignee_id) });
+      assert.equal(getDocument(doc.id).status, 'completed', 'ครบทุกคนแล้วต้องปิดเรื่อง');
+      assert.ok(getDocument(doc.id).completed_at, 'ต้องบันทึกเวลาที่ปิดเรื่องด้วย');
+    });
+
+    // ถ้าหน้าเอกสารยังเอา "ขั้นตอนล่าสุดอันเดียว" คนที่ถูกสั่งการคนที่ 2-4 จะเปิดหน้าแล้วเห็นว่าเป็นงาน
+    // ของคนอื่น กดรับทราบไม่ได้เลย ทั้งที่ ผอ. สั่งถึงตัวเองด้วย
+    test('ผู้รับทุกคนต้องเห็นการ์ดดำเนินการของตัวเอง ไม่ใช่แค่คนเดียว', async () => {
+      const doc = makeDoc({ title: 'ทุกคนต้องกดรับทราบได้เอง' });
+      assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+      forwardTo(doc, [adminUser.id, seed.userIds.head_acad], teacherUser);
+
+      for (const id of [adminUser.id, seed.userIds.head_acad]) {
+        const res = await dispatchGet(loadUserForTest(id), `/documents/${doc.id}`, {});
+        assert.equal(res.status, 200);
+        assert.match(res.body, /ดำเนินการ \(ขั้นที่/, `ผู้รับ ${id} ต้องเห็นการ์ดดำเนินการของตัวเอง`);
+      }
+    });
+
+    test('เลือกคนเดิมซ้ำ ต้องได้ขั้นตอนเดียว ไม่ใช่ซ้อนสองอันให้คนเดียวกัน', () => {
+      const doc = makeDoc({ title: 'ติ๊กซ้ำคนเดิม' });
+      assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+      forwardTo(doc, [adminUser.id, adminUser.id, seed.userIds.head_acad], teacherUser);
+      assert.equal(waiting(doc.id).length, 2, 'ค่าซ้ำต้องถูกตัดออก ไม่งั้นกดรับทราบแล้วยังค้างอีกอันโดยไม่มีอะไรบอก');
+    });
+
+    // ถ้าตรวจไปส่งไป คนที่ผ่านด่านก่อนจะได้งานไปแล้วแต่คนหลังพัง กลายเป็นส่งต่อครึ่งๆ กลางๆ
+    test('มีคนใดคนหนึ่งเป็นบัญชีที่ใช้ไม่ได้ ต้องไม่ส่งให้ใครเลย', () => {
+      const doc = makeDoc({ title: 'ส่งต่อครึ่งๆ กลางๆ ไม่ได้' });
+      assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+      const step = currentStep(doc.id);
+      assert.throws(() => approveAndForward({
+        stepId: step.id, nextAssigneeIds: [adminUser.id, 'ไม่มีบัญชีนี้จริง'], actorUser: teacherUser,
+      }), /ไม่พบผู้รับงาน|กรุณาเลือกผู้รับ/);
+      assert.equal(waiting(doc.id).length, 1, 'ต้องยังค้างอยู่ที่คนเดิม ไม่มีใครได้งานไปเลย');
+      assert.equal(waiting(doc.id)[0].id, step.id);
+      assert.equal(db.prepare('SELECT status FROM workflow_steps WHERE id = ?').get(step.id).status, 'waiting',
+        'ขั้นของผู้ส่งต้องไม่ถูกปิดไปก่อน');
+    });
+
+    test('เลือกเกินเพดานต้องถูกกันไว้', () => {
+      const doc = makeDoc({ title: 'เกินเพดานผู้รับ' });
+      assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+      const step = currentStep(doc.id);
+      const many = Array.from({ length: MAX_PARALLEL_ASSIGNEES + 1 }, (_, i) => `x-${i}`);
+      assert.throws(() => approveAndForward({ stepId: step.id, nextAssigneeIds: many, actorUser: teacherUser }), /ไม่เกิน/);
+    });
+
+    test('ส่งต่อแบบคนเดียวเหมือนเดิมต้องยังทำงานได้', () => {
+      const doc = makeDoc({ title: 'ส่งต่อคนเดียวแบบเดิม' });
+      assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+      const step = currentStep(doc.id);
+      approveAndForward({ stepId: step.id, nextAssigneeId: adminUser.id, actorUser: teacherUser });
+      const rows = waiting(doc.id);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].assignee_id, adminUser.id);
+    });
   });
 
   // "การเกษียณหนังสือ" คือคำสั่งการจริงของเรื่องนั้น ระบบเก็บไว้ครบและโชว์ใน Timeline บนหน้าจอ
