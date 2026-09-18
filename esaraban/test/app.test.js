@@ -2383,6 +2383,116 @@ describe('คำขอลงทะเบียนที่ค้างอยู�
     });
   });
 
+  // วันที่ประกาศใช้ระบบ ครูสมัครกันมาพร้อมกันทั้งโรงเรียน ผู้ดูแลต้องกด อนุมัติ → ยืนยัน → รอสร้างบัญชี
+  // สามสิบรอบ ซึ่งนานพอที่จะทำให้เลิกใช้ระบบไปเลย
+  describe('อนุมัติหลายคนพร้อมกัน', () => {
+    const teacherRole = () => db.prepare("SELECT id FROM roles WHERE name = 'teacher'").get().id;
+    const made = [];
+    const addReq = (over = {}) => {
+      const id = uuid();
+      const code = over.employeeCode || `bulk${Math.random().toString(36).slice(2, 9)}`;
+      const password = over.password || 'BulkOwnPassword2569';
+      const pin = over.pin || '473812';
+      db.prepare(`INSERT INTO registration_requests
+          (id, employee_code, prefix, first_name, last_name, department_id, requested_role, status,
+           created_at, password_hash, pin_hash)
+        VALUES (?, ?, 'นาง', ?, 'ชุดใหญ่', ?, 'teacher', 'pending', ?, ?, ?)`)
+        .run(id, code, over.firstName || 'มาลี', deptId, nowIso(), hashSecret(password), hashSecret(pin));
+      made.push(id);
+      return { requestId: id, employeeCode: code, password, pin };
+    };
+    const pick = (r) => ({ requestId: r.requestId, roleId: teacherRole(), departmentId: deptId });
+    // ใบที่ตั้งใจให้ล้ม (และใบที่เหลือไว้ทดสอบหน้าจอ) ยังค้างเป็น pending อยู่ ถ้าไม่เก็บกวาด เทสต์อื่น
+    // ที่นับจำนวนคำขอรอตรวจจะเพี้ยนตามลำดับการรัน
+    after(() => { for (const id of made) db.prepare('DELETE FROM registration_requests WHERE id = ?').run(id); });
+
+    test('กดครั้งเดียวต้องได้บัญชีครบทุกคน และทุกคนเข้าระบบได้ด้วยรหัสที่ตั้งเอง', async () => {
+      const a = addReq();
+      const b = addReq();
+      const c = addReq();
+      const res = await dispatchPost(adminUser, '/admin/registrations/approve-bulk', { items: [a, b, c].map(pick) });
+      assert.equal(res.status, 200, res.body);
+      assert.equal(res.json.approved.length, 3);
+      assert.equal(res.json.failed.length, 0);
+      for (const r of [a, b, c]) {
+        assert.equal(db.prepare('SELECT COUNT(*) c FROM users WHERE employee_code = ?').get(r.employeeCode).c, 1);
+        assert.equal(login(r.employeeCode, r.password, '1.2.3.4', 'ua').ok, true,
+          'รหัสที่แต่ละคนตั้งเองต้องยังใช้ได้ — อนุมัติทีเดียวหลายคนต้องไม่สลับรหัสข้ามคน');
+      }
+      // ต้องบอกหน้าเว็บได้ว่าการ์ดใบไหนผ่านแล้ว ไม่งั้นเอาการ์ดออกจากรายการไม่ได้
+      assert.deepEqual(res.json.approved.map((x) => x.requestId).sort(), [a, b, c].map((x) => x.requestId).sort());
+    });
+
+    // ถ้าใบเดียวที่มีปัญหาลากทั้งชุดล้มไปด้วย ผู้ดูแลต้องมานั่งไล่หาเองว่าใบไหนเป็นตัวปัญหา
+    test('ใบที่อนุมัติไม่ผ่าน ต้องไม่ลากคนที่เหลือล้มไปด้วย และต้องรายงานว่าเป็นใคร', async () => {
+      const ok1 = addReq();
+      const clash = addReq({ employeeCode: 'teacher001', firstName: 'ซ้ำซ้อน' });
+      const ok2 = addReq();
+      const res = await dispatchPost(adminUser, '/admin/registrations/approve-bulk',
+        { items: [ok1, clash, ok2].map(pick) });
+
+      assert.equal(res.status, 200, 'มีใบที่ล้มก็ยังต้องตอบ 200 เพราะใบที่ผ่านสร้างบัญชีไปแล้วจริงๆ');
+      assert.equal(res.json.approved.length, 2);
+      assert.equal(res.json.failed.length, 1);
+      assert.equal(res.json.failed[0].requestId, clash.requestId);
+      assert.match(res.json.failed[0].fullName, /ซ้ำซ้อน/, 'ต้องบอกชื่อ ไม่ใช่บอกแต่ไอดีคำขอที่ผู้ดูแลอ่านไม่ออก');
+      assert.match(res.json.failed[0].error, /มีบัญชีอยู่แล้ว/);
+      for (const r of [ok1, ok2]) {
+        assert.equal(db.prepare('SELECT COUNT(*) c FROM users WHERE employee_code = ?').get(r.employeeCode).c, 1,
+          'คนที่ไม่มีปัญหาต้องได้บัญชีตามปกติ');
+      }
+      assert.equal(db.prepare("SELECT status FROM registration_requests WHERE id = ?").get(clash.requestId).status,
+        'pending', 'ใบที่ล้มต้องยังรอตรวจอยู่ ให้ผู้ดูแลกลับมาจัดการได้');
+    });
+
+    // ข้อความชุดนี้ถูกส่งลงกลุ่มไลน์ของโรงเรียน ไม่ใช่ส่งหาเจ้าตัวโดยตรง
+    test('ข้อความแจ้งชุดต้องไม่มีรหัสผ่าน ไม่มี PIN และไม่ไล่รหัสพนักงานทุกคนลงกลุ่ม', async () => {
+      const a = addReq({ password: 'SuperSecretBulkA2569', pin: '918273' });
+      const b = addReq({ password: 'SuperSecretBulkB2569', pin: '472619' });
+      const res = await dispatchPost(adminUser, '/admin/registrations/approve-bulk', { items: [a, b].map(pick) });
+      assert.equal(res.status, 200, res.body);
+
+      const blob = `${res.json.notifyText}\n${decodeURIComponent(res.json.notifyLineUrl)}`;
+      for (const r of [a, b]) {
+        assert.ok(!blob.includes(r.password), 'รหัสผ่านต้องไม่อยู่ในข้อความ');
+        assert.ok(!blob.includes(r.pin), 'PIN ต้องไม่อยู่ในข้อความ');
+        assert.ok(!blob.includes(r.employeeCode),
+          'รหัสพนักงานเรียงกันทั้งชุด = แจกบัญชีรายชื่อ username ของบุคลากรไว้ในแชทที่ส่งต่อได้ไม่จำกัด');
+      }
+      assert.match(res.json.notifyText, /2 ท่าน/, 'ต้องบอกจำนวน');
+      assert.match(res.json.notifyText, /มาลี/, 'ต้องมีรายชื่อ ไม่งั้นไม่มีใครรู้ว่าหมายถึงตัวเอง');
+      assert.match(res.json.notifyText, /\/login/, 'ต้องมีลิงก์เข้าระบบ');
+      assert.match(res.json.notifyLineUrl, /^https:\/\/line\.me\/R\/share\?text=/);
+    });
+
+    test('เลือกเกินเพดานต้องถูกกันไว้ และไม่สร้างบัญชีให้ใครเลย', async () => {
+      const one = addReq();
+      const tooMany = Array.from({ length: reg.MAX_BULK_APPROVE + 1 }, () => pick(one));
+      const res = await dispatchPost(adminUser, '/admin/registrations/approve-bulk', { items: tooMany });
+      assert.equal(res.status, 400);
+      assert.match(res.json.error, /ไม่เกิน/);
+      assert.equal(db.prepare('SELECT COUNT(*) c FROM users WHERE employee_code = ?').get(one.employeeCode).c, 0,
+        'ต้องกันไว้ก่อนลงมือ ไม่ใช่ลงมือไปครึ่งทางแล้วค่อยหยุด');
+    });
+
+    test('ครูธรรมดายิงเส้นทางนี้เองไม่ได้', async () => {
+      const r = addReq();
+      const res = await dispatchPost(loadUserForTest(seed.userIds.teacher001),
+        '/admin/registrations/approve-bulk', { items: [pick(r)] });
+      assert.equal(res.status, 403);
+      assert.equal(db.prepare('SELECT COUNT(*) c FROM users WHERE employee_code = ?').get(r.employeeCode).c, 0);
+    });
+
+    test('หน้าคำขอต้องมีแถบเลือกเมื่อมีคำขอค้างหลายใบ', async () => {
+      addReq(); addReq();
+      const res = await dispatchGet(adminUser, '/admin/registrations', {});
+      assert.equal(res.status, 200);
+      assert.match(res.body, /id="bulkBar"/, 'ต้องมีแถบเลือก');
+      assert.match(res.body, /class="reqPick"/, 'แต่ละใบต้องมีช่องติ๊ก');
+      assert.match(res.body, /อนุมัติที่เลือก/);
+    });
+  });
+
   // ฐานข้อมูลที่ยังไม่ได้ migrate ตารางนี้ต้องไม่ทำให้ทุกหน้าพัง เพราะตัวนับถูกเรียกทุกครั้งที่เรนเดอร์
   test('ตารางคำขอหายไปต้องไม่ทำให้หน้าพัง', async () => {
     db.exec('ALTER TABLE registration_requests RENAME TO registration_requests_tmp');

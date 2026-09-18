@@ -7,7 +7,8 @@ import { positionInput } from '../services/positions.js';
 import { lineShareUrl } from '../services/line.js';
 import {
   submitRegistration, listPendingRegistrations, recentReviewedRegistrations,
-  approveRegistration, rejectRegistration, selfRegistrationEnabled, SELF_REQUESTABLE_ROLES,
+  approveRegistration, approveManyRegistrations, MAX_BULK_APPROVE,
+  rejectRegistration, selfRegistrationEnabled, SELF_REQUESTABLE_ROLES,
   purgeOldReviewedRegistrations,
 } from '../services/registration.js';
 
@@ -135,7 +136,10 @@ router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
   const card = (r) => `
     <div class="card" id="req-${esc(r.id)}">
       <div class="card-header">
-        <h3 class="mt-0">${esc(r.prefix || '')}${esc(r.first_name)} ${esc(r.last_name)}</h3>
+        <h3 class="mt-0"><label style="cursor:pointer;display:inline-flex;align-items:center;gap:.45rem">
+          <input type="checkbox" class="reqPick" value="${esc(r.id)}" onchange="updateBulkBar()" />
+          <span>${esc(r.prefix || '')}${esc(r.first_name)} ${esc(r.last_name)}</span>
+        </label></h3>
         <span class="text-muted" style="font-size:.82rem">ยื่นเมื่อ ${esc(fmtDate(r.created_at))}</span>
       </div>
       ${r.clashes_with ? `<div class="alert alert-warning" style="font-size:.85rem">
@@ -199,6 +203,26 @@ router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
     </div>
 
     <h3>รอตรวจ ${pending.length ? `<span class="badge badge-warning">${pending.length}</span>` : ''}</h3>
+    <div id="bulkResult"></div>
+    <!-- แถบนี้โผล่เมื่อมีคำขอตั้งแต่ 2 ใบขึ้นไปเท่านั้น — ใบเดียวก็กดปุ่มในการ์ดได้เลย การมีแถบเลือก
+         ค้างอยู่ตลอดทำให้หน้ารก และชวนให้เข้าใจผิดว่าต้องติ๊กก่อนถึงจะอนุมัติได้
+         ติดหนึบไว้ใต้แถบบนสุด (z-index ต่ำกว่า .topbar ซึ่งเป็น 30) เพราะรายการยาวสามสิบใบ
+         ถ้าไม่ติดหนึบ ผู้ดูแลต้องเลื่อนกลับขึ้นมาบนสุดทุกครั้งที่ติ๊กเสร็จ -->
+    ${pending.length > 1 ? `<div class="card" id="bulkBar" style="position:sticky;top:var(--header-h);z-index:20">
+      <div class="flex gap-2 items-center" style="flex-wrap:wrap">
+        <label style="cursor:pointer;display:inline-flex;align-items:center;gap:.4rem">
+          <input type="checkbox" id="pickAll" onchange="toggleAllReq(this)" /> <span>เลือกทั้งหมด</span>
+        </label>
+        <span class="text-muted" id="bulkCount" style="font-size:.85rem">ยังไม่ได้เลือก</span>
+        <button class="btn btn-success btn-sm" id="bulkApproveBtn" disabled onclick="approveSelected(this)">
+          ✅ อนุมัติที่เลือก
+        </button>
+      </div>
+      <div class="help-text">
+        บทบาทและฝ่ายของแต่ละคนใช้ค่าที่เลือกไว้ในการ์ดของคนนั้น — ตรวจให้ครบก่อนกด
+        อนุมัติพร้อมกันได้ครั้งละไม่เกิน ${MAX_BULK_APPROVE} คน
+      </div>
+    </div>` : ''}
     ${pending.length ? pending.map(card).join('') : '<div class="card"><p class="text-muted" style="margin:0">ไม่มีคำขอรอตรวจ</p></div>'}
 
     ${reviewed.length ? `
@@ -239,6 +263,123 @@ router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
           })
           .catch(function(e){ toast(e.message, 'danger'); window.restoreBtn(btn); });
       }
+      function pickedRequests() {
+        var out = [];
+        Array.prototype.forEach.call(document.querySelectorAll('.reqPick:checked'), function (cb) {
+          var id = cb.value;
+          var role = document.getElementById('role-' + id);
+          var dept = document.getElementById('dept-' + id);
+          if (!role || !dept) return;
+          out.push({ requestId: id, roleId: role.value, departmentId: dept.value });
+        });
+        return out;
+      }
+      function toggleAllReq(master) {
+        Array.prototype.forEach.call(document.querySelectorAll('.reqPick'), function (cb) { cb.checked = master.checked; });
+        updateBulkBar();
+      }
+      function updateBulkBar() {
+        var bar = document.getElementById('bulkBar');
+        if (!bar) return;
+        var all = document.querySelectorAll('.reqPick').length;
+        var n = document.querySelectorAll('.reqPick:checked').length;
+        // ทั้งแถบหายไปเมื่อไม่เหลือคำขอให้เลือกแล้ว (เช่นอนุมัติไปหมดแล้วทั้งชุด) — ไม่งั้นจะค้างเป็น
+        // ปุ่มที่กดแล้วไม่เกิดอะไรขึ้น
+        bar.style.display = all ? '' : 'none';
+        document.getElementById('bulkCount').textContent = n ? 'เลือกไว้ ' + n + ' คน' : 'ยังไม่ได้เลือก';
+        document.getElementById('bulkApproveBtn').disabled = !n;
+        var master = document.getElementById('pickAll');
+        master.checked = all > 0 && n === all;
+        master.indeterminate = n > 0 && n < all;
+      }
+      function approveSelected(btn) {
+        var items = pickedRequests();
+        if (!items.length) return;
+        if (!confirm('ยืนยันว่าตรวจสอบตัวตนของทั้ง ' + items.length + ' คนแล้ว และต้องการสร้างบัญชีให้ทุกคน?')) return;
+        window.setBtnLoading(btn, 'กำลังสร้างบัญชี...');
+        fetch('/admin/registrations/approve-bulk', {
+          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ items: items }),
+        }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+          .then(function(x){
+            window.restoreBtn(btn);
+            if (!x.ok) throw new Error(x.d.error);
+            showBulkResult(x.d);
+          })
+          .catch(function(e){ toast(e.message, 'danger'); window.restoreBtn(btn); });
+      }
+      function showBulkResult(d) {
+        // ใบที่ผ่านแล้วเอาการ์ดออก ส่วนใบที่ไม่ผ่านต้องอยู่ต่อพร้อมเหตุผลติดอยู่บนการ์ดของตัวเอง
+        // ผู้ดูแลจะได้แก้เฉพาะใบนั้นแล้วกดใหม่ ไม่ต้องไล่เทียบรายชื่อกับข้อความสรุป
+        (d.approved || []).forEach(function (a) {
+          var card = document.getElementById('req-' + a.requestId);
+          if (card) card.remove();
+        });
+        (d.failed || []).forEach(function (f) {
+          var card = document.getElementById('req-' + f.requestId);
+          if (!card) return;
+          var cb = card.querySelector('.reqPick');
+          if (cb) cb.checked = false;
+          var warn = card.querySelector('.bulk-fail') || document.createElement('div');
+          warn.className = 'alert alert-danger bulk-fail';
+          warn.style.fontSize = '.85rem';
+          warn.textContent = 'อนุมัติไม่สำเร็จ: ' + f.error;
+          if (!warn.parentNode) card.appendChild(warn);
+        });
+        updateBulkBar();
+
+        var box = document.createElement('div');
+        box.className = (d.approved || []).length ? 'alert alert-success' : 'alert alert-warning';
+        var head = document.createElement('p');
+        head.style.margin = '0 0 .5rem';
+        head.innerHTML = '<strong>สร้างบัญชีแล้ว ' + (d.approved || []).length + ' คน'
+          + ((d.failed || []).length ? ' · ไม่สำเร็จ ' + d.failed.length + ' คน' : '') + '</strong>';
+        box.appendChild(head);
+
+        if ((d.approved || []).length) {
+          var note = document.createElement('p');
+          note.className = 'help-text';
+          note.style.margin = '0 0 .6rem';
+          note.textContent = 'เจ้าตัวยังไม่รู้ว่าอนุมัติแล้ว กรุณาส่งบอกด้วยปุ่มนี้'
+            + ' (ข้อความมีแต่รายชื่อกับลิงก์ ไม่มีรหัสผ่านและไม่มีรหัสพนักงาน ส่งในกลุ่มได้)';
+          box.appendChild(note);
+          box.appendChild(notifyRow(d.notifyLineUrl, d.notifyText, 'แจ้งทุกคนทางไลน์'));
+          var pre = document.createElement('pre');
+          pre.style.cssText = 'white-space:pre-wrap;font-size:.82rem;margin:.6rem 0 0;opacity:.85';
+          pre.textContent = d.notifyText;
+          box.appendChild(pre);
+        }
+
+        var target = document.getElementById('bulkResult');
+        target.innerHTML = '';
+        target.appendChild(box);
+        target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+
+      /** แถวปุ่มแจ้งเจ้าตัว — ใช้ร่วมกันทั้งการอนุมัติทีละคนและอนุมัติทั้งชุด */
+      function notifyRow(lineUrl, text, label) {
+        var row = document.createElement('div');
+        row.className = 'chip-row';
+
+        var line = document.createElement('a');
+        line.className = 'btn btn-primary btn-sm';
+        line.href = lineUrl;
+        line.target = '_blank';
+        line.rel = 'noopener';
+        line.textContent = '💬 ' + label;
+        row.appendChild(line);
+
+        var copy = document.createElement('button');
+        copy.type = 'button';
+        copy.className = 'btn btn-outline btn-sm';
+        copy.textContent = '📋 คัดลอกข้อความ';
+        copy.onclick = function () {
+          if (navigator.clipboard) navigator.clipboard.writeText(text).then(function () { toast('คัดลอกแล้ว', 'success'); });
+          else toast('เบราว์เซอร์นี้คัดลอกให้ไม่ได้ กรุณาเลือกข้อความเอง', 'info');
+        };
+        row.appendChild(copy);
+        return row;
+      }
+
       function showApproved(id, d) {
         var card = document.getElementById('req-' + id);
         if (!card) { location.reload(); return; }
@@ -258,26 +399,7 @@ router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
           + ' จึงยังไม่มีไลน์ผูกไว้ กรุณาส่งบอกด้วยปุ่มนี้ (ข้อความไม่มีรหัสผ่านอยู่ในนั้น ส่งในกลุ่มได้)';
         box.appendChild(note);
 
-        var row = document.createElement('div');
-        row.className = 'chip-row';
-
-        var line = document.createElement('a');
-        line.className = 'btn btn-primary btn-sm';
-        line.href = d.notifyLineUrl;
-        line.target = '_blank';
-        line.rel = 'noopener';
-        line.textContent = '💬 แจ้งเจ้าตัวทางไลน์';
-        row.appendChild(line);
-
-        var copy = document.createElement('button');
-        copy.type = 'button';
-        copy.className = 'btn btn-outline btn-sm';
-        copy.textContent = '📋 คัดลอกข้อความ';
-        copy.onclick = function () {
-          if (navigator.clipboard) navigator.clipboard.writeText(d.notifyText).then(function () { toast('คัดลอกแล้ว', 'success'); });
-          else toast('เบราว์เซอร์นี้คัดลอกให้ไม่ได้ กรุณาเลือกข้อความเอง', 'info');
-        };
-        row.appendChild(copy);
+        var row = notifyRow(d.notifyLineUrl, d.notifyText, 'แจ้งเจ้าตัวทางไลน์');
 
         var done = document.createElement('button');
         done.type = 'button';
@@ -294,6 +416,9 @@ router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
         box.appendChild(pre);
 
         card.appendChild(box);
+        // การ์ดใบนี้ไม่มีช่องติ๊กเหลืออยู่แล้ว ตัวนับบนแถบเลือกจึงต้องถูกคิดใหม่ ไม่งั้นจะค้างนับใบที่
+        // อนุมัติไปแล้วรวมอยู่ด้วย แล้วกด "อนุมัติที่เลือก" ซ้ำจะได้ error ว่าไม่พบคำขอ
+        updateBulkBar();
       }
 
       function rejectReq(id, btn) {
@@ -313,23 +438,57 @@ router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
   html(ctx, 200, layout({ user: ctx.user, title: 'คำขอลงทะเบียน', path: '/admin/registrations', content }));
 })));
 
-router.post('/admin/registrations/:id/approve', ADMIN_ONLY(requireApi((ctx) => {
-  const res = approveRegistration({
-    requestId: ctx.params.id, roleId: ctx.body?.roleId, departmentId: ctx.body?.departmentId, actorUser: ctx.user,
-  });
-  // ข้อความสำเร็จรูปให้ผู้ดูแลส่งบอกเจ้าตัว — ระบบส่งถึงมือเองไม่ได้ เพราะตอนสมัครยังไม่มีบัญชีจึงยัง
-  // ไม่มีไลน์ผูกไว้ และโรงเรียนไม่มีเซิร์ฟเวอร์อีเมล ช่องทางที่ใช้จริงคือผู้ดูแลส่งในไลน์ให้
-  //
-  // ห้ามมีรหัสผ่านอยู่ในข้อความเด็ดขาด — รหัสนั้นเจ้าตัวตั้งเองมาแต่ต้น ผู้ดูแลไม่เคยรู้และไม่ควรรู้
-  // ข้อความนี้จึงมีแต่ข้อมูลที่ไม่เป็นความลับ ส่งในกลุ่มไลน์ของโรงเรียนได้โดยไม่มีอะไรรั่ว
-  const loginUrl = `${ctx.req.headers['x-forwarded-proto'] || 'https'}://${ctx.req.headers.host || ''}/login`;
-  const notifyText = [
+const loginUrlOf = (ctx) => `${ctx.req.headers['x-forwarded-proto'] || 'https'}://${ctx.req.headers.host || ''}/login`;
+
+// ข้อความสำเร็จรูปให้ผู้ดูแลส่งบอกเจ้าตัว — ระบบส่งถึงมือเองไม่ได้ เพราะตอนสมัครยังไม่มีบัญชีจึงยัง
+// ไม่มีไลน์ผูกไว้ และโรงเรียนไม่มีเซิร์ฟเวอร์อีเมล ช่องทางที่ใช้จริงคือผู้ดูแลส่งในไลน์ให้
+//
+// ห้ามมีรหัสผ่านอยู่ในข้อความเด็ดขาด — รหัสนั้นเจ้าตัวตั้งเองมาแต่ต้น ผู้ดูแลไม่เคยรู้และไม่ควรรู้
+// ข้อความนี้จึงมีแต่ข้อมูลที่ไม่เป็นความลับ ส่งในกลุ่มไลน์ของโรงเรียนได้โดยไม่มีอะไรรั่ว
+function approvedNotifyText(loginUrl, res) {
+  return [
     `✅ ${res.fullName} — บัญชีใช้งานระบบสารบรรณ ${schoolName()} ได้รับอนุมัติแล้ว`,
     `เข้าใช้งานได้ที่ ${loginUrl}`,
     `รหัสพนักงาน: ${res.employeeCode}`,
     'รหัสผ่านคือรหัสที่ตั้งไว้เองตอนลงทะเบียน (ระบบไม่เก็บไว้ให้ใครดู)',
   ].join('\n');
+}
+
+/**
+ * ข้อความเดียวสำหรับแจ้งทั้งชุด — ใส่เฉพาะ "ชื่อ" ไม่ใส่รหัสพนักงาน
+ *
+ * ต่างจากข้อความรายคนโดยตั้งใจ: ข้อความรายคนส่งให้เจ้าตัว การทวนรหัสพนักงานให้จึงมีประโยชน์
+ * แต่ข้อความชุดนี้ถูกส่งลงกลุ่มไลน์ของโรงเรียน การไล่รหัสพนักงานสามสิบคนเรียงกันในกลุ่ม
+ * เท่ากับแจกบัญชีรายชื่อ username ของบุคลากรทั้งโรงเรียนไว้ในแชทที่ส่งต่อได้ไม่จำกัด
+ * ทุกคนรู้รหัสพนักงานของตัวเองอยู่แล้วเพราะเป็นคนกรอกเอง จึงไม่ต้องบอกซ้ำ
+ */
+function bulkNotifyText(loginUrl, approved) {
+  return [
+    `✅ บัญชีใช้งานระบบสารบรรณ ${schoolName()} ได้รับอนุมัติแล้ว ${approved.length} ท่าน`,
+    ...approved.map((a, i) => `${i + 1}. ${a.fullName}`),
+    '',
+    `เข้าใช้งานได้ที่ ${loginUrl}`,
+    'ใช้รหัสพนักงานและรหัสผ่านที่ท่านตั้งไว้เองตอนลงทะเบียน (ระบบไม่เก็บรหัสผ่านไว้ให้ใครดู)',
+  ].join('\n');
+}
+
+router.post('/admin/registrations/:id/approve', ADMIN_ONLY(requireApi((ctx) => {
+  const res = approveRegistration({
+    requestId: ctx.params.id, roleId: ctx.body?.roleId, departmentId: ctx.body?.departmentId, actorUser: ctx.user,
+  });
+  const notifyText = approvedNotifyText(loginUrlOf(ctx), res);
   json(ctx, 200, { ok: true, ...res, notifyText, notifyLineUrl: lineShareUrl(notifyText) });
+})));
+
+router.post('/admin/registrations/approve-bulk', ADMIN_ONLY(requireApi((ctx) => {
+  const { approved, failed } = approveManyRegistrations({ items: ctx.body?.items, actorUser: ctx.user });
+  // ตอบ 200 แม้มีบางใบล้ม เพราะใบที่ผ่านก็สร้างบัญชีไปแล้วจริงๆ ย้อนกลับไม่ได้ — ถ้าตอบเป็น error
+  // หน้าเว็บจะโยนทิ้งทั้งก้อนแล้วบอกผู้ดูแลว่า "ล้มเหลว" ทั้งที่มีคนได้บัญชีไปแล้วครึ่งหนึ่ง
+  const notifyText = approved.length ? bulkNotifyText(loginUrlOf(ctx), approved) : '';
+  json(ctx, 200, {
+    ok: true, approved, failed,
+    notifyText, notifyLineUrl: notifyText ? lineShareUrl(notifyText) : '',
+  });
 })));
 
 router.post('/admin/registrations/:id/reject', ADMIN_ONLY(requireApi((ctx) => {

@@ -245,6 +245,50 @@ export function approveRegistration({ requestId, roleId, departmentId, actorUser
   };
 }
 
+// เพดานจำนวนที่อนุมัติรวดเดียว — ไม่ใช่เรื่องประสิทธิภาพ แต่เป็นเรื่องความตั้งใจ การกดปุ่มเดียวแล้ว
+// สร้างบัญชีให้คนเป็นร้อยคือสิ่งที่พลาดแล้วตามเก็บยาก (ต้องไล่ลบบัญชีทีละใบ) ถ้ามีมากกว่านี้จริงๆ
+// ให้กดเป็นรอบๆ ซึ่งบังคับให้ผู้ดูแลได้หยุดมองรายชื่อระหว่างทาง
+export const MAX_BULK_APPROVE = 50;
+
+/**
+ * อนุมัติหลายคำขอในการกดครั้งเดียว
+ *
+ * ทำไมต้องมี: ครูสมัครพร้อมกันทั้งโรงเรียนในวันที่ประกาศใช้ระบบ ผู้ดูแลต้องกดอนุมัติ → ยืนยัน →
+ * รอสร้างบัญชี ทีละคนสามสิบรอบ ซึ่งนานพอที่จะทำให้เลิกใช้ระบบไปเลย
+ *
+ * ทำไม "ไม่" ห่อทั้งชุดไว้ในธุรกรรมเดียว: คำขอแต่ละใบเป็นอิสระต่อกัน ถ้ามีใบเดียวที่รหัสพนักงานชน
+ * กับบัญชีเดิม แล้วย้อนทั้งชุดทิ้ง ผู้ดูแลก็ต้องมานั่งไล่หาว่าใบไหนเป็นตัวปัญหาโดยไม่มีอะไรบอก
+ * — คนที่ผ่านควรผ่าน ส่วนใบที่มีปัญหาต้องถูกรายงานกลับไปพร้อมชื่อว่าติดตรงไหน
+ * (approveRegistration เปิดธุรกรรมของมันเองต่อใบอยู่แล้ว แต่ละใบจึงยังสำเร็จ/ล้มทั้งใบเสมอ)
+ */
+export function approveManyRegistrations({ items, actorUser }) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) throw httpError(400, 'ยังไม่ได้เลือกคำขอที่จะอนุมัติ');
+  if (list.length > MAX_BULK_APPROVE) {
+    throw httpError(400, `อนุมัติพร้อมกันได้ครั้งละไม่เกิน ${MAX_BULK_APPROVE} คน (เลือกมา ${list.length} คน) — กรุณาแบ่งกดเป็นรอบ`);
+  }
+
+  const approved = [];
+  const failed = [];
+  for (const item of list) {
+    const requestId = typeof item?.requestId === 'string' ? item.requestId : '';
+    // อ่านชื่อไว้ก่อนลงมือ เพราะถ้าอนุมัติไม่ผ่าน แถวนั้นยังอยู่ก็จริง แต่รายงานที่บอกแค่ไอดีคำขอ
+    // ผู้ดูแลอ่านแล้วไม่รู้ว่าเป็นใคร ต้องไล่เทียบเอง
+    const who = db.prepare('SELECT employee_code, prefix, first_name, last_name FROM registration_requests WHERE id = ?').get(requestId);
+    const label = who ? `${who.prefix || ''}${who.first_name} ${who.last_name}`.trim() : requestId;
+    try {
+      // ติด requestId กลับไปด้วย เพราะหน้าเว็บต้องรู้ว่าการ์ดใบไหนอนุมัติผ่านแล้วจึงเอาออกจากรายการได้
+      // (approveRegistration ตัวเดียวคืนแต่ข้อมูลบัญชีที่สร้าง ซึ่งไม่มีอะไรชี้กลับไปที่คำขอต้นทาง)
+      approved.push({ requestId, ...approveRegistration({
+        requestId, roleId: item?.roleId, departmentId: item?.departmentId, actorUser,
+      }) });
+    } catch (e) {
+      failed.push({ requestId, fullName: label, employeeCode: who?.employee_code || '', error: e.message });
+    }
+  }
+  return { approved, failed };
+}
+
 export function rejectRegistration({ requestId, reason, actorUser }) {
   const req = db.prepare("SELECT * FROM registration_requests WHERE id = ? AND status = 'pending'").get(requestId);
   if (!req) throw httpError(404, 'ไม่พบคำขอนี้ หรือมีคนตรวจไปแล้ว');
