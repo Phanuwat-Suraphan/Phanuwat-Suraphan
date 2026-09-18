@@ -85,22 +85,9 @@ router.get('/daily-summary', requirePage((ctx) => {
         <div class="form-grid cols-2">
           <div class="field">
             <label>วันที่ของสรุปงานนี้ *</label>
-            <input type="date" id="summaryDate" required value="${todayInBangkok()}" oninput="echoThaiDate()" />
-            <!-- ช่องเลือกวันที่ของเบราว์เซอร์แสดงตามภาษาของเครื่อง ซึ่งอาจเป็น ค.ศ. หรือแบบ ด/ว/ป สลับกัน
-                 จึงทวนวันที่ที่เลือกเป็นภาษาไทย พ.ศ. ให้อ่านยืนยันอีกที กันบันทึกผิดวันโดยไม่รู้ตัว -->
-            <div class="help-text" id="summaryDateThai"></div>
-            <script>
-              function echoThaiDate(){
-                var v = document.getElementById('summaryDate').value;
-                var out = document.getElementById('summaryDateThai');
-                if (!v) { out.textContent = ''; return; }
-                // อ่านเป็นวันที่ตามปฏิทินตรงๆ (parse เป็น UTC แล้ว format เป็น UTC) ไม่ให้โซนเวลา
-                // ของเครื่องผู้ใช้ทำให้วันเลื่อนไปหนึ่งวัน
-                out.textContent = 'วันที่เลือกไว้: ' + new Date(v + 'T00:00:00Z')
-                  .toLocaleDateString('th-TH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
-              }
-              echoThaiDate();
-            </script>
+            <!-- คำทวนวันที่เป็นภาษาไทย พ.ศ. ใต้ช่องนี้ ถูกเติมให้อัตโนมัติทุกช่องวันที่ในระบบแล้ว
+                 (ดู thaiDateEcho ใน public/app.js) เดิมเขียนไว้เฉพาะหน้านี้หน้าเดียว -->
+            <input type="date" id="summaryDate" required value="${todayInBangkok()}" />
           </div>
           <div class="field">
             <label>ไฟล์ Excel (.xlsx) *</label>

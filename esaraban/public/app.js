@@ -576,6 +576,83 @@
     });
   })();
 
+  /**
+   * ทวนวันที่ที่เลือกเป็นภาษาไทย พ.ศ. ใต้ช่องวันที่ทุกช่องในระบบ
+   *
+   * ปัญหา: <input type="date"> แสดงผลตาม "ภาษาของเครื่อง" ไม่ใช่ภาษาของเว็บ และเราสั่งไม่ได้เลย
+   * เครื่องส่วนใหญ่ตั้งเป็นอังกฤษแบบอเมริกัน ช่องจึงขึ้นเป็น 09/18/2026 = เดือน/วัน/ปี ค.ศ.
+   * ซึ่งผิดจากที่ครูไทยอ่าน (วัน/เดือน/ปี พ.ศ.) ถึงสองชั้นซ้อนกัน:
+   *
+   *   - 05/06/2026 อ่านได้ทั้ง 5 มิ.ย. และ 6 พ.ค. โดยไม่มีอะไรบอกว่าอันไหน ลงวันที่ผิดทั้งฉบับ
+   *     แล้วไม่มีใครรู้ เพราะหน้าอื่นๆ แสดงเป็นไทยหมด กว่าจะเจอก็ตอนหนังสือออกไปแล้ว
+   *   - 2026 คือ ค.ศ. แต่ครูคิดเป็น พ.ศ. การกรอก 2569 ลงไปตรงๆ ถูกกันไว้ที่ฝั่งเซิร์ฟเวอร์แล้ว
+   *     (ดู normalizeDate) แต่ "กันไม่ให้พิมพ์ผิด" กับ "อ่านค่าที่เลือกไว้ออก" เป็คนละเรื่องกัน
+   *
+   * แก้ที่เดียวแบบกวาดทั้งระบบ เพราะช่องวันที่มี 13 จุดกระจายอยู่ (ลงทะเบียนหนังสือ ใบลา มอบหมาย
+   * รักษาการแทน ตัวกรอง สรุปงานประจำวัน) ถ้าไล่เติมทีละหน้าจะตกหล่นและของใหม่วันหลังก็ลืมอีก
+   * เดิมมีทำไว้จุดเดียวที่หน้าสรุปงานประจำวัน — ย้ายมารวมที่นี่แล้ว
+   *
+   * ขึ้นเฉพาะเมื่อช่องมีค่า — ช่องที่เว้นว่างไว้ (ตัวกรอง, กำหนดเสร็จที่ไม่บังคับ) จึงไม่มีอะไรโผล่มา
+   * ทำให้หน้าไม่รกและความสูงของแถวไม่กระโดดตั้งแต่ยังไม่ได้กรอกอะไร
+   *
+   * ประกอบข้อความเองจากตารางชื่อเดือน/วัน ไม่ใช้ toLocaleDateString('th-TH') เพราะตัวนั้นพึ่งข้อมูล
+   * ภาษาไทยในเบราว์เซอร์ของเครื่องผู้ใช้ ถ้าเครื่องไหนไม่มี จะเงียบๆ กลายเป็นปี ค.ศ. ภาษาอังกฤษ
+   * ซึ่งคือสิ่งที่กำลังแก้อยู่พอดี — ตารางนี้ให้ผลเหมือนกันทุกเครื่องเสมอ
+   */
+  (function thaiDateEcho() {
+    const MONTHS = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
+      'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'];
+    const DOW = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'];
+
+    function thaiText(value) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || '');
+      if (!m) return '';
+      const y = +m[1]; const mo = +m[2]; const d = +m[3];
+      // อ่านเป็นวันที่ตามปฏิทินตรงๆ (UTC ล้วน) ไม่ให้โซนเวลาของเครื่องผู้ใช้ทำให้วันเลื่อนไปหนึ่งวัน
+      const dt = new Date(Date.UTC(y, mo - 1, d));
+      // วันที่ที่ไม่มีอยู่จริง (30 ก.พ.) Date จะเลื่อนไปวันอื่นเงียบๆ — ทวนกลับแล้วไม่ตรงก็ไม่ต้องแสดง
+      if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return '';
+      return 'วัน' + DOW[dt.getUTCDay()] + 'ที่ ' + d + ' ' + MONTHS[mo - 1] + ' พ.ศ. ' + (y + 543);
+    }
+
+    function sync(input) {
+      if (!input || input.type !== 'date') return;
+      const text = thaiText(input.value);
+      let echo = input.nextElementSibling;
+      if (!echo || !echo.classList.contains('thai-date-echo')) {
+        if (!text) return; // ยังไม่มีค่า ก็ยังไม่ต้องสร้างอะไรทิ้งไว้
+        echo = document.createElement('div');
+        echo.className = 'help-text thai-date-echo';
+        input.parentNode.insertBefore(echo, input.nextSibling);
+      }
+      echo.textContent = text ? '📅 ' + text : '';
+    }
+
+    function sweep(root) {
+      (root || document).querySelectorAll('input[type=date]').forEach(sync);
+    }
+
+    sweep();
+    // ช่องวันที่บางช่องถูกสร้างด้วย JavaScript ทีหลัง (แถวมอบหมายหลายฉบับ) และถูกสร้างใหม่ทั้งก้อน
+    // ทุกครั้งที่แก้ — ตัวเฝ้าดูจึงจำเป็น ไม่งั้นแถวที่เพิ่งเพิ่มจะไม่มีคำทวนจนกว่าจะไปแตะช่องนั้น
+    if (window.MutationObserver) {
+      new MutationObserver(function (records) {
+        for (const rec of records) {
+          for (const node of rec.addedNodes) {
+            if (node.nodeType !== 1) continue;
+            if (node.matches && node.matches('input[type=date]')) sync(node);
+            else sweep(node);
+          }
+        }
+      }).observe(document.body, { childList: true, subtree: true });
+    }
+    ['input', 'change'].forEach(function (evt) {
+      document.addEventListener(evt, function (e) {
+        if (e.target && e.target.tagName === 'INPUT' && e.target.type === 'date') sync(e.target);
+      }, true);
+    });
+  })();
+
   // Ctrl/Cmd+K -> focus search. Ctrl/Cmd+N -> new document (note: some browsers reserve
   // Ctrl+N for "new window" and never deliver the keydown event to the page at all — no
   // workaround exists for that case, it's a browser-level reservation, not a bug here).

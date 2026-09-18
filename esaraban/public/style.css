@@ -378,6 +378,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); o
 @media (min-width: 640px) { .label-spacer { display: block; } }
 @media (min-width: 640px) { .check-inline { min-height: 2.55rem; } }
 .help-text { font-size: .82rem; line-height: 1.65; color: var(--text-muted); margin-top: .25rem; }
+/* คำทวนวันที่เป็นไทย พ.ศ. ใต้ช่อง <input type="date"> — เข้มกว่าคำอธิบายทั่วไปเพราะเป็น "ค่าที่เลือกไว้จริง"
+   ที่ต้องอ่านยืนยัน ไม่ใช่คำแนะนำที่กวาดตาผ่านได้ (ดูเหตุผลทั้งหมดที่ thaiDateEcho ใน public/app.js) */
+.thai-date-echo { color: var(--text); font-weight: 500; }
 
 /* ---------- Progressive disclosure: "ตัวเลือกเพิ่มเติม" (keeps forms short for first-time users) ---------- */
 .field-more { margin-bottom: 1rem; }
