@@ -237,8 +237,31 @@ router.get('/daily-summary/:id', requirePage((ctx) => {
       <td>${canEdit ? '<button type="button" class="btn btn-outline btn-sm" onclick="this.closest(\'tr\').remove()">ลบ</button>' : ''}</td>
     </tr>`;
 
+  // ── มุมมองอ่านอย่างเดียว ──
+  //
+  // เดิมหน้านี้เปิดมาเป็นตารางช่องกรอกทันที ทั้งหน้าเต็มไปด้วยกล่อง input/textarea ซึ่งอ่านยากมาก
+  // สำหรับคนที่แค่ "มาดูว่าวันนี้มีงานอะไรบ้าง" ซึ่งเป็นคนส่วนใหญ่ที่เปิดหน้านี้ — คนที่แก้จริงมีไม่กี่คน
+  // ตอนนี้จึงเห็นสรุปที่อ่านง่ายก่อน แล้วค่อยกดปุ่มเข้าโหมดแก้ไขเมื่อจะแก้จริง
+  const doneCount = items.filter((it) => it.is_done).length;
+  const urgentCount = items.filter((it) => /ด่วน/.test(it.priority || '')).length;
+  const stat = (label, value, tone = '') =>
+    `<div class="sum-stat${tone ? ` ${tone}` : ''}"><div class="sum-stat-n">${value}</div><div class="sum-stat-l">${esc(label)}</div></div>`;
+
+  const viewRow = (it) => `
+    <div class="sum-item${it.is_done ? ' done' : ''}">
+      <div class="sum-item-head">
+        <span class="sum-check">${it.is_done ? '✅' : '⬜'}</span>
+        <strong>${esc(it.task_name || '(ไม่มีชื่องาน)')}</strong>
+        ${priorityChip(it.priority)}
+      </div>
+      ${it.action_needed ? `<div class="sum-line"><span class="sum-k">สิ่งที่ต้องปฏิบัติ</span>${esc(it.action_needed)}</div>` : ''}
+      ${it.schedule ? `<div class="sum-line"><span class="sum-k">กำหนดการ</span>${esc(it.schedule)}</div>` : ''}
+      ${it.detail ? `<div class="sum-line"><span class="sum-k">รายละเอียด</span>${esc(it.detail)}</div>` : ''}
+      ${it.source_ref ? `<div class="sum-line"><span class="sum-k">แหล่งที่มา</span>${esc(it.source_ref)}</div>` : ''}
+    </div>`;
+
   const content = `
-    ${ctx.query.created ? '<div class="alert alert-success">✅ อ่านไฟล์และแตกเป็นรายการเรียบร้อยแล้ว — แก้ไขข้อความในตารางได้เลย แล้วกดบันทึก</div>' : ''}
+    ${ctx.query.created ? '<div class="alert alert-success">✅ อ่านไฟล์และแตกเป็นรายการเรียบร้อยแล้ว — กด “แก้ไขรายการ” ถ้าต้องการปรับข้อความ</div>' : ''}
     <div class="card-header">
       <div>
         <h2 class="mt-0">📅 สรุปงานวันที่ ${esc(fmtThaiDateLong(s.summary_date))}</h2>
@@ -249,10 +272,26 @@ router.get('/daily-summary/:id', requirePage((ctx) => {
       </div>
       <div class="chip-row">
         <a class="btn btn-outline btn-sm" href="/daily-summary">← ทุกวัน</a>
-        <a class="btn btn-outline btn-sm" href="/daily-summary/combined">🧾 ดูรวม</a>
+        <a class="btn btn-outline btn-sm" href="/daily-summary/combined">🧾 ดูรวมทุกวัน</a>
         <button class="btn btn-outline btn-sm" onclick="window.print()">🖨️ พิมพ์</button>
-        ${canEdit ? `<button class="btn btn-danger btn-sm" onclick="deleteSummary()">🗑️ ลบสรุปวันนี้</button>` : ''}
+        ${canEdit ? `<button class="btn btn-primary btn-sm" id="editToggle" onclick="toggleEdit(true)">✏️ แก้ไขรายการ</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteSummary()">🗑️ ลบสรุปวันนี้</button>` : ''}
       </div>
+    </div>
+
+    <div id="viewMode">
+      <div class="card">
+        <div class="sum-stats">
+          ${stat('งานทั้งหมด', items.length)}
+          ${stat('ทำแล้ว', doneCount, 'ok')}
+          ${stat('ยังเหลือ', items.length - doneCount, items.length - doneCount ? 'warn' : '')}
+          ${stat('งานด่วน', urgentCount, urgentCount ? 'danger' : '')}
+        </div>
+      </div>
+      <div class="card">
+        ${items.length ? items.map(viewRow).join('') : '<p class="text-muted" style="margin:0">ยังไม่มีรายการในวันนี้</p>'}
+      </div>
+      ${canEdit ? '' : '<div class="help-text">คุณดูได้อย่างเดียว — แก้ไขได้เฉพาะผู้อัปโหลด ธุรการ หรือผู้ดูแลระบบ</div>'}
     </div>
 
     <datalist id="priorityList">
@@ -263,19 +302,21 @@ router.get('/daily-summary/:id', requirePage((ctx) => {
     <input type="hidden" name="summaryVersion" id="summaryVersion" value="${esc(s.updated_at || '')}" />
     <div id="conflictBox"></div>
 
-    <div class="card">
-      <div class="table-wrap"><table id="itemsTable">
-        <thead><tr>${COLUMNS.map((c) => `<th style="min-width:${c.width}">${esc(c.label)}</th>`).join('')}<th>ทำแล้ว</th><th></th></tr></thead>
-        <tbody>${items.map(rowHtml).join('')}</tbody>
-      </table></div>
-      ${canEdit ? `
-      <div class="chip-row" style="margin-top:.8rem">
-        <button class="btn btn-outline btn-sm" onclick="addRow()">+ เพิ่มแถว</button>
-        <button class="btn btn-primary" onclick="saveAll(this)">💾 บันทึกการแก้ไข</button>
+    ${canEdit ? `
+    <div id="editMode" hidden>
+      <div class="card">
+        <div class="table-wrap"><table id="itemsTable">
+          <thead><tr>${COLUMNS.map((c) => `<th style="min-width:${c.width}">${esc(c.label)}</th>`).join('')}<th>ทำแล้ว</th><th></th></tr></thead>
+          <tbody>${items.map(rowHtml).join('')}</tbody>
+        </table></div>
+        <div class="chip-row" style="margin-top:.8rem">
+          <button class="btn btn-outline btn-sm" onclick="addRow()">+ เพิ่มแถว</button>
+          <button class="btn btn-primary" onclick="saveAll(this)">💾 บันทึกการแก้ไข</button>
+          <button class="btn btn-outline btn-sm" onclick="toggleEdit(false)">ปิดโหมดแก้ไข</button>
+        </div>
+        <div class="help-text">แก้ไขข้อความในช่องได้โดยตรง · ติ๊ก "ทำแล้ว" เมื่อดำเนินการเสร็จ · กดบันทึกครั้งเดียวเก็บทั้งตาราง</div>
       </div>
-      <div class="help-text">แก้ไขข้อความในช่องได้โดยตรง · ติ๊ก "ทำแล้ว" เมื่อดำเนินการเสร็จ · กดบันทึกครั้งเดียวเก็บทั้งตาราง</div>
-      ` : '<div class="help-text">คุณดูได้อย่างเดียว — แก้ไขได้เฉพาะผู้อัปโหลด ธุรการ หรือผู้ดูแลระบบ</div>'}
-    </div>
+    </div>` : ''}
 
     ${sources.length ? `<div class="card">
       <h3 class="mt-0">📎 ไฟล์เอกสารอ้างอิงของวันนี้</h3>
@@ -287,6 +328,20 @@ router.get('/daily-summary/:id', requirePage((ctx) => {
     </div>` : ''}
 
     <script>
+      // สลับระหว่าง "ดู" กับ "แก้ไข" ในหน้าเดียว ไม่ต้องโหลดหน้าใหม่ — คนที่แก้จริงมักแก้หลายรอบติดกัน
+      // และการโหลดหน้าใหม่ทุกครั้งที่กดแก้ จะทำให้ตำแหน่งที่เลื่อนหน้าไว้หายทุกที
+      window.toggleEdit = function(on){
+        var view = document.getElementById('viewMode');
+        var edit = document.getElementById('editMode');
+        var btn = document.getElementById('editToggle');
+        if (!edit) return;
+        view.hidden = on;
+        edit.hidden = !on;
+        if (btn) btn.textContent = on ? '👁️ ดูแบบอ่านอย่างเดียว' : '✏️ แก้ไขรายการ';
+        if (btn) btn.onclick = function(){ window.toggleEdit(!on); };
+        (on ? edit : view).scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      };
+
       function collectRows(){
         return Array.prototype.map.call(document.querySelectorAll('#itemsTable tbody tr[data-row]'), function (tr) {
           function v(n){ var el = tr.querySelector('[name="' + n + '"]'); return el ? el.value : ''; }
@@ -331,6 +386,9 @@ router.get('/daily-summary/:id', requirePage((ctx) => {
             document.getElementById('conflictBox').innerHTML = '';
             window.toast('บันทึกการแก้ไขแล้ว', 'success');
             window.restoreBtn(btn);
+            // มุมมองอ่านถูกสร้างจากฝั่งเซิร์ฟเวอร์ตอนเปิดหน้า ถ้าไม่โหลดใหม่ พอกดกลับไปดูจะเห็นของเก่า
+            // ทั้งที่เพิ่งบันทึกไป — โหลดใหม่หลังบันทึกสำเร็จเท่านั้น (ตอนล้มเหลวห้ามโหลด ข้อมูลจะหาย)
+            setTimeout(function(){ location.reload(); }, 600);
           })
           .catch(function(e){ window.toast(e.message, 'danger'); window.restoreBtn(btn); });
       };

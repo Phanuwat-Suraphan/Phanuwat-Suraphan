@@ -874,6 +874,67 @@ describe('สรุปงานรายวัน: แตกไฟล์เป�
       assert.deepEqual(doneNames(id), ['งานที่หนึ่ง']);
     });
   });
+
+  // คนส่วนใหญ่ที่เปิดหน้านี้มาแค่ "ดูว่าวันนี้มีงานอะไรบ้าง" ไม่ได้มาแก้ เดิมหน้าเปิดมาเป็นตารางช่องกรอก
+  // เต็มหน้าซึ่งอ่านยากมาก — ต้องเห็นสรุปที่อ่านง่ายก่อน แล้วค่อยกดปุ่มเข้าโหมดแก้ไข
+  describe('หน้าสรุปงานรายวันต้องเปิดมาเป็นมุมมองอ่าน ไม่ใช่ตารางช่องกรอก', () => {
+    const mkSummary = (id, items) => {
+      const now = nowIso();
+      db.prepare(`INSERT INTO daily_summaries (id, summary_date, source_filename, uploaded_by, created_at, updated_at)
+        VALUES (?, '2026-09-18', 'test.xlsx', ?, ?, ?)`).run(id, seed.userIds.reg001, now, now);
+      items.forEach((it, i) => db.prepare(`INSERT INTO daily_summary_items
+        (id, summary_id, sort_order, priority, task_name, action_needed, schedule, detail, source_ref, is_done)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(uuid(), id, i, it.p || '', it.n || '', it.a || '', it.s || '', it.d || '', it.r || '', it.done ? 1 : 0));
+      return id;
+    };
+
+    test('เปิดมาเห็นมุมมองอ่านก่อน ตารางแก้ไขถูกซ่อนไว้', async () => {
+      const id = mkSummary(uuid(), [{ p: 'ด่วน', n: 'งานทดสอบมุมมองอ่าน', a: 'ทำให้เสร็จ' }]);
+      const res = await dispatchGet(registrarUser, `/daily-summary/${id}`, {});
+      assert.equal(res.status, 200);
+      const viewAt = res.body.indexOf('id="viewMode"');
+      const editAt = res.body.indexOf('id="editMode"');
+      assert.ok(viewAt > 0, 'ต้องมีมุมมองอ่าน');
+      assert.ok(editAt > viewAt, 'มุมมองอ่านต้องมาก่อนตารางแก้ไขในหน้า');
+      assert.match(res.body, /id="editMode" hidden/, 'ตารางแก้ไขต้องถูกซ่อนไว้ตอนเปิดหน้า');
+      assert.match(res.body, /งานทดสอบมุมมองอ่าน/, 'ชื่องานต้องอ่านได้ในมุมมองอ่าน');
+      assert.match(res.body, /แก้ไขรายการ/, 'ต้องมีปุ่มให้กดเข้าโหมดแก้ไข');
+    });
+
+    test('แถบสรุปตัวเลขต้องตรงกับข้อมูลจริง', async () => {
+      const id = mkSummary(uuid(), [
+        { n: 'ก', p: 'ด่วนที่สุด' }, { n: 'ข', p: 'ด่วน', done: true },
+        { n: 'ค', p: 'ปกติ', done: true }, { n: 'ง', p: 'ปกติ' },
+      ]);
+      const res = await dispatchGet(registrarUser, `/daily-summary/${id}`, {});
+      const nums = [...res.body.matchAll(/<div class="sum-stat-n">(\d+)<\/div>/g)].map((m) => m[1]);
+      assert.deepEqual(nums, ['4', '2', '2', '2'],
+        'ทั้งหมด 4 / ทำแล้ว 2 / เหลือ 2 / ด่วน 2 — ตัวเลขผิดแปลว่าคนอ่านสรุปผิดตั้งแต่บรรทัดแรก');
+    });
+
+    // คนที่แก้ไม่ได้ต้องไม่ได้รับตารางแก้ไขติดไปด้วยเลย ไม่ใช่แค่ซ่อนไว้ด้วย CSS
+    test('คนที่ไม่มีสิทธิ์แก้ ต้องไม่ได้รับตารางแก้ไขและปุ่มแก้ไขเลย', async () => {
+      const id = mkSummary(uuid(), [{ n: 'งานที่ครูดูได้อย่างเดียว' }]);
+      const res = await dispatchGet(teacherUser, `/daily-summary/${id}`, {});
+      assert.equal(res.status, 200);
+      assert.match(res.body, /งานที่ครูดูได้อย่างเดียว/, 'ต้องยังอ่านเนื้อหาได้');
+      assert.ok(!/id="editMode"/.test(res.body), 'ต้องไม่มีตารางแก้ไขในหน้าเลย');
+      assert.ok(!/id="editToggle"/.test(res.body), 'ต้องไม่มีปุ่มแก้ไข');
+      assert.ok(!/id="itemsTable"/.test(res.body), 'ต้องไม่มีช่องกรอกติดไปด้วย');
+      assert.match(res.body, /ดูได้อย่างเดียว/, 'ต้องบอกด้วยว่าทำไมแก้ไม่ได้');
+    });
+
+    test('งานที่ทำแล้วต้องยังอ่านรายละเอียดได้ ไม่ใช่ถูกขีดฆ่าจนอ่านไม่ออก', async () => {
+      const id = mkSummary(uuid(), [{ n: 'งานที่เสร็จแล้ว', d: 'รายละเอียดที่ยังต้องใช้อ้างอิง', done: true }]);
+      const res = await dispatchGet(registrarUser, `/daily-summary/${id}`, {});
+      assert.match(res.body, /รายละเอียดที่ยังต้องใช้อ้างอิง/);
+      const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+      assert.ok(!/\.sum-item\.done[^{]*\{[^}]*line-through/.test(css),
+        'ห้ามขีดฆ่าทั้งรายการ — รายละเอียดของงานที่ทำแล้วยังถูกใช้อ้างอิงย้อนหลัง');
+    });
+  });
+
 });
 
 // หน้าเว็บทั้งหมดพังได้เงียบๆ ถ้าเทมเพลตอ้างตัวแปรผิดชื่อ เพราะ template string จะระเบิดตอน "เรนเดอร์"
