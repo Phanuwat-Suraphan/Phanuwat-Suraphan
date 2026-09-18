@@ -4,7 +4,7 @@ import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, nowIso, audit, todayInBangkok, RETENTION_LABEL } from '../db.js';
 import {
   createDocument, createDocumentsBulk, MAX_BULK_DOCUMENTS,
-  getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, currentStep, currentStepFor,
+  getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, groupStepsByOrder, currentStep, currentStepFor,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
   voidDocument, archiveDocument, forceDeleteDocument, httpError, assertStepBelongsToDocument,
   isSignedStep, signerIdentity, inactiveStepHolder, reassignStuckStep,
@@ -1175,19 +1175,34 @@ router.get('/documents/:id/print', requirePage((ctx) => {
   // เกษียณหนังสือคือคำสั่งการจริงๆ ของเรื่องนั้น ("มอบงานวิชาการดำเนินการและรายงานผลภายในวันที่...")
   // ระบบเก็บไว้ครบและแสดงอยู่ใน Timeline บนหน้าจอ แต่เดิมหน้าพิมพ์ทิ้งไปทั้งหมด เหลือแต่ว่า "ใครเซ็น"
   // ไม่มี "สั่งว่าอะไร" — ฉบับที่พิมพ์เก็บเข้าแฟ้มจึงใช้อ้างอิงย้อนหลังไม่ได้จริง ทั้งที่ข้อมูลมีอยู่แล้ว
-  const signatureBlocksHtml = signedSteps.length ? signedSteps.map((s) => {
+  //
+  // ผู้ที่ได้รับคำสั่ง "พร้อมกัน" ต้องพิมพ์เรียงกันเป็นแถวเดียว ไม่ใช่ไล่ลงมาทีละคน — ถ้าไล่ลงมา
+  // คนอ่านเอกสารที่เก็บเข้าแฟ้มจะเข้าใจว่าหนังสือวิ่งผ่านคนเหล่านั้นทีละคนตามลำดับ ทั้งที่ ผอ.
+  // สั่งการถึงทุกคนพร้อมกันในครั้งเดียว ซึ่งสำหรับหนังสือราชการมีความหมายต่างกันโดยสิ้นเชิง
+  const sigBlock = (s) => {
     const who = signerIdentity(s);
     return `
-    <div class="sig-row">
-      ${s.instruction ? `<div class="sig-note">${esc(s.instruction).replace(/\n/g, '<br/>')}</div>` : ''}
       <div class="sig-block">
-        ${s.signature_image
-          ? `<img src="${esc(s.signature_image)}" alt="ลายเซ็น ${esc(who.name)}" />`
-          : '<div class="sig-space"></div>'}
-        <div class="sig-line">(${esc(who.name)})</div>
+        <!-- ช่องลายเซ็นสูงคงที่เสมอ ไม่ว่าคนนั้นจะมีรูปลายเซ็นบันทึกไว้หรือไม่ และรูปสูงแค่ไหน —
+             ไม่งั้นเส้นประใต้ชื่อของแต่ละคนจะอยู่คนละระดับ ซึ่งเห็นชัดมากตอนพิมพ์ผู้รับคำสั่งหลายคน
+             เรียงกันเป็นแถว และดูเหมือนเอกสารทำมาไม่เรียบร้อย -->
+        <div class="sig-art">${s.signature_image
+          ? `<img src="${esc(s.signature_image)}" alt="ลายเซ็น ${esc(who.name)}" />` : ''}</div>
+        <div class="sig-line sig-name">(${esc(who.name)})</div>
         ${who.position ? `<div class="sig-line">${esc(who.position)}</div>` : ''}
         <div class="sig-line">${fmtThaiDateLong(s.decided_at)}</div>
-      </div>
+      </div>`;
+  };
+  const signatureBlocksHtml = signedSteps.length ? groupStepsByOrder(signedSteps).map((g) => {
+    const notes = g.steps.filter((s) => s.instruction)
+      .map((s) => `<div class="sig-note">${esc(s.instruction).replace(/\n/g, '<br/>')}</div>`).join('');
+    if (g.steps.length === 1) {
+      return `<div class="sig-row">${notes}${sigBlock(g.steps[0])}</div>`;
+    }
+    return `<div class="sig-row">
+      ${notes}
+      <div class="sig-group-label">ผู้รับคำสั่งพร้อมกัน ${g.steps.length} ท่าน</div>
+      <div class="sig-group">${g.steps.map(sigBlock).join('')}</div>
     </div>`;
   }).join('') : '<p class="text-muted" style="text-align:center;padding:1rem 0">ยังไม่มีผู้ลงนามในขั้นตอนใดเลย</p>';
 
@@ -1208,11 +1223,24 @@ router.get('/documents/:id/print', requirePage((ctx) => {
   .sig-row { page-break-inside: avoid; margin-top: 2.2rem; }
   .sig-note { white-space: pre-wrap; font-size: 15pt; border-left: 3px solid #bbb; padding: .1rem 0 .1rem .7rem; margin: 0 0 .2rem; }
   .sig-block { text-align: center; margin: 0 0 0 auto; width: 220px; margin-top: .6rem; }
+  /* กลุ่มผู้รับคำสั่งพร้อมกัน — เรียงเป็นแถว ให้อ่านเป็นคนระดับเดียวกัน ไม่ใช่ลำดับก่อนหลัง
+     จอแคบ/กระดาษเต็มแล้วก็ตัดลงบรรทัดใหม่เอง แต่ยังอยู่ในกรอบ .sig-row เดียวกัน */
+  .sig-group { display: flex; flex-wrap: wrap; gap: .8rem; justify-content: flex-end; align-items: flex-start; }
+  /* ยืดหดตามจำนวนคนในแถว — ตายตัว 200px แล้วสามคนจะเกินความกว้างที่พิมพ์ได้จริง (ประมาณ 643px
+     หลังหักขอบกระดาษ) ชื่อจะตัดบรรทัดจนบล็อกสูงไม่เท่ากัน */
+  .sig-group .sig-block { flex: 1 1 170px; max-width: 220px; width: auto; margin: .6rem 0 0; }
+  /* ชื่อไทยพร้อมคำนำหน้ายาวไม่เท่ากัน บางชื่อตัดเป็นสองบรรทัด บางชื่อบรรทัดเดียว ถ้าปล่อยไว้ บรรทัด
+     ตำแหน่งกับวันที่ของแต่ละคนจะอยู่คนละระดับทั้งแถว — เผื่อที่ไว้สองบรรทัดเสมอ ยอมมีที่ว่างเล็กน้อย
+     สำหรับชื่อสั้น แลกกับแถวลงนามที่ตรงกันทั้งแถว ซึ่งสำคัญกว่าบนเอกสารที่เก็บเข้าแฟ้ม */
+  .sig-group .sig-block .sig-name { min-height: 2.5em; }
+  .sig-group-label { text-align: right; font-size: 13pt; color: #444; margin-top: .6rem; }
+  .sig-art { height: 70px; display: flex; align-items: flex-end; justify-content: center; }
   .sig-block img { max-height: 70px; max-width: 200px; }
   /* ผู้ลงนามที่ไม่ได้เก็บรูปลายเซ็นไว้ในโปรไฟล์ — เว้นช่องสูงเท่ารูปไว้ให้เซ็นด้วยปากกาบนกระดาษที่พิมพ์ออกมา */
-  .sig-block .sig-space { height: 70px; }
   .sig-line { border-top: 1px dotted #111; margin-top: .3rem; padding-top: .2rem; font-size: 14pt; }
-  .sig-block .sig-line:first-of-type { border-top: none; margin-top: 0; padding-top: 0; }
+  /* เส้นใต้ลายเซ็นคือเส้นสำหรับเซ็นตามธรรมเนียมหนังสือราชการ ต้องมีเสมอและเหมือนกันทุกคน
+     (เดิมใช้ :first-of-type ซึ่งให้ผลต่างกันระหว่างคนที่มีรูปลายเซ็นกับคนที่ไม่มี เพราะ img ไม่ใช่ div) */
+  .sig-block .sig-name { margin-top: .3rem; }
   @media print {
     .toolbar { display: none; }
     body { padding: 0; }
@@ -1295,6 +1323,8 @@ router.get('/documents/:id', requirePage((ctx) => {
   const canArchive = doc.status === 'completed' && isCreatorOrAdmin;
   const canForceDelete = ctx.user.roleCodes.includes('admin');
 
+  const stepsInSameOrder = {};
+  for (const s of steps) stepsInSameOrder[s.step_order] = (stepsInSameOrder[s.step_order] || 0) + 1;
   const timelineHtml = steps.length ? `<ul class="timeline">
     ${steps.map((s) => {
       const cls = s.status === 'waiting' ? '' : (s.status === 'rejected' || s.status === 'returned' ? 'rejected' : 'done');
@@ -1304,7 +1334,11 @@ router.get('/documents/:id', requirePage((ctx) => {
       const signed = isSignedStep(s);
       const who = signerIdentity(s);
       return `<li class="${cls}">
-        <div class="t-title">ขั้นที่ ${s.step_order}: ${esc(s.prefix || '')}${esc(s.first_name)} ${esc(s.last_name)} — ${statusText}</div>
+        <div class="t-title">ขั้นที่ ${s.step_order}: ${esc(s.prefix || '')}${esc(s.first_name)} ${esc(s.last_name)} — ${statusText}${
+        // จำนวนคนในขั้นเดียวกัน — ถ้ามีมากกว่าหนึ่ง แปลว่าได้รับเรื่องพร้อมกัน ไม่ใช่ต่อกันเป็นทอดๆ
+        // ถ้าไม่บอก ไทม์ไลน์จะอ่านเหมือนหนังสือวิ่งผ่านคนเหล่านั้นทีละคน ซึ่งคนละเรื่องกัน
+        stepsInSameOrder[s.step_order] > 1
+          ? ` <span class="badge badge-info">พร้อมกัน ${stepsInSameOrder[s.step_order]} ท่าน</span>` : ''}</div>
         <div class="t-meta">มอบหมาย ${fmtDate(s.created_at)}${s.decided_at ? ' · ดำเนินการ ' + fmtDate(s.decided_at) : ''}</div>
         ${s.instruction ? `<div class="t-note">${esc(s.instruction).replace(/\n/g, '<br/>')}</div>` : ''}
         ${signed ? `

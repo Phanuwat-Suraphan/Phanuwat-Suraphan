@@ -323,8 +323,29 @@ export function getWorkflowSteps(documentId) {
     -- ส่วนคอลัมน์จาก users เป็นค่าปัจจุบัน ใช้แสดงว่า "ตอนนี้คนนี้คือใคร" เท่านั้น
     SELECT ws.*, u.first_name, u.last_name, u.prefix, u.position
     FROM workflow_steps ws JOIN users u ON u.id = ws.assignee_id
-    WHERE ws.document_id = ? ORDER BY ws.step_order ASC
+    -- ต้องมีตัวตัดสินเสมอกันด้วย ตั้งแต่ ผอ. ส่งให้หลายคนพร้อมกันได้ เพราะคนที่อยู่ขั้นเดียวกันมี
+    -- step_order เท่ากัน ถ้าเรียงด้วย step_order อย่างเดียว ลำดับของคนในขั้นนั้นไม่ถูกกำหนดตามมาตรฐาน
+    -- SQL แล้วแต่ว่าฐานข้อมูลจะคืนมาแบบไหน — ไทม์ไลน์กับหน้าพิมพ์ของหนังสือฉบับเดียวกันอาจสลับที่กันเอง
+    -- ระหว่างการเปิดสองครั้ง ซึ่งอ่านเป็นความผิดพลาดของเอกสารราชการ
+    WHERE ws.document_id = ? ORDER BY ws.step_order ASC, ws.created_at ASC, ws.rowid ASC
   `).all(documentId);
+}
+
+/**
+ * จัดขั้นตอนเป็นกลุ่มตาม "ขั้นที่" — คนที่อยู่ขั้นเดียวกันคือคนที่ได้รับเรื่องพร้อมกัน
+ *
+ * ต้องแยกให้เห็นชัด ไม่งั้นทั้งไทม์ไลน์และหน้าพิมพ์จะไล่ชื่อทีละคนเหมือนกันหมด คนอ่านจะเข้าใจว่า
+ * หนังสือวิ่งผ่านคนเหล่านั้นทีละคนตามลำดับ ทั้งที่ ผอ. สั่งการถึงทุกคนพร้อมกันในครั้งเดียว —
+ * สำหรับหนังสือราชการ สองอย่างนี้มีความหมายต่างกันโดยสิ้นเชิง
+ */
+export function groupStepsByOrder(steps) {
+  const groups = [];
+  for (const step of steps) {
+    const last = groups[groups.length - 1];
+    if (last && last.order === step.step_order) last.steps.push(step);
+    else groups.push({ order: step.step_order, steps: [step] });
+  }
+  return groups;
 }
 
 // ขั้นตอนที่ "ลงนามไปแล้วจริง" — อนุมัติหรือรับทราบ ซึ่งทั้งสองอย่างผ่านการยืนยัน PIN มาแล้ว

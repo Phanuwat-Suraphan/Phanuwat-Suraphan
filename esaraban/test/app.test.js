@@ -21,6 +21,7 @@ const { daysUntil, fmtDate, fmtThaiDateShort, fmtThaiDateLong, stampDateThai, st
 const {
   createDocument, createDocumentsBulk, MAX_BULK_DOCUMENTS, getDocument, canUserSeeDocument, currentStep,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep, voidDocument, archiveDocument,
+  getWorkflowSteps,
   MAX_PARALLEL_ASSIGNEES,
   assertStepBelongsToDocument, forceDeleteDocument, inactiveStepHolder, reassignStuckStep,
   broadcastDocument, listBroadcasts,
@@ -364,6 +365,46 @@ describe('document lifecycle: assign -> approve -> acknowledge', () => {
       const step = currentStep(doc.id);
       const many = Array.from({ length: MAX_PARALLEL_ASSIGNEES + 1 }, (_, i) => `x-${i}`);
       assert.throws(() => approveAndForward({ stepId: step.id, nextAssigneeIds: many, actorUser: teacherUser }), /ไม่เกิน/);
+    });
+
+    // หนังสือราชการที่เก็บเข้าแฟ้ม ถ้าไล่ชื่อผู้รับลงมาทีละคนเหมือนกันหมด คนอ่านจะเข้าใจว่าหนังสือ
+    // วิ่งผ่านคนเหล่านั้นทีละคนตามลำดับ ทั้งที่ ผอ. สั่งถึงทุกคนพร้อมกันครั้งเดียว — คนละความหมายกัน
+    test('หน้าพิมพ์ต้องบอกว่าผู้รับได้รับคำสั่งพร้อมกัน ไม่ใช่ไล่ต่อกันเป็นทอดๆ', async () => {
+      const doc = makeDoc({ title: 'หนังสือที่สั่งการหลายคนพร้อมกัน' });
+      assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+      forwardTo(doc, [adminUser.id, seed.userIds.head_acad], teacherUser);
+      for (const row of waiting(doc.id)) {
+        acknowledgeAndComplete({ stepId: row.id, comment: 'รับทราบ', actorUser: loadUserForTest(row.assignee_id) });
+      }
+      const res = await dispatchGet(registrarUser, `/documents/${doc.id}/print`, {});
+      assert.equal(res.status, 200);
+      assert.match(res.body, /ผู้รับคำสั่งพร้อมกัน 2 ท่าน/, 'ต้องบอกชัดว่าเป็นผู้รับพร้อมกัน');
+      assert.match(res.body, /class="sig-group"/, 'บล็อกลายเซ็นของคนกลุ่มเดียวกันต้องเรียงเป็นแถวเดียว');
+    });
+
+    test('ไทม์ไลน์ต้องติดป้ายว่าใครได้รับพร้อมกัน', async () => {
+      const doc = makeDoc({ title: 'ไทม์ไลน์ของหนังสือที่สั่งหลายคน' });
+      assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+      forwardTo(doc, [adminUser.id, seed.userIds.head_acad], teacherUser);
+      const res = await dispatchGet(registrarUser, `/documents/${doc.id}`, {});
+      assert.equal(res.status, 200);
+      assert.match(res.body, /พร้อมกัน 2 ท่าน/, 'ต้องบอกว่าขั้นนี้มีผู้รับพร้อมกันกี่คน');
+      // ขั้นแรกมีคนเดียว ต้องไม่ติดป้ายมั่ว
+      assert.ok(!/พร้อมกัน 1 ท่าน/.test(res.body), 'ขั้นที่มีคนเดียวต้องไม่ติดป้าย');
+    });
+
+    // ลำดับของคนในขั้นเดียวกันไม่ถูกกำหนดตามมาตรฐาน SQL ถ้าเรียงด้วย step_order อย่างเดียว —
+    // ไทม์ไลน์กับหน้าพิมพ์ของหนังสือฉบับเดียวกันอาจสลับที่กันเองระหว่างการเปิดสองครั้ง
+    test('ลำดับผู้รับในขั้นเดียวกันต้องคงที่ทุกครั้งที่เปิด', () => {
+      const doc = makeDoc({ title: 'ลำดับต้องไม่สลับไปมา' });
+      assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+      forwardTo(doc, [adminUser.id, seed.userIds.head_acad, seed.userIds.vicedir01], teacherUser);
+      const order = () => getWorkflowSteps(doc.id).map((s) => s.assignee_id).join(',');
+      const first = order();
+      for (let i = 0; i < 5; i++) assert.equal(order(), first, 'เปิดกี่ครั้งลำดับต้องเหมือนเดิม');
+      const src = fs.readFileSync(new URL('../src/services/workflow.js', import.meta.url), 'utf8');
+      assert.match(src, /ORDER BY ws\.step_order ASC, ws\.created_at ASC, ws\.rowid ASC/,
+        'ต้องมีตัวตัดสินเสมอกัน ไม่ใช่เรียงด้วย step_order อย่างเดียว');
     });
 
     test('ส่งต่อแบบคนเดียวเหมือนเดิมต้องยังทำงานได้', () => {
