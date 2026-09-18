@@ -8662,6 +8662,114 @@ describe('ลงทะเบียนเอง + ผู้ดูแลอนุ�
   });
 });
 
+// การแจ้งเตือนเป็น "สำเนาเพื่อบอกให้รู้" ไม่ใช่ตัวงาน ลบทิ้งแล้วหนังสือ/ใบลา/ขั้นตอนยังอยู่ครบ
+// แต่ "ของใคร" สำคัญมาก — ลบของคนอื่นได้เมื่อไหร่ ก็เท่ากับซ่อนงานของเขาโดยที่เขาไม่รู้ตัว
+describe('ลบการแจ้งเตือน', () => {
+  const mkNotif = (userId, { read = 0, ago = 0, title = 'ทดสอบแจ้งเตือน' } = {}) => {
+    const id = uuid();
+    db.prepare(`INSERT INTO notifications (id, user_id, title, message, priority, is_read, created_at)
+      VALUES (?, ?, ?, 'ข้อความ', 'info', ?, ?)`)
+      .run(id, userId, title, read, new Date(Date.now() - ago * 86400000).toISOString());
+    return id;
+  };
+  const exists = (id) => !!db.prepare('SELECT 1 x FROM notifications WHERE id = ?').get(id);
+  const teacher = () => loadUserForTest(seed.userIds.teacher001);
+
+  test('ลบของตัวเองได้', async () => {
+    const id = mkNotif(seed.userIds.teacher001);
+    const res = await dispatchPost(teacher(), `/notifications/${id}/delete`, {});
+    assert.equal(res.status, 200, res.body);
+    assert.ok(!exists(id), 'ต้องถูกลบจริง');
+  });
+
+  // จุดที่พลาดแล้วร้ายแรงที่สุดของฟีเจอร์นี้
+  test('ลบของคนอื่นไม่ได้ ถึงจะรู้ไอดีก็ตาม', async () => {
+    const id = mkNotif(seed.userIds.head_acad);
+    const res = await dispatchPost(teacher(), `/notifications/${id}/delete`, {});
+    assert.equal(res.status, 404, 'ต้องตอบเหมือนไม่มีรายการนี้ ไม่ใช่ลบให้');
+    assert.ok(exists(id), 'ของคนอื่นต้องยังอยู่');
+  });
+
+  test('"ลบที่อ่านแล้ว" ต้องไม่แตะรายการที่ยังไม่ได้อ่าน และไม่แตะของคนอื่น', async () => {
+    const mineRead = mkNotif(seed.userIds.teacher001, { read: 1 });
+    const mineUnread = mkNotif(seed.userIds.teacher001, { read: 0 });
+    const othersRead = mkNotif(seed.userIds.head_acad, { read: 1 });
+    const res = await dispatchPost(teacher(), '/notifications/clear-read', {});
+    assert.equal(res.status, 200);
+    assert.ok(!exists(mineRead), 'ที่อ่านแล้วของตัวเองต้องถูกลบ');
+    assert.ok(exists(mineUnread), 'ที่ยังไม่ได้อ่านคืองานที่ยังไม่เห็น ห้ามลบ');
+    assert.ok(exists(othersRead), 'ของคนอื่นต้องไม่ถูกแตะ');
+  });
+
+  describe('ผู้ดูแลเก็บกวาดของทั้งระบบ', () => {
+    test('ครูธรรมดายิงเองไม่ได้', async () => {
+      for (const path of ['/notifications/admin/purge', '/notifications/admin/purge-preview']) {
+        const res = await dispatchPost(teacher(), path, { days: 90 });
+        assert.equal(res.status, 403, `${path} ต้องกันครูธรรมดาไว้`);
+      }
+    });
+
+    test('ค่าช่วงเวลาที่ไม่อยู่ในรายการต้องถูกปฏิเสธ', async () => {
+      for (const days of [0, 1, -5, 99999, 'ทั้งหมด']) {
+        const res = await dispatchPost(adminUser, '/notifications/admin/purge', { days });
+        assert.equal(res.status, 400, `days=${days} ต้องถูกปฏิเสธ — ลบของทุกคนตั้งแต่ 0 วันแทบไม่มีเหตุผลรองรับ`);
+      }
+    });
+
+    test('ค่าเริ่มต้นลบเฉพาะที่อ่านแล้ว และเฉพาะที่เก่ากว่าที่เลือก', async () => {
+      const oldRead = mkNotif(seed.userIds.head_acad, { read: 1, ago: 200 });
+      const oldUnread = mkNotif(seed.userIds.head_acad, { read: 0, ago: 200 });
+      const newRead = mkNotif(seed.userIds.head_acad, { read: 1, ago: 5 });
+
+      const res = await dispatchPost(adminUser, '/notifications/admin/purge', { days: 90 });
+      assert.equal(res.status, 200, res.body);
+      assert.ok(!exists(oldRead), 'เก่าและอ่านแล้ว ต้องถูกลบ');
+      assert.ok(exists(oldUnread), 'ยังไม่ได้อ่าน = งานที่เจ้าตัวยังไม่เห็น ต้องไม่ถูกลบถ้าไม่ได้สั่งเฉพาะ');
+      assert.ok(exists(newRead), 'ยังไม่เก่าพอ ต้องไม่ถูกลบ');
+    });
+
+    test('ติ๊ก "รวมที่ยังไม่ได้อ่าน" แล้วจึงลบของที่ยังไม่ได้อ่านด้วย', async () => {
+      const oldUnread = mkNotif(seed.userIds.head_acad, { read: 0, ago: 200 });
+      const res = await dispatchPost(adminUser, '/notifications/admin/purge', { days: 90, includeUnread: true });
+      assert.equal(res.status, 200);
+      assert.ok(!exists(oldUnread));
+    });
+
+    // ครูที่แจ้งว่า "การแจ้งเตือนหายไป" ต้องมีคนตอบได้ว่าเกิดอะไรขึ้น
+    test('ต้องบันทึกไว้ว่าใครสั่งลบ ด้วยเงื่อนไขอะไร', async () => {
+      mkNotif(seed.userIds.head_acad, { read: 1, ago: 400 });
+      await dispatchPost(adminUser, '/notifications/admin/purge', { days: 365 });
+      const row = db.prepare("SELECT user_id, detail FROM audit_logs WHERE action = 'notifications_purged' ORDER BY created_at DESC LIMIT 1").get();
+      assert.ok(row, 'ต้องมีร่องรอยใน audit log');
+      assert.equal(row.user_id, adminUser.id);
+      const d = JSON.parse(row.detail);
+      assert.equal(d.days, 365);
+      assert.equal(d.includeUnread, false);
+      assert.ok(typeof d.deleted === 'number');
+    });
+
+    test('นับก่อนลบต้องได้ตัวเลขจริง และยังไม่ลบอะไรเลย', async () => {
+      const a = mkNotif(seed.userIds.head_acad, { read: 1, ago: 200 });
+      const b = mkNotif(seed.userIds.head_acad, { read: 0, ago: 200 });
+      const res = await dispatchPost(adminUser, '/notifications/admin/purge-preview', { days: 90 });
+      assert.equal(res.status, 200);
+      assert.ok(res.json.read >= 1 && res.json.unread >= 1);
+      assert.equal(res.json.count, res.json.read, 'ไม่ติ๊กรวมที่ยังไม่ได้อ่าน จำนวนต้องเท่ากับเฉพาะที่อ่านแล้ว');
+      assert.ok(exists(a) && exists(b), 'การนับต้องไม่ลบอะไรทิ้ง');
+    });
+  });
+
+  test('หน้าแจ้งเตือนต้องมีปุ่มลบ และแผงของผู้ดูแลต้องเห็นเฉพาะผู้ดูแล', async () => {
+    mkNotif(seed.userIds.teacher001);
+    const t = await dispatchGet(teacher(), '/notifications', {});
+    assert.match(t.body, /removeOne\(/, 'ทุกคนต้องมีปุ่มลบรายการของตัวเอง');
+    assert.ok(!/purge-preview|เก็บกวาดการแจ้งเตือนของทั้งระบบ/.test(t.body),
+      'ครูต้องไม่เห็นเครื่องมือเก็บกวาดของทั้งระบบ');
+    const a = await dispatchGet(adminUser, '/notifications', {});
+    assert.match(a.body, /เก็บกวาดการแจ้งเตือนของทั้งระบบ/);
+  });
+});
+
 // กวาดทุกหน้าในระบบเพื่อหาการรั่วของหนังสือชั้นความลับ
 //
 // บั๊กชนิดนี้เคยเกิดมาแล้วสองครั้งในระบบนี้ — หน้าแรกดึง "เอกสารล่าสุด 8 ฉบับของทั้งระบบ" มาแสดงโดย
