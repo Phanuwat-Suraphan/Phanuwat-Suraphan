@@ -15,7 +15,7 @@ import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStr
 import {
   stampPdf, stampDirectorDecision, stampAcknowledgeMark, stampRegistrarComment,
   DECISION_MAX_TOP_PERCENT, DEFAULT_ACK_MARK_X_PERCENT, DEFAULT_DECISION_X_PERCENT, DEFAULT_REGISTRAR_X_PERCENT,
-  ackSlotTopPercent, ACK_WORD_HEIGHT_PERCENT, ACK_ENTRY_HEIGHT_PERCENT, MAX_STAMP_TEXT,
+  ACK_BOX_ROWS, MAX_STAMP_TEXT,
 } from '../services/pdfStamp.js';
 import { assertMaxLength, requireDate } from '../services/validate.js';
 import { canShareToLine, documentShareText, lineShareUrl } from '../services/line.js';
@@ -101,6 +101,18 @@ const DECISION_MARK_OPTIONS = [
   { value: 'ดำเนินการ', label: 'ดำเนินการ' },
 ];
 const DECISION_MARK_VALUES = DECISION_MARK_OPTIONS.map((m) => m.value);
+
+// ตัวเลือกบนตราธุรการที่เสนอเรื่องขึ้นไปให้ ผอ. — ถ้อยคำและลำดับต้องตรงกับตรายางจริงของโรงเรียน
+// และต้องตรงกับที่ stampRegistrarComment วาดลง PDF เป๊ะ (ที่นั่นเทียบด้วยค่าเหล่านี้ตรงๆ)
+// 'fillable' = ข้อที่ตรายางเว้นเส้นประไว้ให้เขียนต่อ
+const REGISTRAR_MARK_OPTIONS = [
+  { value: 'เพื่อโปรดทราบและพิจารณา', label: 'เพื่อโปรดทราบและพิจารณา' },
+  { value: 'เพื่อประชาสัมพันธ์', label: 'เพื่อประชาสัมพันธ์' },
+  { value: 'เพื่อพิจารณา อนุมัติ', label: 'เพื่อพิจารณา อนุมัติ' },
+  { value: 'เพื่อแจ้งฝ่ายงาน', label: 'เพื่อแจ้งฝ่ายงาน ........', fill: 'notifyUnit' },
+  { value: 'เสนอความคิดเห็น', label: 'เสนอความคิดเห็น ........', fill: 'comment' },
+];
+const REGISTRAR_MARK_VALUES = REGISTRAR_MARK_OPTIONS.map((m) => m.value);
 
 function listDeptOptions(selected) {
   return db.prepare('SELECT * FROM departments ORDER BY name').all()
@@ -1308,21 +1320,21 @@ router.get('/documents/:id', requirePage((ctx) => {
         ${attachments.length && isRegistrarComment ? `
         <div class="field">
           <div class="flex items-center justify-between gap-2" style="flex-wrap:nowrap">
-            <label style="margin-bottom:0"><span class="step-num">2</span> ความเห็นธุรการ เสนอ ผอ. <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+            <label style="margin-bottom:0"><span class="step-num">2</span> ตราธุรการ เสนอ ผอ. <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
             <button type="button" class="btn btn-outline btn-sm" style="flex:0 0 auto;white-space:nowrap" onclick="window.clearRegistrarNote()">🗑️ ล้างค่า</button>
           </div>
-          <div class="chip-row" style="margin:.4rem 0">
-            <button type="button" class="btn btn-outline btn-sm" onclick="insertRegistrarPhrase('เพื่อโปรดทราบ')">เพื่อโปรดทราบ</button>
-            <button type="button" class="btn btn-outline btn-sm" onclick="insertRegistrarPhrase('เพื่อโปรดพิจารณา')">เพื่อโปรดพิจารณา</button>
-            <button type="button" class="btn btn-outline btn-sm" onclick="insertRegistrarPhrase('เห็นควรมอบ', 'ดำเนินการ')">เห็นควรมอบ...ดำเนินการ</button>
-            <button type="button" class="btn btn-outline btn-sm" onclick="insertRegistrarPhrase('เห็นควรแจ้งคณะครูทราบโดยทั่วกัน')">แจ้งคณะครูทราบ</button>
-          </div>
-          <textarea id="registrarNote" placeholder="พิมพ์ความเห็นที่จะเสนอ ผอ. — จะขึ้นบนไฟล์ PDF จริงมุมขวาล่าง"
+          <div class="help-text" style="margin-bottom:.4rem">ฝนเลือกข้อที่ต้องการ — ตรงกับตรายางจริงของโรงเรียน ติ๊กได้หลายข้อ</div>
+          ${REGISTRAR_MARK_OPTIONS.map((m) => `<label class="check-inline" style="display:block;margin:.15rem 0">
+            <input type="checkbox" class="regMark" value="${esc(m.value)}" onchange="window.updateRegistrarPreview && window.updateRegistrarPreview()" />
+            <span>${esc(m.label)}</span>
+          </label>`).join('')}
+          <input type="text" id="registrarUnit" maxlength="60" placeholder="ฝ่ายงานที่จะแจ้ง (เติมในข้อ &quot;เพื่อแจ้งฝ่ายงาน&quot;)"
+                 style="margin-top:.4rem" oninput="window.updateRegistrarPreview && window.updateRegistrarPreview()" />
+          <textarea id="registrarNote" style="margin-top:.4rem" placeholder="ความคิดเห็นที่จะเสนอ ผอ. (เติมในข้อ &quot;เสนอความคิดเห็น&quot;)"
                     oninput="window.updateRegistrarPreview && window.updateRegistrarPreview()"></textarea>
           <div class="callout-tip">
-            ✍️ ระบบจะพิมพ์ลงไฟล์ PDF จริงให้เป็น 3 ส่วน — บรรทัดแรก <strong>“เรียนผู้อำนวยการโรงเรียน”</strong>
-            บรรทัดถัดมาคือความเห็นที่พิมพ์ไว้ แล้วปิดท้ายด้วย<strong>ลายเซ็นและตำแหน่งของคุณ</strong>
-            ${ctx.user.signature_image ? '' : '<br/><span style="color:var(--danger)">⚠️ คุณยังไม่ได้บันทึกลายเซ็นในโปรไฟล์ — ความเห็นจะขึ้นแต่จะไม่มีลายเซ็น</span>'}
+            ✍️ ตรานี้ไม่มีลายเซ็นของคุณอยู่บนหน้ากระดาษแล้ว — ปั๊มแล้วส่งขึ้นไปได้เลย
+            ระบบยังบันทึกไว้อยู่ว่าคุณเป็นผู้เสนอเรื่องนี้เมื่อไหร่ ทั้งในประวัติการใช้งานและในความเห็นของหนังสือฉบับนี้
           </div>
         </div>` : ''}
         ${attachments.length && isDirectorDecision ? `
@@ -1386,17 +1398,11 @@ router.get('/documents/:id', requirePage((ctx) => {
         if (notifyEl && notifyEl.value.trim()) f.decisionNotify = notifyEl.value.trim();
         var regEl = document.getElementById('registrarNote');
         if (regEl && regEl.value.trim()) f.registrarNote = regEl.value.trim();
+        var regMarks = Array.prototype.slice.call(document.querySelectorAll('.regMark:checked')).map(function (el) { return el.value; });
+        if (regMarks.length) f.registrarMarks = regMarks;
+        var regUnitEl = document.getElementById('registrarUnit');
+        if (regUnitEl && regUnitEl.value.trim()) f.registrarUnit = regUnitEl.value.trim();
         return f;
-      }
-      // แทรกคำที่ธุรการใช้บ่อยลงในช่องความเห็นเสนอ ผอ. ไม่ทับของเดิม เพิ่มขึ้นบรรทัดใหม่ พิมพ์ต่อได้ตามปกติ
-      function insertRegistrarPhrase(head, tail){
-        var el = document.getElementById('registrarNote');
-        var sep = el.value.trim() ? '\\n' : '';
-        var insertPos = el.value.length + sep.length + head.length;
-        el.value = el.value + sep + head + (tail || '');
-        el.focus();
-        el.setSelectionRange(insertPos, insertPos);
-        if (window.updateRegistrarPreview) window.updateRegistrarPreview();
       }
       // เตือนถ้าเป็น ผอ. (มี checkbox ให้ติ๊ก) แต่ยังไม่ได้ติ๊กอะไรเลย — เผื่อลืมติ๊กเพราะเป็นคนละจุดกับปุ่ม
       // ดำเนินการ ไม่บล็อก แค่ถามยืนยันอีกที ถ้าไม่ใช่ ผอ. (ไม่มี checkbox ในหน้าเลย) ผ่านไปได้ปกติ
@@ -1524,13 +1530,20 @@ router.get('/documents/:id', requirePage((ctx) => {
         </div>
         ${attachments.length && ctx.user.roleCodes.includes('registrar') ? `
         <div class="field">
-          <label>ความเห็นธุรการ เสนอ ผอ. <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
-          <textarea id="assignRegistrarNote" placeholder="พิมพ์ความเห็นที่จะขึ้นบนตัวหนังสือ ให้ ผอ. เห็นพร้อมกับเอกสาร"></textarea>
+          <label>ตราธุรการ เสนอ ผอ. <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+          <div class="help-text" style="margin-bottom:.4rem">ฝนเลือกข้อที่ต้องการ — ตรงกับตรายางจริงของโรงเรียน ติ๊กได้หลายข้อ</div>
+          ${REGISTRAR_MARK_OPTIONS.map((m) => `<label class="check-inline" style="display:block;margin:.15rem 0">
+            <input type="checkbox" class="assignRegMark" value="${esc(m.value)}" />
+            <span>${esc(m.label)}</span>
+          </label>`).join('')}
+          <input type="text" id="assignRegistrarUnit" maxlength="60" style="margin-top:.4rem"
+                 placeholder="ฝ่ายงานที่จะแจ้ง (เติมในข้อ &quot;เพื่อแจ้งฝ่ายงาน&quot;)" />
+          <textarea id="assignRegistrarNote" style="margin-top:.4rem"
+                    placeholder="ความคิดเห็นที่จะเสนอ ผอ. (เติมในข้อ &quot;เสนอความคิดเห็น&quot;)"></textarea>
           <div class="callout-tip">
-            ✍️ ระบบจะพิมพ์ลงไฟล์ PDF จริงที่มุมซ้ายล่าง เป็น 3 ส่วน — บรรทัดแรก <strong>“เรียนผู้อำนวยการโรงเรียน”</strong>
-            บรรทัดถัดมาคือความเห็น แล้วปิดท้ายด้วย<strong>ลายเซ็นและตำแหน่งของคุณ</strong>
-            ${ctx.user.signature_image ? '' : '<br/><span style="color:var(--danger)">⚠️ คุณยังไม่ได้บันทึกลายเซ็นในโปรไฟล์ — ความเห็นจะขึ้นแต่จะไม่มีลายเซ็น</span>'}
-            <br/>เพราะมีลายเซ็นติดไปด้วย จึงต้องยืนยัน PIN ก่อน (ถ้าไม่เขียนความเห็น เสนอได้เลยไม่ต้องใส่ PIN)
+            ✍️ ระบบจะปั๊มตรานี้ลงไฟล์ PDF จริงที่มุมซ้ายล่าง — <strong>ไม่มีลายเซ็นของคุณอยู่บนตราแล้ว</strong>
+            ปั๊มแล้วส่งขึ้นไปให้ ผอ. ได้เลย ระบบยังบันทึกไว้อยู่ว่าคุณเป็นผู้เสนอเรื่องนี้เมื่อไหร่
+            <br/>ยังต้องยืนยัน PIN ก่อน เพราะเป็นการแก้ไฟล์หนังสือฉบับจริง (ถ้าไม่ปั๊มตรา เสนอได้เลยไม่ต้องใส่ PIN)
           </div>
         </div>` : ''}
         <button class="btn btn-primary" onclick="doAssign(this)">เสนอ</button>
@@ -1541,13 +1554,18 @@ router.get('/documents/:id', requirePage((ctx) => {
         var assigneeId = document.getElementById('assignTo').value;
         var instruction = document.getElementById('assignInstruction').value;
         var noteEl = document.getElementById('assignRegistrarNote');
+        var unitEl = document.getElementById('assignRegistrarUnit');
         var registrarNote = noteEl ? noteEl.value.trim() : '';
+        var regMarks = Array.prototype.slice.call(document.querySelectorAll('.assignRegMark:checked')).map(function (el) { return el.value; });
         var body = { assigneeId: assigneeId, instruction: instruction };
-        // ความเห็นธุรการมีลายเซ็นติดไปลงบนตัวหนังสือ จึงต้องยืนยันตัวตนเหมือนการลงนามจุดอื่นในระบบ
-        if (registrarNote) {
-          var pin = await window.askPin('ยืนยัน PIN เพื่อลงความเห็นและเสนอ ผอ.');
+        // ตรานี้ไปแก้ไฟล์หนังสือฉบับจริง จึงต้องยืนยันตัวตนเหมือนการลงนามจุดอื่นในระบบ — ถามเมื่อมีอะไร
+        // จะปั๊มจริงๆ เท่านั้น (ติ๊กข้อใดข้อหนึ่ง หรือพิมพ์ความเห็น) เสนอเปล่าๆ ยังไม่ต้องใส่ PIN เหมือนเดิม
+        if (registrarNote || regMarks.length) {
+          var pin = await window.askPin('ยืนยัน PIN เพื่อปั๊มตราธุรการและเสนอ ผอ.');
           if (!pin) return;
           body.registrarNote = registrarNote;
+          if (regMarks.length) body.registrarMarks = regMarks;
+          if (unitEl && unitEl.value.trim()) body.registrarUnit = unitEl.value.trim();
           body.pin = pin;
         }
         btn.disabled = true;
@@ -1744,36 +1762,65 @@ router.get('/documents/:id', requirePage((ctx) => {
             // ทุกกล่องอยู่ตำแหน่งตายตัวตามผังแถบล่าง (ดู pdfStamp.js) ลากย้ายเองไม่ได้แล้ว — โรงเรียนแจ้งว่า
             // ไม่ได้ใช้การลากเลย และการลากเปิดช่องให้วางทับกันเองจนอ่านไม่ออก หน้าตัวอย่างยังมีไว้ให้ดูว่า
             // ของจริงจะออกมาหน้าตาแบบไหน และเอาเมาส์ชี้กล่องไหนก็อ่านกล่องนั้นชัดๆ ได้ (ดู .doc-overlay-*)
-            // ตัวอย่างช่อง "ทราบ" ต้องแสดงตรงกับที่จะประทับจริง — คำว่า "ทราบ" มีคำเดียวต่อหนังสือหนึ่งฉบับ
-            // ถ้าเรามาทีหลัง จะเห็นเฉพาะช่องลายเซ็นของเราต่อจากคนก่อนหน้า ไม่มีคำว่าทราบซ้ำอีกอัน
-            var CAN_MARK = ${(isCurrentAssignee && ctx.user.signature_image && !isDirectorDecision && !isRegistrarComment) ? 'true' : 'false'};
+            // ตัวอย่างตรา "รับทราบและปฏิบัติตามคำสั่ง" ต้องแสดงตรงกับที่จะประทับจริง — กรอบมีบรรทัดเลข
+            // ให้ผู้ที่ ผอ. สั่งการถึงลงชื่อคนละบรรทัด เราจะได้บรรทัดที่เท่าไหร่ขึ้นกับว่ามาเป็นคนที่เท่าไหร่
+            var CAN_MARK = ${(isCurrentAssignee && !isDirectorDecision && !isRegistrarComment) ? 'true' : 'false'};
             var ACK_SIGNER_INDEX = ${attachments.length ? ackSignerIndex(attachments[0].id) : 0};
-            var MARK_HTML = '<div class="doc-mark doc-overlay-box" id="ackMark" data-label="ทราบ (ลายเซ็นผู้ได้รับเอกสาร)" style="left:${DEFAULT_ACK_MARK_X_PERCENT}%;top:${attachments.length ? ackSlotTopPercent(ackSignerIndex(attachments[0].id), MARK_BASE_Y) : MARK_BASE_Y}%">' +
-              (ACK_SIGNER_INDEX === 0 ? '<div class="mark-word">ทราบ</div>' : '') +
-              '<div class="mark-entry">' +
-                ${ctx.user.signature_image ? `'<div class="mark-sig"><img src="${esc(ctx.user.signature_image)}" /></div>' +` : "'<div class=\"mark-sig\"></div>' +"}
-                '<div class="mark-name">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</div>' +
-              '</div>' +
-            '</div>';
-            // ความเห็นธุรการเสนอ ผอ. — มุมขวาล่าง ขอบบนตรงกับกรอบตราปั๊ม ผอ. (ใช้ DECISION_MAX_TOP ตัวเดียวกัน)
+            var ACK_ROWS = Math.max(${ACK_BOX_ROWS}, ACK_SIGNER_INDEX + 1);
+            var ACK_ENTRY = ${ctx.user.signature_image ? `'<img class="ack-sig" src="${esc(ctx.user.signature_image)}" />'` : "''"} +
+              '<span class="ack-who">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</span>';
+            var MARK_HTML = (function () {
+              var rows = '';
+              for (var i = 0; i < ACK_ROWS; i++) {
+                rows += '<div class="ack-row"><span class="ack-n">' + (i + 1) + '.</span>' +
+                  '<span class="ack-line">' + (i === ACK_SIGNER_INDEX ? ACK_ENTRY : '') + '</span></div>';
+              }
+              return '<div class="doc-mark doc-overlay-box" id="ackMark" data-label="รับทราบและปฏิบัติตามคำสั่ง" style="left:${DEFAULT_ACK_MARK_X_PERCENT}%;top:' + DECISION_MAX_TOP + '%">' +
+                '<div class="ack-title">รับทราบและปฏิบัติตามคำสั่ง</div>' + rows + '</div>';
+            })();
+            // ตราธุรการ — มุมซ้ายล่าง ขอบบนตรงกับกรอบตราปั๊ม ผอ. (ใช้ DECISION_MAX_TOP ตัวเดียวกัน)
             var CAN_REGISTRAR = ${(isCurrentAssignee && isRegistrarComment) ? 'true' : 'false'};
-            var REGISTRAR_HTML = '<div class="doc-registrar-note doc-overlay-box" id="registrarBox" data-label="ความเห็นธุรการ เสนอ ผอ." style="left:${DEFAULT_REGISTRAR_X_PERCENT}%;top:' + DECISION_MAX_TOP + '%">' +
-              '<div class="reg-lead">เรียนผู้อำนวยการโรงเรียน</div>' +
-              '<div class="reg-body" id="registrarNotePreview"></div>' +
-              ${ctx.user.signature_image ? `'<div class="sig"><img src="${esc(ctx.user.signature_image)}" /></div>' +` : "''+"}
-              '<div class="reg-name">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</div>' +
-              '<div class="reg-name">ตำแหน่ง<span class="fill">${esc(ctx.user.position || '')}</span></div>' +
+            var REGISTRAR_MARKS = ${JSON.stringify(REGISTRAR_MARK_OPTIONS.map((m) => ({ value: m.value, fill: m.fill || null })))};
+            var REGISTRAR_HTML = '<div class="doc-registrar-note doc-overlay-box" id="registrarBox" data-label="ตราธุรการ เสนอ ผอ." style="left:${DEFAULT_REGISTRAR_X_PERCENT}%;top:' + DECISION_MAX_TOP + '%">' +
+              '<div class="reg-lead">เรียน ผู้อำนวยการ${esc(schoolName())}</div>' +
+              '<div id="registrarMarksPreview"></div>' +
             '</div>';
-            // ให้ตัวอย่างบนเว็บตรงกับที่จะพิมพ์ลง PDF จริงเป๊ะ ผู้ใช้จะได้เห็นว่าความเห็นยาวเกินกรอบหรือยัง
+            // ให้ตัวอย่างบนเว็บตรงกับที่จะปั๊มลง PDF จริงเป๊ะ ผู้ใช้จะได้เห็นว่าข้อความยาวเกินกรอบหรือยัง
             window.updateRegistrarPreview = function () {
-              var el = document.getElementById('registrarNotePreview');
+              var el = document.getElementById('registrarMarksPreview');
               if (!el) return;
-              var input = document.getElementById('registrarNote');
-              el.textContent = (input && input.value.trim()) || '(ยังไม่ได้พิมพ์ความเห็น)';
+              var note = document.getElementById('registrarNote');
+              var unit = document.getElementById('registrarUnit');
+              var picked = {};
+              Array.prototype.forEach.call(document.querySelectorAll('.regMark:checked'), function (cb) { picked[cb.value] = true; });
+              // ประกอบด้วย DOM ไม่ใช่ต่อสตริง HTML — ค่าที่ผู้ใช้พิมพ์ (ฝ่ายงาน/ความคิดเห็น) วิ่งเข้ามาตรงนี้
+              // การใช้ textContent ทำให้ไม่ต้องพึ่งการ escape ให้ถูกทุกจุดเอง ซึ่งพลาดครั้งเดียวก็เป็นช่องโหว่
+              el.textContent = '';
+              REGISTRAR_MARKS.forEach(function (m) {
+                var fill = m.fill === 'notifyUnit' ? (unit && unit.value.trim()) || ''
+                  : m.fill === 'comment' ? (note && note.value.trim()) || '' : '';
+                var row = document.createElement('div');
+                row.className = 'reg-opt';
+                var dot = document.createElement('span');
+                dot.className = 'reg-dot' + (picked[m.value] ? ' on' : '');
+                row.appendChild(dot);
+                row.appendChild(document.createTextNode(m.value));
+                if (m.fill) {
+                  row.appendChild(document.createTextNode(' '));
+                  var span = document.createElement('span');
+                  span.className = 'reg-fill';
+                  span.textContent = fill;
+                  row.appendChild(span);
+                }
+                el.appendChild(row);
+              });
             };
             window.clearRegistrarNote = function () {
-              var input = document.getElementById('registrarNote');
-              if (input) input.value = '';
+              var note = document.getElementById('registrarNote');
+              var unit = document.getElementById('registrarUnit');
+              if (note) note.value = '';
+              if (unit) unit.value = '';
+              Array.prototype.forEach.call(document.querySelectorAll('.regMark'), function (cb) { cb.checked = false; });
               window.updateRegistrarPreview();
             };
             var DECISION_HTML = '<div class="doc-decision-box doc-overlay-box" id="decisionBox" data-label="กรอบตราปั๊ม ผอ." style="left:${DEFAULT_DECISION_X_PERCENT}%;top:' + DECISION_MAX_TOP + '%">' +
@@ -1988,11 +2035,12 @@ router.post('/documents/:id/assign', requireApi(async (ctx) => {
   // ธุรการเขียนความเห็นเสนอ ผอ. ลงบนตัวหนังสือได้ตั้งแต่ตอนส่งเรื่องขึ้นไปครั้งแรก ไม่ต้องรอให้เรื่องวน
   // กลับมาที่ตัวเอง — ผอ. จะได้เห็นความเห็นพร้อมกับตัวหนังสือตั้งแต่เปิดอ่านครั้งแรกเลย
   //
-  // ความเห็นนี้มีลายเซ็นของธุรการติดไปด้วย จึงต้องยืนยัน PIN เหมือนการลงนามทุกจุดในระบบ — แต่บังคับ
-  // เฉพาะเมื่อมีการเขียนความเห็นจริงๆ เท่านั้น การเสนอเปล่าๆ ยังทำได้เหมือนเดิมโดยไม่ต้องใส่ PIN
+  // ตรานี้ไม่มีลายเซ็นธุรการอยู่บนหน้ากระดาษแล้ว แต่ยังต้องยืนยัน PIN อยู่ เพราะมันไปแก้ไฟล์หนังสือ
+  // ราชการฉบับจริง และเป็นหลักฐานว่าใครเป็นคนเสนอเรื่องนี้ขึ้นไป — บังคับเฉพาะเมื่อมีอะไรจะประทับจริงๆ
+  // (ติ๊กข้อใดข้อหนึ่ง หรือพิมพ์ความเห็น) การเสนอเปล่าๆ ยังทำได้เหมือนเดิมโดยไม่ต้องใส่ PIN
   const registrarNote = typeof ctx.body.registrarNote === 'string' ? ctx.body.registrarNote.trim() : '';
-  if (registrarNote) {
-    if (!canWriteRegistrarComment(null, ctx.user)) throw httpError(403, 'เฉพาะธุรการเท่านั้นที่เขียนความเห็นเสนอ ผอ. ได้');
+  if (registrarNote || parseRegistrarMarks(ctx.body.registrarMarks).length) {
+    if (!canWriteRegistrarComment(null, ctx.user)) throw httpError(403, 'เฉพาะธุรการเท่านั้นที่ประทับตราเสนอ ผอ. ได้');
     const { verifyPin } = await import('../auth.js');
     if (!verifyPin(ctx.user.id, ctx.body.pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   }
@@ -2001,6 +2049,7 @@ router.post('/documents/:id/assign', requireApi(async (ctx) => {
   assignStep({ documentId: doc.id, assigneeId: ctx.body.assigneeId, instruction: ctx.body.instruction, actorUser: ctx.user });
   const warning = await stampRegistrarCommentIfApplicable({
     documentId: doc.id, stepId: null, actorUser: ctx.user, comment: registrarNote,
+    registrarMarks: ctx.body.registrarMarks, registrarUnit: ctx.body.registrarUnit,
     registrarX: parsePercent(ctx.body.registrarX), registrarY: parsePercent(ctx.body.registrarY),
   });
   json(ctx, 200, { ok: true, warning });
@@ -2028,9 +2077,15 @@ function parseNotifyTarget(raw) {
   return raw.trim().slice(0, 60);
 }
 
+/** ข้อที่ธุรการฝนเลือกบนตราของตัวเอง — กรองแบบเดียวกับ parseDecisionMarks ด้วยเหตุผลเดียวกัน */
+function parseRegistrarMarks(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((m) => REGISTRAR_MARK_VALUES.includes(m));
+}
+
 
 router.post('/documents/:id/workflow/:stepId/approve', requireApi(async (ctx) => {
-  const { pin, nextAssigneeId, comment, markX, markY, decisionX, decisionY, decisionNote, decisionMarks, decisionNotify, registrarNote, registrarX, registrarY } = ctx.body;
+  const { pin, nextAssigneeId, comment, markX, markY, decisionX, decisionY, decisionNote, decisionMarks, decisionNotify, registrarNote, registrarMarks, registrarUnit, registrarX, registrarY } = ctx.body;
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   if (!nextAssigneeId) throw httpError(400, 'กรุณาเลือกผู้รับที่จะส่งต่อ');
@@ -2047,13 +2102,14 @@ router.post('/documents/:id/workflow/:stepId/approve', requireApi(async (ctx) =>
   });
   const warning3 = await stampRegistrarCommentIfApplicable({
     documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, comment: registrarNote,
+    registrarMarks, registrarUnit,
     registrarX: parsePercent(registrarX), registrarY: parsePercent(registrarY),
   });
   json(ctx, 200, { ok: true, warning: warning1 || warning2 || warning3 });
 }));
 
 router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx) => {
-  const { pin, comment, markX, markY, decisionX, decisionY, decisionNote, decisionMarks, decisionNotify, registrarNote, registrarX, registrarY } = ctx.body;
+  const { pin, comment, markX, markY, decisionX, decisionY, decisionNote, decisionMarks, decisionNotify, registrarNote, registrarMarks, registrarUnit, registrarX, registrarY } = ctx.body;
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   assertStampTextFits({ decisionNote, registrarNote });
@@ -2066,13 +2122,14 @@ router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx
   });
   const warning3 = await stampRegistrarCommentIfApplicable({
     documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, comment: registrarNote,
+    registrarMarks, registrarUnit,
     registrarX: parsePercent(registrarX), registrarY: parsePercent(registrarY),
   });
   json(ctx, 200, { ok: true, warning: warning1 || warning2 || warning3 });
 }));
 
 router.post('/documents/:id/workflow/:stepId/reject', requireApi(async (ctx) => {
-  const { reason, markX, markY, decisionX, decisionY, decisionNote, decisionMarks, decisionNotify, registrarNote, registrarX, registrarY } = ctx.body;
+  const { reason, markX, markY, decisionX, decisionY, decisionNote, decisionMarks, decisionNotify, registrarNote, registrarMarks, registrarUnit, registrarX, registrarY } = ctx.body;
   // decisionNote ว่างเปล่าจะใช้ reason แทนตอนประทับ จึงต้องตรวจ reason ตามเพดานของตราประทับด้วย
   assertStampTextFits({ decisionNote: decisionNote || reason, registrarNote });
   assertStepBelongsToDocument(ctx.params.id, ctx.params.stepId);
@@ -2084,6 +2141,7 @@ router.post('/documents/:id/workflow/:stepId/reject', requireApi(async (ctx) => 
   });
   const warning3 = await stampRegistrarCommentIfApplicable({
     documentId: ctx.params.id, stepId: ctx.params.stepId, actorUser: ctx.user, comment: registrarNote,
+    registrarMarks, registrarUnit,
     registrarX: parsePercent(registrarX), registrarY: parsePercent(registrarY),
   });
   json(ctx, 200, { ok: true, warning: warning1 || warning2 || warning3 });
@@ -2316,13 +2374,15 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser,
   // ไว้สำหรับคนอื่นในสาย workflow ที่ไม่มีที่ลงนามเป็นของตัวเอง (ครู หัวหน้าฝ่าย รองผู้อำนวยการ ฯลฯ)
   if (directorTitleMode(stepId, actorUser) !== 'generic') return;
   if (actorUser.roleCodes.includes('registrar')) return;
-  if (!actorUser.signature_image) return;
+  // เดิมข้ามคนที่ยังไม่ได้บันทึกลายเซ็นในโปรไฟล์ เพราะของเดิมเป็นลายเซ็นลอยๆ ใต้คำว่า "ทราบ" ถ้าไม่มี
+  // ลายเซ็นก็เหลือแต่ชื่อลอยๆ ที่ดูไม่ออกว่าคืออะไร — ตราใหม่มีบรรทัดเลขกำกับชัดเจน ชื่อเปล่าๆ บนบรรทัดที่
+  // 2 จึงอ่านออกอยู่แล้วว่าเป็นผู้รับทราบคนที่สอง และการข้ามไปเงียบๆ แย่กว่ามาก เพราะหนังสือที่สั่งการ
+  // หลายคนจะมีบรรทัดหายไปโดยไม่มีอะไรบอกว่าใครหาย
   const att = db.prepare(`SELECT * FROM attachments WHERE document_id = ? ${ATTACHMENT_ORDER} LIMIT 1`).get(documentId);
   if (!att) return;
   try {
     const originalBuffer = await readAttachmentBytes(att, { preferStamped: true });
-    // คำว่า "ทราบ" มีคำเดียวต่อหนังสือหนึ่งฉบับ — คนแรกเป็นผู้ประทับคำนั้นพร้อมเซ็นชื่อ คนถัดๆ ไปเซ็นชื่อ
-    // ต่อกันลงมาใต้คนแรกให้เป็นแถวเดียวกัน (ดู ackSlotTopPercent ใน pdfStamp.js)
+    // คนแรกเป็นผู้วาดกรอบ คนถัดๆ ไปวาดแต่ชื่อตัวเองลงบรรทัดที่ N ของกรอบเดิม (ดู stampAcknowledgeMark)
     const signerIndex = ackSignerIndex(att.id);
     const stampedBuffer = await stampAcknowledgeMark({
       originalBuffer,
@@ -2331,11 +2391,11 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser,
       firstName: actorUser.first_name,
       lastName: actorUser.last_name,
       dateThaiLong: stampDateThai(),
-      showWord: signerIndex === 0,
+      slotIndex: signerIndex,
+      drawBox: signerIndex === 0,
       xPercent: markX ?? DEFAULT_ACK_MARK_X_PERCENT,
-      // ถ้าผู้ใช้ลากเลือกตำแหน่งเอง ให้ถือว่านั่นคือขอบบนของ "ทั้งช่อง" แล้วคำนวณช่องของคนนี้ต่อจากนั้น
-      // เพื่อให้ยังเรียงต่อกันเป็นระเบียบเหมือนเดิม ไม่ใช่ไปทับลายเซ็นของคนก่อนหน้า
-      yPercent: ackSlotTopPercent(signerIndex, markY ?? MARK_BASE_Y),
+      // ทุกคนใช้ขอบบนเดียวกันคือขอบบนของกรอบ — ตำแหน่งของแต่ละคนเป็นเรื่องภายในกรอบล้วนๆ
+      yPercent: markY ?? MARK_BASE_Y,
       actingForLabel: actingForLabel(stepId, actorUser),
     });
     await saveStampedCopy(att, stampedBuffer, getDocument(documentId)?.year_be);
@@ -2343,7 +2403,7 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser,
   } catch (err) {
     markStampFailed(att.id, err.message, { kind: 'ack', stepId, actorUserId: actorUser.id, markX, markY });
     audit({ userId: actorUser.id, action: 'attachment_mark_stamp_failed', tableName: 'attachments', recordId: att.id, detail: { documentId, error: err.message } });
-    return `บันทึกผลสำเร็จ แต่ลงลายเซ็น "ทราบ" ลงในไฟล์ PDF จริงไม่สำเร็จ: ${err.message}`;
+    return `บันทึกผลสำเร็จ แต่ลงตรา "รับทราบและปฏิบัติตามคำสั่ง" ลงในไฟล์ PDF จริงไม่สำเร็จ: ${err.message}`;
   }
 }
 
@@ -2370,35 +2430,53 @@ function registrarBoxYPercent(attachmentId) {
   return Math.max(REGISTRAR_BOX_MIN_Y, DECISION_MAX_TOP_PERCENT - c * REGISTRAR_BOX_STEP_Y);
 }
 
-async function stampRegistrarCommentIfApplicable({ documentId, stepId, actorUser, comment, registrarX, registrarY }) {
+async function stampRegistrarCommentIfApplicable({ documentId, stepId, actorUser, comment, registrarMarks, registrarUnit, registrarX, registrarY, skipComment = false }) {
   const text = typeof comment === 'string' ? comment.trim() : '';
-  if (!text || !canWriteRegistrarComment(stepId, actorUser)) return;
+  const marks = parseRegistrarMarks(registrarMarks);
+  const unit = parseNotifyTarget(registrarUnit);
+  // ประทับเมื่อมี "อะไรสักอย่าง" ให้ประทับ — ติ๊กข้อใดข้อหนึ่ง หรือพิมพ์ความเห็นมา อย่างใดอย่างหนึ่งก็พอ
+  // (เดิมต้องมีข้อความเท่านั้น เพราะตราเก่าไม่มีตัวเลือกให้ติ๊กเลย)
+  if (!marks.length && !text) return;
+  if (!canWriteRegistrarComment(stepId, actorUser)) return;
   const att = db.prepare(`SELECT * FROM attachments WHERE document_id = ? ${ATTACHMENT_ORDER} LIMIT 1`).get(documentId);
   if (!att) return;
+
+  // เก็บไว้ในระบบ "ก่อน" ลงมือปั๊มไฟล์ และไม่ผูกกับว่าการปั๊มจะสำเร็จหรือไม่
+  //
+  // เดิมบรรทัดนี้อยู่ท้าย try จึงทำงานเฉพาะตอนปั๊มสำเร็จ ซึ่งเป็นปัญหาตั้งแต่เอาลายเซ็นธุรการออกจากตรา
+  // เพราะบันทึกในระบบกลายเป็น "ที่เดียว" ที่บอกว่าใครเป็นคนเสนอเรื่องนี้ขึ้นไปและเสนอว่าอะไร
+  // ถ้าปั๊มล้ม (qpdf ล่ม/ไฟล์ PDF แปลก) ก็จะไม่เหลือร่องรอยเลยทั้งบนกระดาษและในระบบ — ยืนยันแล้วว่า
+  // เกิดขึ้นจริงตอนทดสอบบนเครื่องที่ไม่มี qpdf ผู้ใช้เห็นแค่คำเตือนแวบเดียวแล้วข้อมูลหายไปทั้งก้อน
+  // ส่วนการปั๊มที่ล้มยังมีปุ่ม "ประทับใหม่" ให้กดซ่อมทีหลังได้อยู่แล้ว (ดู retry-stamp)
+  if (!skipComment) {
+    const lines = [`เรียน ผู้อำนวยการ${schoolName()}`];
+    for (const m of marks) {
+      if (m === 'เพื่อแจ้งฝ่ายงาน') lines.push(`• ${m} ${unit}`.trim());
+      else if (m === 'เสนอความคิดเห็น') lines.push(`• ${m} ${text}`.trim());
+      else lines.push(`• ${m}`);
+    }
+    if (text && !marks.includes('เสนอความคิดเห็น')) lines.push(text);
+    db.prepare('INSERT INTO comments (id, document_id, user_id, message, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(uuid(), documentId, actorUser.id, lines.join('\n'), nowIso());
+  }
+
   try {
     const originalBuffer = await readAttachmentBytes(att, { preferStamped: true });
     const stampedBuffer = await stampRegistrarComment({
       originalBuffer,
+      schoolName: schoolName(),
+      marks,
+      notifyUnit: unit,
       comment: text,
-      signatureDataUrl: actorUser.signature_image || null,
-      prefix: actorUser.prefix,
-      firstName: actorUser.first_name,
-      lastName: actorUser.last_name,
-      position: actorUser.position,
-      dateThaiLong: stampDateThai(),
       xPercent: registrarX,
       yPercent: registrarY ?? registrarBoxYPercent(att.id),
     });
     await saveStampedCopy(att, stampedBuffer, getDocument(documentId)?.year_be);
-    audit({ userId: actorUser.id, action: 'attachment_registrar_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId, comment: text } });
-    // เก็บความเห็นไว้ในระบบด้วย ไม่ใช่แค่พิมพ์ลงไฟล์ PDF — ผอ. จะได้เห็นตั้งแต่เปิดหน้าเอกสารในเว็บ
-    // โดยไม่ต้องเปิดไฟล์แนบก่อน และยังค้นหา/อ้างอิงย้อนหลังได้ (ไฟล์ PDF ค้นข้อความข้างในไม่ได้)
-    db.prepare('INSERT INTO comments (id, document_id, user_id, message, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(uuid(), documentId, actorUser.id, `เรียนผู้อำนวยการโรงเรียน\n${text}`, nowIso());
+    audit({ userId: actorUser.id, action: 'attachment_registrar_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId, marks, unit, comment: text } });
   } catch (err) {
-    markStampFailed(att.id, err.message, { kind: 'registrar', stepId, actorUserId: actorUser.id, comment, registrarX, registrarY });
+    markStampFailed(att.id, err.message, { kind: 'registrar', stepId, actorUserId: actorUser.id, comment, registrarMarks, registrarUnit, registrarX, registrarY });
     audit({ userId: actorUser.id, action: 'attachment_registrar_stamp_failed', tableName: 'attachments', recordId: att.id, detail: { documentId, error: err.message } });
-    return `บันทึกผลสำเร็จ แต่ลงความเห็นธุรการลงในไฟล์ PDF จริงไม่สำเร็จ: ${err.message}`;
+    return `บันทึกผลสำเร็จ แต่ลงตราธุรการลงในไฟล์ PDF จริงไม่สำเร็จ: ${err.message}`;
   }
 }
 
@@ -2481,7 +2559,11 @@ router.post('/documents/:id/attachments/:attId/retry-stamp', requireApi(async (c
   } else if (pending.kind === 'registrar') {
     warning = await stampRegistrarCommentIfApplicable({
       documentId: doc.id, stepId: pending.stepId, actorUser: ctx.user,
-      comment: pending.comment, registrarX: pending.registrarX, registrarY: pending.registrarY,
+      comment: pending.comment, registrarMarks: pending.registrarMarks, registrarUnit: pending.registrarUnit,
+      registrarX: pending.registrarX, registrarY: pending.registrarY,
+      // บันทึกในระบบถูกเขียนไปแล้วตั้งแต่ครั้งแรกที่กด ไม่ว่าการปั๊มจะล้มหรือไม่ — กดประทับใหม่จึงต้อง
+      // ไม่เขียนซ้ำ ไม่งั้น ผอ. จะเห็นความเห็นเดียวกันโผล่สองครั้งทุกครั้งที่มีคนกดซ่อม
+      skipComment: true,
     });
   } else {
     warning = await stampAcknowledgeMarkIfApplicable({

@@ -44,27 +44,23 @@ export const DEFAULT_REGISTRAR_X_PERCENT = 2;
 export const DEFAULT_ACK_MARK_X_PERCENT = 35;
 export const DEFAULT_DECISION_X_PERCENT = 58;
 
-// ช่อง "ทราบ" มีคำว่าทราบคำเดียวอยู่บนสุด แล้วลายเซ็นของผู้ได้รับเอกสารเรียงต่อกันลงมาเป็นแถวเดียว
+// ตรา "รับทราบและปฏิบัติตามคำสั่ง" — กรอบเดียว มีบรรทัดเลขให้ลงชื่อ 4 บรรทัดตามตรายางจริง
 //
-//   72.0%  ทราบ                     <- คำเดียวต่อหนังสือหนึ่งฉบับ (ACK_WORD_HEIGHT_PERCENT)
-//   74.8%  (ลายเซ็น) (ชื่อ) วันที่    <- คนที่ 1  ┐
-//   79.4%  (ลายเซ็น) (ชื่อ) วันที่    <- คนที่ 2  ├ ACK_ENTRY_HEIGHT_PERCENT ต่อคน
-//   84.0%  (ลายเซ็น) (ชื่อ) วันที่    <- คนที่ 3  ┘
+//   ┌──────────────────────────────┐
+//   │  รับทราบและปฏิบัติตามคำสั่ง      │
+//   │  1. (ลายเซ็น) (ชื่อ) ..........  │  <- คนที่ 1 เป็นผู้วาดกรอบนี้
+//   │  2. ........................  │  <- คนที่ 2 วาดแต่ชื่อลงบรรทัดนี้
+//   │  3. ........................  │
+//   │  4. ........................  │
+//   └──────────────────────────────┘
 //
-// แต่ละคนประทับคนละครั้งตอนที่ตัวเองกดทราบ ระบบจึงไม่รู้ล่วงหน้าว่าจะมีกี่คน ต้องคำนวณตำแหน่งจากลำดับที่
-// ค่าเหล่านี้ต้องใช้ร่วมกันระหว่างตอนประทับจริงกับตอนแสดงตัวอย่างบนเว็บ ไม่งั้นลากดูแล้วไม่ตรงกับของจริง
-export const ACK_WORD_HEIGHT_PERCENT = 2.8;
-export const ACK_ENTRY_HEIGHT_PERCENT = 4.6;
+// ทุกคน "ใช้ขอบบนเดียวกัน" คือขอบบนของกรอบ ต่างจากของเดิมที่แต่ละคนคำนวณขอบบนของตัวเองจากลำดับที่
+// (ACK_WORD_HEIGHT_PERCENT/ACK_ENTRY_HEIGHT_PERCENT/ackSlotTopPercent ที่เอาออกไปแล้ว) — ตำแหน่งใน
+// แนวตั้งตอนนี้เป็นเรื่องภายในกรอบล้วนๆ จัดการด้วย ACK_ROW_HEIGHT_PT ทำให้ไม่มีทางเหลื่อมกันได้อีก
+// ไม่ว่าจะมีกี่คนหรือใครมีลายเซ็นบันทึกไว้บ้าง
+export const ACK_BOX_ROWS = 4;
+export const ACK_ROW_HEIGHT_PT = 18;
 export const ACK_MAX_TOP_PERCENT = 94;
-
-/**
- * ขอบบนของช่อง "ทราบ" สำหรับผู้ลงนามลำดับที่ index (เริ่มที่ 0)
- * คนแรกได้กล่องที่มีคำว่า "ทราบ" อยู่ด้วย จึงเริ่มที่ขอบบนสุดพอดี ส่วนคนถัดไปเริ่มใต้บล็อกของคนก่อนหน้า
- */
-export function ackSlotTopPercent(index, baseTopPercent = DECISION_MAX_TOP_PERCENT) {
-  if (index <= 0) return baseTopPercent;
-  return Math.min(ACK_MAX_TOP_PERCENT, baseTopPercent + ACK_WORD_HEIGHT_PERCENT + index * ACK_ENTRY_HEIGHT_PERCENT);
-}
 
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -145,7 +141,14 @@ const FIT_STEP_PT = 18; // เลื่อนขึ้นทีละประ�
  * ค่าคงที่ เพราะความสูงจริงขึ้นกับฟอนต์บนเครื่องเซิร์ฟเวอร์ ความยาวข้อความ และจำนวนบรรทัดที่ตัดคำ
  * ซึ่งเปลี่ยนได้ทุกเมื่อโดยไม่มีใครทันสังเกต
  */
+// ทางให้เทสต์/เครื่องมือตรวจหน้าตาดึง "HTML ของตัวตรา" ออกมาดูได้โดยไม่ต้องมี qpdf บนเครื่อง
+// (แนวเดียวกับ _setLineApiCallerForTest / _setDriveFetchForTest) — จำเป็นเพราะหน้าตาของตราคือสิ่งที่
+// ต้องตรวจให้ตรงกับตรายางจริงของโรงเรียน แต่ขั้นตอนรวมไฟล์ต้องใช้โปรแกรมระบบที่ไม่ได้มีทุกที่
+let stampHtmlSink = null;
+export function _setStampHtmlSinkForTest(fn) { stampHtmlSink = fn || null; }
+
 async function overlayHtmlOnFirstPage(originalBuffer, buildHtml) {
+  if (stampHtmlSink) return stampHtmlSink(buildHtml);
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esaraban-stamp-'));
   const originalPath = path.join(tmpDir, 'original.pdf');
   const stampHtmlPath = path.join(tmpDir, 'stamp.html');
@@ -207,39 +210,57 @@ export async function stampPdf({ originalBuffer, schoolName, docNumberDisplay, d
 }
 
 /**
- * เครื่องหมาย "ทราบ" + ลายเซ็นของผู้ได้รับเอกสาร — ไม่มีกรอบ เลียนแบบวิธีที่คนจริงเขียนด้วยลายมือ
- * บนที่ว่างของเอกสาร (ต่างจาก stampDirectorDecision ที่เป็นกล่องความเห็นทางการของผู้ตัดสินใจคนสุดท้าย)
+ * ตรา "รับทราบและปฏิบัติตามคำสั่ง" ของผู้ปฏิบัติ — กรอบสี่เหลี่ยมมีบรรทัดเลข 1-4 ให้ลงชื่อเรียงกัน
+ * ตามตรายางจริงของโรงเรียน (ภาพที่โรงเรียนส่งมา)
  *
- * คำว่า "ทราบ" มีคำเดียวต่อหนังสือหนึ่งฉบับ ตามที่โรงเรียนใช้จริง — ถ้าส่งต่อกันหลายคน คนแรกเป็นผู้ประทับ
- * คำว่า "ทราบ" พร้อมเซ็นชื่อ คนถัดๆ ไปเซ็นชื่อต่อกันลงมาใต้คนแรกเป็นแถวเดียวกัน (showWord = false)
- * ไม่ใช่ต่างคนต่างมีคำว่า "ทราบ" ของตัวเอง
+ * แทนของเดิมที่เป็นคำว่า "ทราบ" ตัวโตๆ แล้วให้แต่ละคนเซ็นต่อกันลงมาลอยๆ ไม่มีกรอบ — โรงเรียนสั่งแก้
+ * ให้ใช้ตรานี้แทนทั้งตำแหน่งคำว่าทราบและตำแหน่งลายเซ็นผู้รับทราบ เพราะ ผอ. สั่งการให้หลายคนพร้อมกันได้
+ * ตรายางจึงเตรียมบรรทัดไว้ให้ 4 คน
  *
- * แต่ละคนประทับคนละครั้ง (ตอนที่ตัวเองกดทราบ) โดยซ้อนทับไฟล์ล่าสุดที่มีลายเซ็นคนก่อนหน้าอยู่แล้ว
- * ระบบจึงไม่รู้ล่วงหน้าว่าจะมีทั้งหมดกี่คน — ตำแหน่งของแต่ละคนคำนวณจาก "ลำดับที่เท่าไหร่" (ดู
- * ackSlotTopPercent) เพื่อให้ลายเซ็นเรียงชิดต่อกันเป็นระเบียบ ไม่ใช่กระจัดกระจายหรือทับกัน
+ * วิธีวางให้ตรงบรรทัดทุกครั้ง — จุดที่พลาดง่ายที่สุดของฟังก์ชันนี้:
+ *
+ * แต่ละคนประทับคนละครั้ง (ตอนที่ตัวเองกดรับทราบ) โดยซ้อนทับไฟล์ล่าสุดที่มีของคนก่อนหน้าอยู่แล้ว
+ * ระบบจึงไม่เคยรู้ล่วงหน้าว่าจะมีทั้งหมดกี่คน คนแรกเป็นผู้วาดกรอบ (drawBox = true) คนถัดๆ ไปวาดแต่
+ * ชื่อตัวเองลงบรรทัดที่ N ของกรอบที่มีอยู่แล้ว
+ *
+ * ทั้งสองกรณีจึงสร้าง HTML "โครงเดียวกันเป๊ะ" ทุกครั้ง แล้วคนที่ไม่ได้วาดกรอบค่อยซ่อนเส้นกรอบ/หัวตรา/
+ * เส้นประออกด้วย visibility: hidden — ไม่ใช่ตัดองค์ประกอบทิ้ง เพราะการตัดทิ้งทำให้ความสูงเปลี่ยน
+ * แล้วชื่อจะไปตกคนละที่กับบรรทัดที่วาดไว้จริง (ซึ่งเป็นบั๊กที่มองไม่เห็นจนกว่าจะมีคนที่สองมากดรับทราบ)
+ * visibility: hidden กินที่เท่าเดิมทุกประการ เรขาคณิตจึงตรงกันโดยไม่ต้องคำนวณอะไรเพิ่ม
+ *
+ * ถ้ามีคนที่ 5 ขึ้นไป (มากกว่าที่ตรายางมีบรรทัดให้) จะต่อแถวลงมาใต้กรอบด้วยระยะเท่ากัน ดีกว่าปฏิเสธ
+ * ไม่ให้กดรับทราบ หรือเขียนทับบรรทัดเดิมจนอ่านไม่ออก
  */
-export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, prefix, firstName, lastName, dateThaiLong, xPercent, yPercent, actingForLabel, showWord = true }) {
+export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, prefix, firstName, lastName, dateThaiLong, xPercent, yPercent, actingForLabel, slotIndex = 0, drawBox = true }) {
   const leftPt = Math.max(0, Math.min(90, xPercent ?? DEFAULT_ACK_MARK_X_PERCENT)) / 100 * PAGE_WIDTH_PT;
   const topPt = Math.max(0, Math.min(ACK_MAX_TOP_PERCENT, yPercent ?? DECISION_MAX_TOP_PERCENT)) / 100 * PAGE_HEIGHT_PT;
+  const rows = Math.max(ACK_BOX_ROWS, slotIndex + 1); // ขยายลงล่างให้พอดีคนที่เกินบรรทัดของตรายาง
+  // ไม่ใส่วันที่ลงบรรทัด — บรรทัดกว้างแค่ ~114pt ใส่ทั้งลายเซ็น ชื่อ และวันที่แล้วล้นจนโดนตัดทิ้ง
+  // ตรายางจริงก็ไม่มีช่องวันที่ และระบบเก็บวันเวลาที่กดรับทราบไว้ในไทม์ไลน์ของหนังสือครบอยู่แล้ว
+  const entry = (i) => (i === slotIndex ? `
+    ${signatureDataUrl ? `<img class="sig" src="${esc(signatureDataUrl)}" />` : ''}
+    <span class="who">(${esc(prefix || '')}${esc(firstName)} ${esc(lastName)})${actingForLabel ? ` แทน${esc(actingForLabel)}` : ''}</span>` : '');
   const build = (shiftUpPt) => `<!doctype html><html><head><meta charset="utf-8"><style>
     @page { size: ${PAGE_WIDTH_PT}pt ${PAGE_HEIGHT_PT}pt; margin: 0; }
     body { margin: 0; font-family: "Noto Sans Thai", sans-serif; -webkit-print-color-adjust: exact; }
-    .mark { position: absolute; left: ${leftPt}pt; top: ${Math.max(0, topPt - shiftUpPt)}pt; width: ${ACK_MARK_WIDTH_PT}pt; color: #2222aa; text-align: center; }
-    .mark .word { font-size: 17pt; font-weight: 700; line-height: 1.1; }
-    /* ความสูงของบล็อกลายเซ็นต้องคงที่ ไม่ว่าคนนั้นจะมีลายเซ็นบันทึกไว้หรือไม่ — ไม่งั้นคนถัดไปที่คำนวณ
-       ตำแหน่งจากลำดับที่ จะเหลื่อมกับคนก่อนหน้า (บางคนสูง บางคนเตี้ย) แล้วแถวลายเซ็นจะไม่ตรงกัน */
-    .mark .entry { height: ${ACK_ENTRY_HEIGHT_PERCENT / 100 * PAGE_HEIGHT_PT}pt; }
-    .mark .sig { height: 24pt; display: flex; align-items: flex-end; justify-content: center; }
-    .mark .sig img { max-height: 24pt; max-width: ${ACK_MARK_WIDTH_PT - 12}pt; }
-    .mark .name { font-size: 6.5pt; line-height: 1.25; white-space: nowrap; }
-    .mark .acting { font-size: 6pt; font-style: italic; line-height: 1.1; }
+    .ack { position: absolute; left: ${leftPt}pt; top: ${Math.max(0, topPt - shiftUpPt)}pt; width: ${ACK_MARK_WIDTH_PT}pt; color: #2222aa; }
+    .ack .box { border: 2px solid #2222aa; border-radius: 3pt; padding: 5pt 6pt; }
+    .ack .title { font-size: 8.5pt; font-weight: 700; text-align: center; line-height: 1.25; margin-bottom: 2pt; }
+    /* ความสูงต่อบรรทัดต้องคงที่เสมอ ไม่ว่าคนนั้นจะมีลายเซ็นบันทึกไว้หรือไม่ — ไม่งั้นคนถัดไปจะเหลื่อม */
+    .ack .row { height: ${ACK_ROW_HEIGHT_PT}pt; display: flex; align-items: flex-end; gap: 2pt; }
+    .ack .n { font-size: 8pt; line-height: 1.6; flex: 0 0 auto; }
+    .ack .line { flex: 1 1 auto; border-bottom: 0.7pt dotted #2222aa; display: flex; align-items: flex-end; justify-content: center; gap: 2pt; overflow: hidden; height: ${ACK_ROW_HEIGHT_PT - 3}pt; }
+    .ack .sig { max-height: ${ACK_ROW_HEIGHT_PT - 6}pt; max-width: 42pt; }
+    .ack .who { font-size: 6pt; line-height: 1.3; white-space: nowrap; }
+    /* คนที่ไม่ได้เป็นผู้วาดกรอบ: ซ่อนเส้นทุกเส้นแต่กินที่เท่าเดิม เหลือไว้แต่ชื่อของตัวเอง */
+    .ghost .box { border-color: transparent; }
+    .ghost .title, .ghost .n { visibility: hidden; }
+    .ghost .line { border-bottom-color: transparent; }
   </style></head><body>
-    <div class="mark">
-      ${showWord ? '<div class="word">ทราบ</div>' : ''}
-      <div class="entry">
-        <div class="sig">${signatureDataUrl ? `<img src="${esc(signatureDataUrl)}" />` : ''}</div>
-        <div class="name">(${esc(prefix || '')}${esc(firstName)} ${esc(lastName)}) ${esc(dateThaiLong)}</div>
-        ${actingForLabel ? `<div class="acting">รักษาการแทน${esc(actingForLabel)}</div>` : ''}
+    <div class="ack${drawBox ? '' : ' ghost'}">
+      <div class="box">
+        <div class="title">รับทราบและปฏิบัติตามคำสั่ง</div>
+        ${Array.from({ length: rows }, (_, i) => `<div class="row"><span class="n">${i + 1}.</span><span class="line">${entry(i)}</span></div>`).join('')}
       </div>
     </div>
   </body></html>`;
@@ -247,39 +268,56 @@ export async function stampAcknowledgeMark({ originalBuffer, signatureDataUrl, p
 }
 
 /**
- * ความเห็นของธุรการที่เสนอขึ้นไปให้ผู้อำนวยการ — วางมุมซ้ายล่างของเอกสาร ขอบบนตรงกับกรอบตราปั๊ม ผอ.
+ * ตราธุรการที่เสนอเรื่องขึ้นไปให้ผู้อำนวยการ — วางมุมซ้ายล่าง ขอบบนตรงกับกรอบตราปั๊ม ผอ.
  *
- * รูปแบบตามที่โรงเรียนใช้จริง เรียงจากบนลงล่าง:
- *   บรรทัดแรก  "เรียนผู้อำนวยการโรงเรียน"
- *   บรรทัดถัดมา ความเห็นที่ธุรการพิมพ์เอง (ขึ้นบรรทัดใหม่ได้ ยาวแล้วตัดคำเอง)
- *   บรรทัดท้าย  ลายเซ็น แล้วต่อด้วยชื่อในวงเล็บ และ "ตำแหน่ง........"
+ * รูปแบบตามตรายางจริงของโรงเรียน (ภาพที่โรงเรียนส่งมา): กรอบสี่เหลี่ยมสีน้ำเงิน หัวกล่องว่า
+ * "เรียน ผู้อำนวยการ<ชื่อโรงเรียน>" แล้วเป็นตัวเลือกวงกลมให้ธุรการฝนเลือก 5 ข้อ
  *
- * ไม่มีกรอบ ต่างจากกล่อง ผอ. เพราะของจริงธุรการเขียนด้วยลายมือลงบนที่ว่างของเอกสาร ไม่ใช่ตรายาง
- * (แนวเดียวกับ stampAcknowledgeMark) — ส่วนหัว "เรียน..." ชิดซ้าย ให้อ่านเป็นข้อความ ส่วนบล็อกลงนาม
- * จัดกึ่งกลางตามธรรมเนียมหนังสือราชการ
+ *   ◯ เพื่อโปรดทราบและพิจารณา
+ *   ◯ เพื่อประชาสัมพันธ์
+ *   ◯ เพื่อพิจารณา อนุมัติ
+ *   ◯ เพื่อแจ้งฝ่ายงาน ...............
+ *   ◯ เสนอความคิดเห็น ...............
+ *
+ * เดิมเป็นข้อความอิสระที่ธุรการพิมพ์เอาเองล้วนๆ ไม่มีกรอบ — ซึ่งไม่ตรงกับของจริงที่โรงเรียนใช้
+ * ข้อความอิสระที่พิมพ์ไว้ยังอยู่ครบ แต่ย้ายไปเป็นเนื้อของข้อ "เสนอความคิดเห็น" ซึ่งเป็นช่องที่
+ * ตรายางจริงเตรียมไว้ให้เขียนอยู่แล้ว หนังสือเก่าที่ประทับไปแล้วจึงอ่านได้เหมือนเดิมทุกฉบับ
+ *
+ * ตัวเลือกวาดเป็นวงกลม ไม่ใช่สี่เหลี่ยมเหมือนกล่อง ผอ. เพราะตรายางจริงของสองอันนี้ต่างกันจริงๆ
+ * และวาดด้วย CSS ล้วน ไม่ใช้อักขระ ◯/● ด้วยเหตุผลเดียวกับกล่อง ผอ. (image ของ Docker มีแต่ฟอนต์ไทย
+ * ซึ่งไม่มี glyph พวกนี้ จะกลายเป็นสี่เหลี่ยมโบ๋ตอนประทับลง PDF จริง)
+ *
+ * ไม่มีลายเซ็น/ชื่อธุรการอยู่บนตราแล้ว ตามที่โรงเรียนสั่งแก้ — ของเดิมธุรการต้องเซ็นและพิมพ์ชื่อ
+ * ตำแหน่งกำกับไว้ตรงนี้ ตอนนี้แค่ปั๊มตรานี้แล้วส่งขึ้นไปได้เลย เร็วกว่าเดิมมากเพราะเป็นงานที่ทำ
+ * ทุกฉบับ ส่วนหลักฐานว่า "ใครเป็นคนเสนอเรื่องนี้ขึ้นไปและเมื่อไหร่" ระบบยังเก็บครบเหมือนเดิมทั้งใน
+ * audit log และในบันทึกความเห็นของหนังสือฉบับนั้น เพียงแต่ไม่พิมพ์ลงหน้ากระดาษอีกแล้ว
  */
-export async function stampRegistrarComment({ originalBuffer, comment, signatureDataUrl, prefix, firstName, lastName, position, dateThaiLong, xPercent, yPercent }) {
+export async function stampRegistrarComment({ originalBuffer, schoolName, marks, notifyUnit, comment, xPercent, yPercent }) {
   const leftPt = Math.max(0, Math.min(90, xPercent ?? DEFAULT_REGISTRAR_X_PERCENT)) / 100 * PAGE_WIDTH_PT;
   // ใช้เพดานเดียวกับกล่อง ผอ. — ทั้งกันส่วนท้ายตกหน้า 2 และทำให้ขอบบนตรงกันตามที่โรงเรียนขอ
   const topPt = Math.max(0, Math.min(DECISION_MAX_TOP_PERCENT, yPercent ?? DECISION_MAX_TOP_PERCENT)) / 100 * PAGE_HEIGHT_PT;
+  const marked = new Set(marks || []);
+  const dot = (on) => (on ? '<span class="rb"><i></i></span>' : '<span class="rb"></span>');
   const build = (shiftUpPt) => `<!doctype html><html><head><meta charset="utf-8"><style>
     @page { size: ${PAGE_WIDTH_PT}pt ${PAGE_HEIGHT_PT}pt; margin: 0; }
     body { margin: 0; font-family: "Noto Sans Thai", sans-serif; -webkit-print-color-adjust: exact; }
     .reg { position: absolute; left: ${leftPt}pt; top: ${Math.max(0, topPt - shiftUpPt)}pt; width: ${REGISTRAR_BOX_WIDTH_PT}pt; color: #2222aa; font-size: 8pt; line-height: 1.55; }
-    .reg .lead { font-weight: 700; }
-    .reg .body { margin-top: 1pt; white-space: pre-wrap; word-break: break-word; }
-    .reg .sig { text-align: center; margin-top: 4pt; }
-    .reg .sig img { max-height: 32pt; max-width: 110pt; }
-    .reg .name { text-align: center; }
-    .reg .fill { display: inline-block; min-width: 70pt; border-bottom: 0.6pt dotted #2222aa; text-align: center; padding: 0 2pt; }
+    .reg .box { border: 2px solid #2222aa; padding: 6pt 7pt; border-radius: 3pt; }
+    .reg .lead { font-weight: 700; margin-bottom: 2.5pt; }
+    .reg .opt { margin: 1.5pt 0 1.5pt 7pt; text-indent: -7pt; padding-left: 7pt; }
+    .reg .rb { display: inline-block; width: 7pt; height: 7pt; border: 0.8pt solid #2222aa; border-radius: 50%; position: relative; vertical-align: -1pt; margin-right: 3.5pt; }
+    .reg .rb i { position: absolute; left: 1.4pt; top: 1.4pt; width: 3pt; height: 3pt; border-radius: 50%; background: #2222aa; }
+    .reg .fill { display: inline-block; min-width: 54pt; border-bottom: 0.6pt dotted #2222aa; padding: 0 2pt; word-break: break-word; }
   </style></head><body>
     <div class="reg">
-      <div class="lead">เรียนผู้อำนวยการโรงเรียน</div>
-      <div class="body">${esc(comment || '')}</div>
-      ${signatureDataUrl ? `<div class="sig"><img src="${esc(signatureDataUrl)}" /></div>` : ''}
-      <div class="name">(${esc(prefix || '')}${esc(firstName)} ${esc(lastName)})</div>
-      <div class="name">ตำแหน่ง<span class="fill">${esc(position || '')}</span></div>
-      <div class="name">${esc(dateThaiLong)}</div>
+      <div class="box">
+        <div class="lead">เรียน ผู้อำนวยการ${esc(schoolName || '')}</div>
+        <div class="opt">${dot(marked.has('เพื่อโปรดทราบและพิจารณา'))} เพื่อโปรดทราบและพิจารณา</div>
+        <div class="opt">${dot(marked.has('เพื่อประชาสัมพันธ์'))} เพื่อประชาสัมพันธ์</div>
+        <div class="opt">${dot(marked.has('เพื่อพิจารณา อนุมัติ'))} เพื่อพิจารณา อนุมัติ</div>
+        <div class="opt">${dot(marked.has('เพื่อแจ้งฝ่ายงาน'))} เพื่อแจ้งฝ่ายงาน <span class="fill">${esc(notifyUnit || '')}</span></div>
+        <div class="opt">${dot(marked.has('เสนอความคิดเห็น'))} เสนอความคิดเห็น <span class="fill">${esc(comment || '')}</span></div>
+      </div>
     </div>
   </body></html>`;
   return overlayHtmlOnFirstPage(originalBuffer, build);

@@ -6042,27 +6042,115 @@ describe('ตราประทับ: สามช่องแถบล่า�
     assert.equal(typeof DECISION_MAX_TOP_PERCENT, 'number');
   });
 
-  test('คำว่า "ทราบ" มีคำเดียวต่อหนังสือ และลายเซ็นเรียงต่อกันไม่ทับกัน', async () => {
+  // ตรา "รับทราบและปฏิบัติตามคำสั่ง" — ผอ. สั่งการถึงหลายคนได้ ตรายางจึงมีบรรทัดเลขให้ลงชื่อคนละบรรทัด
+  // แต่ละคนประทับคนละครั้งโดยซ้อนทับไฟล์ล่าสุด คนแรกเป็นผู้วาดกรอบ คนถัดไปวาดแต่ชื่อลงบรรทัดของตัวเอง
+  test('ตรารับทราบ: กรอบเดียวต่อหนังสือ และแต่ละคนลงคนละบรรทัดโดยไม่เหลื่อมกัน', async () => {
     const s = await import('../src/services/pdfStamp.js');
-    const base = s.DECISION_MAX_TOP_PERCENT;
-    // คนแรกได้กล่องที่มีคำว่า "ทราบ" อยู่ด้วย จึงเริ่มที่ขอบบนสุดพอดี
-    assert.equal(s.ackSlotTopPercent(0, base), base);
-    // คนถัดไปต้องเริ่ม "ใต้" บล็อกของคนก่อนหน้าพอดี ไม่ทับและไม่มีช่องโหว่
-    for (let i = 1; i < 4; i++) {
-      const prevBottom = s.ackSlotTopPercent(i - 1, base)
-        + (i === 1 ? s.ACK_WORD_HEIGHT_PERCENT : 0) + s.ACK_ENTRY_HEIGHT_PERCENT;
-      assert.ok(Math.abs(s.ackSlotTopPercent(i, base) - prevBottom) < 0.01,
-        `คนที่ ${i + 1} ต้องเริ่มที่ ${prevBottom}% แต่ได้ ${s.ackSlotTopPercent(i, base)}%`);
-    }
-    // ลายเซ็นคนที่ 4 ต้องยังอยู่ในหน้ากระดาษ (บล็อกสูง ACK_ENTRY_HEIGHT_PERCENT)
-    assert.ok(s.ackSlotTopPercent(3, base) + s.ACK_ENTRY_HEIGHT_PERCENT <= 100, 'ต้องรองรับผู้ลงนามอย่างน้อย 4 คน');
-    // ไม่ว่ามีกี่คน ต้องไม่หลุดออกนอกหน้า
-    assert.ok(s.ackSlotTopPercent(99, base) <= s.ACK_MAX_TOP_PERCENT);
-
-    // ต้องมีสวิตช์ปิดคำว่า "ทราบ" จริงๆ ไม่ใช่พิมพ์ทุกครั้ง
     const src = fs.readFileSync(new URL('../src/services/pdfStamp.js', import.meta.url), 'utf8');
-    assert.match(src, /showWord \? '<div class="word">ทราบ<\/div>' : ''/,
-      'คำว่า "ทราบ" ต้องขึ้นเฉพาะคนแรก');
+
+    assert.ok(s.ACK_BOX_ROWS >= 4, 'ตรายางจริงมีบรรทัดให้ลงชื่อ 4 คน');
+    assert.ok(s.ACK_ROW_HEIGHT_PT > 0);
+
+    // จุดที่พลาดง่ายที่สุด: คนที่ไม่ได้วาดกรอบต้อง "ซ่อน" เส้น ไม่ใช่ "ตัดทิ้ง" — ถ้าตัดทิ้ง ความสูง
+    // จะเปลี่ยน แล้วชื่อจะไปตกคนละที่กับบรรทัดที่วาดไว้จริง (เห็นก็ต่อเมื่อมีคนที่สองมากดรับทราบ)
+    assert.match(src, /visibility: hidden/, 'ต้องซ่อนด้วย visibility ไม่ใช่ตัดองค์ประกอบทิ้ง');
+    assert.match(src, /\.ghost \.box \{ border-color: transparent; \}/,
+      'คนที่ไม่ได้วาดกรอบต้องไม่วาดเส้นกรอบทับซ้ำ ไม่งั้นเส้นจะหนาขึ้นทุกครั้งที่มีคนกดรับทราบ');
+    assert.match(src, /\$\{drawBox \? '' : ' ghost'\}/, 'ต้องมีสวิตช์ว่าใครเป็นผู้วาดกรอบ');
+    assert.match(src, /Math\.max\(ACK_BOX_ROWS, slotIndex \+ 1\)/,
+      'คนที่ 5 ขึ้นไปต้องได้บรรทัดต่อลงมา ดีกว่าเขียนทับบรรทัดเดิมจนอ่านไม่ออก');
+    // ทุกคนต้องใช้ขอบบนเดียวกัน — ตำแหน่งในแนวตั้งเป็นเรื่องภายในกรอบล้วนๆ
+    const docs = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
+    assert.match(docs, /yPercent: markY \?\? MARK_BASE_Y/,
+      'ห้ามคำนวณขอบบนของแต่ละคนแยกกันอีก ไม่งั้นบรรทัดจะเหลื่อมกรอบ');
+    assert.match(docs, /slotIndex: signerIndex/);
+    assert.match(docs, /drawBox: signerIndex === 0/);
+
+    // กรอบเต็ม 4 บรรทัดต้องยังอยู่ในหน้ากระดาษเมื่อวางที่ตำแหน่งตั้งต้น
+    const boxHeightPt = 4 + 12 + 13 + s.ACK_BOX_ROWS * s.ACK_ROW_HEIGHT_PT; // กรอบ + padding + หัวตรา + บรรทัด
+    const topPt = s.DECISION_MAX_TOP_PERCENT / 100 * 842;
+    assert.ok(topPt + boxHeightPt <= 842, `กรอบสูง ${boxHeightPt}pt วางที่ ${Math.round(topPt)}pt แล้วล้นหน้ากระดาษ`);
+  });
+
+  // หน้าตาของตราคือสิ่งที่ต้องตรงกับตรายางจริงของโรงเรียน — ดึง HTML ของตราออกมาตรวจตรงๆ ผ่านช่อง
+  // ทดสอบ (_setStampHtmlSinkForTest) แทนที่จะรันทั้งกระบวนการ ซึ่งต้องมี chromium+qpdf บนเครื่อง
+  describe('หน้าตาตราต้องตรงกับตรายางจริง', () => {
+    const grab = async (fn) => {
+      const s = await import('../src/services/pdfStamp.js');
+      let html = '';
+      s._setStampHtmlSinkForTest((build) => { html = build(0); return Buffer.from('%PDF-'); });
+      try { await fn(s); } finally { s._setStampHtmlSinkForTest(null); }
+      return html;
+    };
+
+    test('ตราธุรการ: หัวตราใช้ชื่อโรงเรียนจริง มีครบ 5 ข้อ และฝนเฉพาะข้อที่เลือก', async () => {
+      const html = await grab((s) => s.stampRegistrarComment({
+        originalBuffer: Buffer.from('%PDF-'), schoolName: 'โรงเรียนวัดเสาหิน',
+        marks: ['เพื่อประชาสัมพันธ์', 'เพื่อแจ้งฝ่ายงาน'], notifyUnit: 'ฝ่ายวิชาการ', comment: 'ความเห็นทดสอบ',
+      }));
+      assert.match(html, /เรียน ผู้อำนวยการโรงเรียนวัดเสาหิน/, 'ชื่อโรงเรียนต้องมาจากการตั้งค่า ไม่ใช่ฝังตายตัว');
+      for (const opt of ['เพื่อโปรดทราบและพิจารณา', 'เพื่อประชาสัมพันธ์', 'เพื่อพิจารณา อนุมัติ', 'เพื่อแจ้งฝ่ายงาน', 'เสนอความคิดเห็น']) {
+        assert.ok(html.includes(opt), `ตรายางจริงมีข้อ "${opt}" ต้องมีครบทุกข้อเสมอ ถึงจะไม่ได้เลือกก็ตาม`);
+      }
+      // 2 ข้อที่ฝน ต้องมีจุดทึบ ส่วนอีก 3 ข้อต้องเป็นวงกลมเปล่า
+      assert.equal((html.match(/<span class="rb"><i><\/i><\/span>/g) || []).length, 2, 'ฝนเกิน/ขาดจากที่เลือก');
+      assert.equal((html.match(/<span class="rb"><\/span>/g) || []).length, 3);
+      assert.match(html, /ฝ่ายวิชาการ/);
+      assert.match(html, /ความเห็นทดสอบ/, 'ความเห็นที่พิมพ์ต้องไปอยู่ในข้อ "เสนอความคิดเห็น"');
+    });
+
+    // โรงเรียนสั่งแก้ให้ธุรการปั๊มแล้วส่งขึ้นไปได้เลย ไม่ต้องเซ็นอีก — ถ้าลายเซ็นกลับมาโผล่บนตรา
+    // แปลว่ามีคนเผลอเอาโค้ดเก่ากลับมา และงานธุรการจะช้าลงเหมือนเดิมโดยไม่มีใครสังเกต
+    test('ตราธุรการ: ต้องไม่มีลายเซ็น ชื่อ หรือตำแหน่งของธุรการอยู่บนตรา', async () => {
+      const html = await grab((s) => s.stampRegistrarComment({
+        originalBuffer: Buffer.from('%PDF-'), schoolName: 'โรงเรียนวัดเสาหิน',
+        marks: ['เพื่อโปรดทราบและพิจารณา'], notifyUnit: '', comment: '',
+      }));
+      assert.ok(!/<img/.test(html), 'ต้องไม่มีรูปลายเซ็นอยู่บนตรา');
+      assert.ok(!/ตำแหน่ง/.test(html), 'ต้องไม่มีบรรทัดตำแหน่งอยู่บนตรา');
+      const src = fs.readFileSync(new URL('../src/services/pdfStamp.js', import.meta.url), 'utf8');
+      const fn = src.slice(src.indexOf('export async function stampRegistrarComment'));
+      const body = fn.slice(0, fn.indexOf('\n}\n'));
+      assert.ok(!/signatureDataUrl/.test(body), 'ฟังก์ชันนี้ต้องไม่รับลายเซ็นเข้ามาเลย');
+    });
+
+    // คนที่ 2 ขึ้นไปต้องวาดแต่ชื่อตัวเองลงบรรทัดของตัวเอง โดยเรขาคณิตต้องเหมือนกับตอนที่คนแรกวาดกรอบ
+    // ไม่งั้นชื่อจะไปตกคนละที่กับบรรทัดที่วาดไว้จริง — เห็นก็ต่อเมื่อมีคนที่สองมากดรับทราบแล้วเท่านั้น
+    test('ตรารับทราบ: ชั้นของคนถัดไปต้องมีโครงเหมือนเดิมเป๊ะ ต่างแค่ซ่อนเส้นและย้ายบรรทัด', async () => {
+      const first = await grab((s) => s.stampAcknowledgeMark({
+        originalBuffer: Buffer.from('%PDF-'), signatureDataUrl: null,
+        prefix: 'นาง', firstName: 'สมศรี', lastName: 'ใจดี', dateThaiLong: '18 กันยายน 2569',
+        slotIndex: 0, drawBox: true,
+      }));
+      const third = await grab((s) => s.stampAcknowledgeMark({
+        originalBuffer: Buffer.from('%PDF-'), signatureDataUrl: null,
+        prefix: 'นาย', firstName: 'ปรีชา', lastName: 'ขยันงาน', dateThaiLong: '18 กันยายน 2569',
+        slotIndex: 2, drawBox: false,
+      }));
+      const rows = (h) => (h.match(/class="row"/g) || []).length;
+      assert.equal(rows(first), 4, 'ตรายางจริงมีบรรทัดให้ลงชื่อ 4 คน');
+      assert.equal(rows(third), rows(first), 'จำนวนบรรทัดต้องเท่ากันทุกชั้น ไม่งั้นบรรทัดจะเลื่อน');
+      assert.match(first, /class="ack"/);
+      assert.match(third, /class="ack ghost"/, 'คนที่ไม่ได้วาดกรอบต้องอยู่ในโหมด ghost');
+      assert.ok(first.includes('รับทราบและปฏิบัติตามคำสั่ง') && third.includes('รับทราบและปฏิบัติตามคำสั่ง'),
+        'หัวตราต้องยังอยู่ในโครงของทุกชั้น (ซ่อนด้วย CSS) ไม่ใช่ตัดทิ้ง ซึ่งจะทำให้ความสูงเปลี่ยน');
+
+      // ชื่อต้องอยู่บรรทัดที่ถูกต้อง: คนแรกบรรทัด 1, คนที่สามบรรทัด 3
+      const slotOf = (h, name) => h.slice(0, h.indexOf(name)).split('class="row"').length - 1;
+      assert.equal(slotOf(first, 'สมศรี'), 1, 'คนแรกต้องอยู่บรรทัดที่ 1');
+      assert.equal(slotOf(third, 'ปรีชา'), 3, 'คนที่สามต้องอยู่บรรทัดที่ 3');
+      // และชั้นของคนที่สามต้องไม่มีชื่อคนอื่นติดมาด้วย ไม่งั้นจะเขียนทับชื่อที่วาดไว้แล้ว
+      assert.ok(!third.includes('สมศรี'), 'แต่ละชั้นต้องมีแต่ชื่อของเจ้าของชั้นนั้น');
+    });
+
+    test('ตรารับทราบ: คนที่ 5 ขึ้นไปต้องได้บรรทัดต่อลงมา ไม่ทับของเดิม', async () => {
+      const fifth = await grab((s) => s.stampAcknowledgeMark({
+        originalBuffer: Buffer.from('%PDF-'), signatureDataUrl: null,
+        prefix: 'นาง', firstName: 'ห้า', lastName: 'คนที่ห้า', dateThaiLong: '18 กันยายน 2569',
+        slotIndex: 4, drawBox: false,
+      }));
+      assert.equal((fifth.match(/class="row"/g) || []).length, 5, 'ต้องขยายกรอบลงมาให้พอดีคนที่ 5');
+    });
   });
 
   test('ธุรการ/ผอ. ไม่ได้ตรา "ทราบ" ซ้ำ เพราะมีที่ลงนามของตัวเองอยู่แล้ว', () => {
@@ -6130,8 +6218,28 @@ describe('ตราประทับ: สามช่องแถบล่า�
     assert.match(src, /yPercent: registrarY \?\? registrarBoxYPercent\(att\.id\)/,
       'ต้องคำนวณตำแหน่งจากจำนวนครั้งที่เคยลงความเห็นบนไฟล์นี้');
     // ความเห็นต้องถูกเก็บในระบบด้วย ไม่ใช่พิมพ์ลง PDF อย่างเดียว — ผอ. จะได้เห็นโดยไม่ต้องเปิดไฟล์แนบ
-    assert.match(src, /INSERT INTO comments \(id, document_id, user_id, message, created_at\)[\s\S]{0,200}เรียนผู้อำนวยการโรงเรียน/,
-      'ความเห็นธุรการต้องถูกบันทึกเป็นความคิดเห็นในระบบด้วย');
+    // สำคัญกว่าเดิมตั้งแต่เอาลายเซ็นธุรการออกจากตรา — นี่กลายเป็นที่เดียวที่บอกว่าใครเสนอเรื่องนี้ขึ้นไป
+    const at = src.indexOf('INSERT INTO comments (id, document_id, user_id, message, created_at)');
+    assert.ok(at > 0, 'ความเห็นธุรการต้องถูกบันทึกเป็นความคิดเห็นในระบบด้วย');
+    assert.match(src.slice(Math.max(0, at - 900), at), /เรียน \$\{schoolName\(\)\}|`เรียน ผู้อำนวยการ\$\{schoolName\(\)\}`/,
+      'หัวข้อความที่บันทึกต้องใช้ชื่อโรงเรียนจริงจากการตั้งค่า ไม่ใช่คำว่า "โรงเรียน" ตายตัว');
+  });
+
+  // ตั้งแต่เอาลายเซ็นธุรการออกจากตรา บันทึกในระบบกลายเป็น "ที่เดียว" ที่บอกว่าใครเสนอเรื่องนี้ขึ้นไป
+  // เดิมบรรทัดที่เขียนบันทึกอยู่ท้าย try จึงทำงานเฉพาะตอนปั๊มไฟล์สำเร็จ — เจอจริงตอนทดสอบบนเครื่องที่
+  // ไม่มี qpdf: ผู้ใช้เห็นคำเตือนแวบเดียวแล้วข้อมูลหายทั้งก้อน ทั้งบนกระดาษและในระบบ
+  test('ปั๊มตราธุรการลงไฟล์ล้มเหลว ต้องยังเหลือบันทึกในระบบว่าใครเสนออะไร', () => {
+    const src = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
+    const fn = src.slice(src.indexOf('async function stampRegistrarCommentIfApplicable'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    const insertAt = body.indexOf('INSERT INTO comments');
+    const tryAt = body.indexOf('\n  try {');
+    assert.ok(insertAt > 0 && tryAt > 0, 'หาโครงสร้างของฟังก์ชันไม่เจอ');
+    assert.ok(insertAt < tryAt,
+      'ต้องเขียนบันทึกลงระบบก่อนลงมือปั๊มไฟล์ ไม่ใช่หลังปั๊มสำเร็จ — ไม่งั้นปั๊มล้มแล้วไม่เหลือร่องรอยเลย');
+    // แต่กด "ประทับใหม่" ต้องไม่เขียนซ้ำ ไม่งั้น ผอ. เห็นความเห็นเดิมโผล่ทุกครั้งที่มีคนกดซ่อม
+    assert.match(body, /if \(!skipComment\)/, 'ต้องมีสวิตช์กันเขียนซ้ำตอนกดประทับใหม่');
+    assert.match(src, /skipComment: true,/, 'เส้นทางกดประทับใหม่ต้องส่งสวิตช์นั้นมาด้วย');
   });
 
   test('หน้าตัวอย่างไม่มีกล่องให้ลากแล้ว และไม่ส่งตำแหน่งไปกับคำขอ', () => {
