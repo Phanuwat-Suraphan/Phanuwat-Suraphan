@@ -596,6 +596,24 @@ export function migrate() {
   CREATE INDEX IF NOT EXISTS idx_daily_summary_items_summary ON daily_summary_items(summary_id, sort_order);
   CREATE INDEX IF NOT EXISTS idx_daily_summary_sources_summary ON daily_summary_sources(summary_id);
 
+  -- ปฏิทินวันหยุดราชการของโรงเรียน — ใช้คำนวณ "วันทำการ" ของการลาพักผ่อน
+  --
+  -- ระเบียบสำนักนายกฯ ว่าด้วยการลา พ.ศ. 2555 ข้อ 6 ให้ลาพักผ่อนนับเฉพาะวันทำการ ซึ่งแปลว่าต้องหัก
+  -- ทั้งเสาร์-อาทิตย์ "และวันหยุดราชการ" ออก เดิมระบบหักให้แค่เสาร์-อาทิตย์ (ไม่มีปฏิทินวันหยุด)
+  -- ครูที่ลาพักผ่อนคร่อมสงกรานต์หรือวันหยุดยาวจึงถูกหักสิทธิ์เกินจริงหลายวัน ทั้งที่สิทธิ์มีปีละ
+  -- 10 วันทำการ — หน้ากรอกใบลาได้แต่เตือนให้ไปบอกผู้อนุญาตปรับเอง ซึ่งเป็นการโยนงานให้คน ไม่ใช่การแก้
+  --
+  -- เก็บเป็นวันที่ล้วน (YYYY-MM-DD) ไม่ผูกกับปี เพราะวันหยุดไทยส่วนใหญ่เป็นวันตามจันทรคติที่เลื่อน
+  -- ทุกปี (มาฆบูชา วิสาขบูชา อาสาฬหบูชา เข้าพรรษา) คำนวณล่วงหน้าเองไม่ได้ ต้องให้ผู้ดูแลกรอกตามประกาศ
+  CREATE TABLE IF NOT EXISTS holidays (
+    holiday_date TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    -- 1 = ระบบใส่ให้ตอนติดตั้ง (วันหยุดที่ตรึงวันที่ตายตัวทุกปี), 0 = ผู้ดูแลเพิ่มเอง
+    seeded INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT REFERENCES users(id),
+    created_at TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
   CREATE INDEX IF NOT EXISTS idx_documents_dept ON documents(department_id);
   CREATE INDEX IF NOT EXISTS idx_documents_title ON documents(title);

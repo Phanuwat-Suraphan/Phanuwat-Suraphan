@@ -3,6 +3,7 @@ import { fmtThaiDateShort } from '../render.js';
 import { notifyUser } from './notify.js';
 import { createDelegation } from './delegation.js';
 
+import { holidaySetBetween } from './holidays.js';
 import { httpError, assertDateRange, assertMaxLength } from './validate.js';
 
 export { httpError };
@@ -39,26 +40,35 @@ const MAX_LEAVE_DAYS = 366;
  * หักสิทธิ์เกินจริง เช่น ลาจันทร์ถึงศุกร์สองสัปดาห์ติดกัน ถูกนับ 12 วันแทนที่จะเป็น 10 วัน
  * ซึ่งสำคัญเพราะลาพักผ่อนมีสิทธิ์จำกัดปีละ 10 วันทำการ (สะสมได้ตามเงื่อนไข)
  *
- * ข้อจำกัดที่ต้องรู้: ระบบไม่มีปฏิทินวันหยุดนักขัตฤกษ์/วันหยุดชดเชย จึงหักได้เฉพาะเสาร์-อาทิตย์
- * ถ้าช่วงที่ลามีวันหยุดราชการอื่นคั่นอยู่ ตัวเลขจะสูงกว่าความจริงเท่าจำนวนวันหยุดนั้น —
- * หน้ากรอกใบลาบอกเรื่องนี้ไว้ให้ผู้ใช้ทราบ ไม่ปล่อยให้เข้าใจว่าระบบหักให้ครบแล้ว
+ * "วันทำการ" หักทั้งเสาร์-อาทิตย์ และวันหยุดราชการตามปฏิทินที่ผู้ดูแลบันทึกไว้ (ดู services/holidays.js)
+ * เดิมหักให้แค่เสาร์-อาทิตย์ เพราะยังไม่มีปฏิทินวันหยุด ครูที่ลาพักผ่อนคร่อมสงกรานต์หรือวันหยุดยาว
+ * จึงถูกหักสิทธิ์เกินจริงหลายวัน ทั้งที่สิทธิ์มีปีละ 10 วันทำการ
  */
 export const WORKING_DAY_LEAVE_TYPES = new Set(['vacation']);
 
-export function countWorkingDays(startDate, endDate) {
+/**
+ * นับวันทำการในช่วง — ข้ามเสาร์-อาทิตย์ และวันที่ที่อยู่ใน holidays
+ *
+ * รับ holidays เข้ามาเป็นพารามิเตอร์ ไม่ใช่ไปอ่านฐานข้อมูลเองข้างใน เพื่อให้ฟังก์ชันนี้ยังเป็นฟังก์ชัน
+ * บริสุทธิ์ที่ทดสอบได้ตรงๆ โดยไม่ต้องเตรียมฐานข้อมูล และผู้เรียกที่วนหลายช่วงก็อ่านตารางครั้งเดียวพอ
+ */
+export function countWorkingDays(startDate, endDate, holidays = null) {
   let n = 0;
   for (let t = Date.parse(`${startDate}T00:00:00Z`); t <= Date.parse(`${endDate}T00:00:00Z`); t += 86400000) {
-    const dow = new Date(t).getUTCDay(); // 0 = อาทิตย์, 6 = เสาร์
-    if (dow !== 0 && dow !== 6) n++;
+    const d = new Date(t);
+    const dow = d.getUTCDay(); // 0 = อาทิตย์, 6 = เสาร์
+    if (dow === 0 || dow === 6) continue;
+    if (holidays && holidays.has(d.toISOString().slice(0, 10))) continue;
+    n++;
   }
   return n;
 }
 
-export function leaveDaysCount(leaveType, startDate, endDate, calendarDays) {
+export function leaveDaysCount(leaveType, startDate, endDate, calendarDays, holidays = null) {
   if (!WORKING_DAY_LEAVE_TYPES.has(leaveType)) return calendarDays;
-  // ลาพักผ่อนที่ตกอยู่ในวันหยุดสุดสัปดาห์ล้วน ยังต้องนับอย่างน้อย 1 วัน ไม่ใช่ 0 —
+  // ลาพักผ่อนที่ตกอยู่ในวันหยุดล้วน ยังต้องนับอย่างน้อย 1 วัน ไม่ใช่ 0 —
   // ใบลา 0 วันไม่มีความหมาย และจะทำให้รายงานวันลาสะสมเพี้ยน
-  return Math.max(1, countWorkingDays(startDate, endDate));
+  return Math.max(1, countWorkingDays(startDate, endDate, holidays));
 }
 const MAX_LEAVE_REASON = 2000;
 const MAX_LEAVE_TEXT = 500; // สถานที่ไปราชการ / ข้อมูลติดต่อ
@@ -112,7 +122,10 @@ export function createLeaveRequest({ requesterId, leaveType, startDate, endDate,
   });
   startDate = range.start;
   endDate = range.end;
-  const daysCount = leaveDaysCount(leaveType, range.start, range.end, range.days);
+  // อ่านวันหยุดครั้งเดียวสำหรับช่วงนี้ แล้วส่งเข้าไปให้ตัวนับ — ลาพักผ่อนต้องหักวันหยุดราชการออกด้วย
+  // ไม่ใช่แค่เสาร์-อาทิตย์ (ระเบียบการลา ข้อ 6 ให้นับเฉพาะวันทำการ)
+  const daysCount = leaveDaysCount(leaveType, range.start, range.end, range.days,
+    holidaySetBetween(range.start, range.end));
   if (!reason?.trim()) throw httpError(400, 'กรุณาระบุเหตุผล');
   assertMaxLength(reason, MAX_LEAVE_REASON, 'เหตุผล');
   assertMaxLength(destination, MAX_LEAVE_TEXT, 'สถานที่ไปราชการ');

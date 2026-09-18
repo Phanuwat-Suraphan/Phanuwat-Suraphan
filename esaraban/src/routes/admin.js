@@ -1,7 +1,8 @@
 import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
-import { layout, esc, fmtDate, emptyState, schoolName, schoolShortName, schoolInitials } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateLong, emptyState, schoolName, schoolShortName, schoolInitials } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
-import { db, uuid, nowIso, hashSecret, audit, starterModeActive, clearStarterCredentials, TEST_MODE_ON } from '../db.js';
+import { db, uuid, nowIso, hashSecret, audit, beYear, todayInBangkok, starterModeActive, clearStarterCredentials, TEST_MODE_ON } from '../db.js';
+import { seedFixedHolidays, listHolidays, holidayYears, addHoliday, removeHoliday } from '../services/holidays.js';
 import { readTable, planUserImport, applyUserImport, templateCsv, generatePassword, generatePin } from '../services/userImport.js';
 import { httpError } from '../services/workflow.js';
 import { positionInput } from '../services/positions.js';
@@ -851,3 +852,99 @@ function buildPlan(body) {
     existingEmails: db.prepare('SELECT email FROM users WHERE email IS NOT NULL').all().map((u) => u.email),
   });
 }
+
+// ───────────────────────────── ปฏิทินวันหยุดราชการ ─────────────────────────────
+//
+// มีไว้เพื่ออย่างเดียว: ให้ "ลาพักผ่อน" นับวันทำการได้ถูกต้องตามระเบียบการลา ข้อ 6 ซึ่งต้องหักทั้ง
+// เสาร์-อาทิตย์และวันหยุดราชการออก เดิมระบบหักให้แค่เสาร์-อาทิตย์ ครูที่ลาคร่อมสงกรานต์จึงถูกหัก
+// สิทธิ์เกินจริงหลายวัน ทั้งที่สิทธิ์มีปีละ 10 วันทำการ
+router.get('/admin/holidays', requireRole('admin')(requirePage((ctx) => {
+  const thisYear = Number(todayInBangkok().slice(0, 4));
+  const year = Number(ctx.query.year) || thisYear;
+  // ใส่วันหยุดที่ตรึงวันที่ให้ปีที่กำลังเปิดดู ถ้ายังไม่เคยใส่ — ผู้ดูแลจึงไม่ต้องกรอกเองทั้ง 15 วัน
+  const seeded = seedFixedHolidays(year);
+  const rows = listHolidays(year);
+  const years = [...new Set([thisYear - 1, thisYear, thisYear + 1, ...holidayYears()])].sort((a, b) => b - a);
+
+  const content = `
+    <h2>🎌 ปฏิทินวันหยุดราชการ</h2>
+    <p class="text-muted" style="margin-top:-.5rem">
+      ใช้คำนวณ <strong>“วันทำการ”</strong> ของการลาพักผ่อน ตามระเบียบสำนักนายกรัฐมนตรีว่าด้วยการลา
+      พ.ศ. 2555 ข้อ 6 ซึ่งให้ลาพักผ่อนนับเฉพาะวันทำการ — ระบบจะหักวันในปฏิทินนี้ออกจากจำนวนวันลาให้อัตโนมัติ
+    </p>
+    <div class="callout-tip">
+      ระบบใส่ <strong>วันหยุดที่ตรงวันที่เดิมทุกปี</strong> ให้เองแล้ว (ปีใหม่ จักรี สงกรานต์ แรงงาน ฉัตรมงคล
+      เฉลิมพระชนมพรรษา ปิยมหาราช รัฐธรรมนูญ ฯลฯ)
+      <br/><strong>ที่ต้องเพิ่มเอง</strong> คือวันหยุดตามจันทรคติซึ่งเลื่อนทุกปี (มาฆบูชา วิสาขบูชา อาสาฬหบูชา
+      เข้าพรรษา) และ<strong>วันหยุดชดเชย/วันหยุดพิเศษตามมติคณะรัฐมนตรี</strong> — ระบบเดาแทนไม่ได้
+      เพราะของจริงยึดตามประกาศของปีนั้น ไม่ใช่การคำนวณ
+      ${seeded ? `<br/>✅ เพิ่งใส่วันหยุดประจำปี ${beYear(year)} ให้ ${seeded} วัน` : ''}
+    </div>
+
+    <div class="card">
+      <div class="flex gap-2 items-center" style="flex-wrap:wrap">
+        <label style="margin:0">ปี พ.ศ.</label>
+        <select onchange="location.href='/admin/holidays?year=' + this.value">
+          ${years.map((y) => `<option value="${y}"${y === year ? ' selected' : ''}>${beYear(y)}</option>`).join('')}
+        </select>
+        <span class="text-muted" style="font-size:.85rem">${rows.length} วัน</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 class="mt-0">เพิ่มวันหยุด</h3>
+      <div class="form-grid cols-2">
+        <div class="field"><label>วันที่</label><input type="date" id="hDate" value="${year}-01-01" /></div>
+        <div class="field"><label>ชื่อวันหยุด</label>
+          <input type="text" id="hName" maxlength="120" placeholder="เช่น วันวิสาขบูชา, วันหยุดชดเชย" /></div>
+      </div>
+      <button class="btn btn-primary" onclick="addHoliday(this)">เพิ่ม</button>
+    </div>
+
+    <div class="card">
+      ${rows.length ? `<div class="table-wrap"><table>
+        <thead><tr><th>วันที่</th><th>ชื่อวันหยุด</th><th>ที่มา</th><th></th></tr></thead>
+        <tbody>${rows.map((h) => `<tr>
+          <td style="white-space:nowrap">${esc(fmtThaiDateLong(h.holiday_date))}</td>
+          <td>${esc(h.name)}</td>
+          <td>${h.seeded ? '<span class="badge badge-muted">ระบบใส่ให้</span>' : '<span class="badge badge-info">เพิ่มเอง</span>'}</td>
+          <td style="text-align:right"><button class="btn btn-outline btn-sm"
+            onclick="removeHoliday('${esc(h.holiday_date)}', this)">ลบ</button></td>
+        </tr>`).join('')}</tbody>
+      </table></div>` : `<p class="text-muted" style="margin:0">ยังไม่มีวันหยุดในปี ${beYear(year)}</p>`}
+    </div>
+
+    <div class="callout-tip">
+      ⓘ การแก้ปฏิทินนี้<strong>ไม่ย้อนไปแก้ใบลาที่อนุมัติไปแล้ว</strong> — จำนวนวันของใบลาถูกบันทึกไว้
+      ณ วันที่ยื่น ซึ่งเป็นตัวเลขที่ผู้อนุญาตเห็นและอนุมัติจริง การไปแก้ย้อนหลังจะทำให้หลักฐานไม่ตรงกับ
+      ที่ลงนามไว้ ถ้าใบไหนคำนวณผิดจริง ให้ยกเลิกแล้วยื่นใหม่
+    </div>
+
+    <script>
+      function addHoliday(btn){
+        var date = document.getElementById('hDate').value;
+        var name = document.getElementById('hName').value.trim();
+        if (!date || !name) { toast('กรุณากรอกวันที่และชื่อวันหยุด', 'warning'); return; }
+        window.setBtnLoading(btn, 'กำลังเพิ่ม...');
+        window.postJson('/admin/holidays/add', { date: date, name: name })
+          .then(function(){ location.reload(); })
+          .catch(function(e){ toast(e.message, 'danger'); window.restoreBtn(btn); });
+      }
+      function removeHoliday(date, btn){
+        if (!confirm('ลบวันหยุดวันนี้ออกจากปฏิทิน?')) return;
+        window.setBtnLoading(btn, 'กำลังลบ...');
+        window.postJson('/admin/holidays/remove', { date: date })
+          .then(function(){ location.reload(); })
+          .catch(function(e){ toast(e.message, 'danger'); window.restoreBtn(btn); });
+      }
+    </script>`;
+  html(ctx, 200, layout({ user: ctx.user, title: 'ปฏิทินวันหยุดราชการ', path: '/admin/holidays', content }));
+})));
+
+router.post('/admin/holidays/add', requireRole('admin')(requireApi((ctx) => {
+  json(ctx, 200, { ok: true, ...addHoliday({ date: ctx.body?.date, name: ctx.body?.name, actorUser: ctx.user }) });
+})));
+
+router.post('/admin/holidays/remove', requireRole('admin')(requireApi((ctx) => {
+  json(ctx, 200, removeHoliday({ date: ctx.body?.date, actorUser: ctx.user }));
+})));

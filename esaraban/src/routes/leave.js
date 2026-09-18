@@ -6,7 +6,8 @@ import { Readable } from 'node:stream';
 import { router, html, json, contentDispositionHeader, truncateFilename } from '../router.js';
 import { layout, esc, fmtDate, fmtThaiDateShort, fmtThaiDateLong, schoolName, rowAttrs, rowLink } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
-import { db, uuid, audit, beYear } from '../db.js';
+import { db, uuid, audit, beYear, todayInBangkok } from '../db.js';
+import { holidaysBetween, holidayYears } from '../services/holidays.js';
 import {
   LEAVE_TYPE_LABEL, decisionVerb, createLeaveRequest, getLeaveRequest, listMyLeaveRequests, listPendingApprovals,
   approveLeaveRequest, rejectLeaveRequest, cancelLeaveRequest, canSeeLeaveRequest,
@@ -88,6 +89,19 @@ router.get('/leave', requirePage((ctx) => {
   html(ctx, 200, layout({ user: ctx.user, title: 'ลา/ไปราชการ', path: '/leave', content }));
 }));
 
+/**
+ * วันหยุดที่ส่งไปให้หน้ากรอกใบลาใช้คำนวณ — ครอบคลุมช่วงที่ครูจะเลือกได้จริง
+ *
+ * ส่งเฉพาะช่วงปีนี้ถึงปีหน้า ไม่ใช่ทั้งตาราง เพราะตารางนี้จะโตขึ้นทุกปีไม่มีที่สิ้นสุด และการฝังข้อมูล
+ * สิบปีลงในทุกครั้งที่เปิดหน้ากรอกใบลา คือน้ำหนักที่ครูบนมือถือต้องโหลดทิ้งเปล่าๆ ทุกครั้ง
+ */
+function upcomingHolidayMap() {
+  const today = todayInBangkok();
+  const from = `${today.slice(0, 4)}-01-01`;
+  const to = `${Number(today.slice(0, 4)) + 1}-12-31`;
+  return Object.fromEntries(holidaysBetween(from, to).map((h) => [h.holiday_date, h.name]));
+}
+
 router.get('/leave/new', requirePage((ctx) => {
   const content = `
     <h2>🗓️ ยื่นคำขอลา/ไปราชการ</h2>
@@ -140,6 +154,10 @@ router.get('/leave/new', requirePage((ctx) => {
     <script>
       // นับวันให้ตรงกับฝั่งเซิร์ฟเวอร์เป๊ะ (ดู leaveDaysCount ใน services/leave.js) — ลาพักผ่อนนับเฉพาะ
       // วันทำการตามระเบียบการลา ข้อ 6 ส่วนประเภทอื่นนับวันหยุดที่คั่นกลางรวมด้วย
+      // ปฏิทินวันหยุดราชการที่ผู้ดูแลบันทึกไว้ — ส่งมาจากเซิร์ฟเวอร์ ให้ตัวเลขบนหน้าจอตรงกับที่บันทึกจริง
+      // ถ้าหน้าจอคำนวณคนละแบบกับเซิร์ฟเวอร์ ครูจะเห็นเลขหนึ่งตอนกรอก แล้วได้อีกเลขหนึ่งหลังกดยื่น
+      var HOLIDAYS = ${JSON.stringify(upcomingHolidayMap())};
+      var HOLIDAY_YEARS = ${JSON.stringify(Object.fromEntries(holidayYears().map((y) => [String(y), true])))};
       function countLeaveDays(type, from, to) {
         if (!from || !to || to < from) return null;
         var start = Date.parse(from + 'T00:00:00Z');
@@ -148,11 +166,15 @@ router.get('/leave/new', requirePage((ctx) => {
         var calendar = Math.floor((end - start) / 86400000) + 1;
         if (type !== 'vacation') return { days: calendar, workingOnly: false };
         var n = 0;
+        var skipped = [];
         for (var t = start; t <= end; t += 86400000) {
-          var d = new Date(t).getUTCDay();
-          if (d !== 0 && d !== 6) n++;
+          var dt = new Date(t);
+          if (dt.getUTCDay() === 0 || dt.getUTCDay() === 6) continue;
+          var iso = dt.toISOString().slice(0, 10);
+          if (HOLIDAYS[iso]) { skipped.push(iso + ' ' + HOLIDAYS[iso]); continue; }
+          n++;
         }
-        return { days: Math.max(1, n), workingOnly: true, calendar: calendar };
+        return { days: Math.max(1, n), workingOnly: true, calendar: calendar, skipped: skipped };
       }
       function updateDayCountHint() {
         var type = document.getElementById('leaveType').value;
@@ -160,13 +182,31 @@ router.get('/leave/new', requirePage((ctx) => {
         var r = countLeaveDays(type, document.getElementById('startDate').value, document.getElementById('endDate').value);
         if (!r) { box.style.display = 'none'; return; }
         box.style.display = '';
-        box.innerHTML = r.workingOnly
-          ? '📅 นับเป็น <strong>' + r.days + ' วันทำการ</strong> (จากช่วงที่เลือก ' + r.calendar + ' วัน) —'
-            + ' ลาพักผ่อนนับเฉพาะวันทำการตามระเบียบการลา ข้อ 6<br/>'
-            + '<span style="font-size:.85rem">⚠️ ระบบหักให้เฉพาะเสาร์-อาทิตย์ <strong>ไม่ได้หักวันหยุดนักขัตฤกษ์</strong>'
-            + ' ถ้าช่วงนี้มีวันหยุดราชการคั่นอยู่ ให้แจ้งผู้อนุญาตเพื่อปรับจำนวนวันด้วย</span>'
-          : '📅 นับเป็น <strong>' + r.days + ' วัน</strong> — การลาประเภทนี้นับวันหยุดที่คั่นอยู่ระหว่างวันลารวมด้วย'
+        if (!r.workingOnly) {
+          box.textContent = '';
+          box.innerHTML = '📅 นับเป็น <strong>' + r.days + ' วัน</strong> — การลาประเภทนี้นับวันหยุดที่คั่นอยู่ระหว่างวันลารวมด้วย'
             + ' ตามระเบียบการลา ข้อ 6';
+          return;
+        }
+        var html = '📅 นับเป็น <strong>' + r.days + ' วันทำการ</strong> (จากช่วงที่เลือก ' + r.calendar + ' วัน) —'
+          + ' ลาพักผ่อนนับเฉพาะวันทำการตามระเบียบการลา ข้อ 6';
+        box.innerHTML = html;
+        // บอกให้เห็นว่าหักวันไหนออกให้บ้าง — ครูจะได้ตรวจได้เองว่าตรงกับปฏิทินจริงไหม ไม่ต้องเชื่อตัวเลขลอยๆ
+        if (r.skipped.length) {
+          var ul = document.createElement('div');
+          ul.style.cssText = 'font-size:.85rem;margin-top:.3rem';
+          ul.textContent = '✅ หักวันหยุดราชการออกให้แล้ว ' + r.skipped.length + ' วัน: ' + r.skipped.join(', ');
+          box.appendChild(ul);
+        }
+        // ปฏิทินของปีนั้นยังไม่ได้บันทึกไว้เลย = ระบบหักให้ได้แค่เสาร์-อาทิตย์ ต้องบอกตรงๆ ไม่ใช่เงียบ
+        var y = document.getElementById('startDate').value.slice(0, 4);
+        if (y && !HOLIDAY_YEARS[y]) {
+          var warn = document.createElement('div');
+          warn.style.cssText = 'font-size:.85rem;margin-top:.3rem;color:var(--danger)';
+          warn.textContent = '⚠️ ยังไม่ได้บันทึกปฏิทินวันหยุดราชการของปี ' + (Number(y) + 543)
+            + ' ระบบจึงหักให้เฉพาะเสาร์-อาทิตย์ — แจ้งผู้ดูแลระบบให้เพิ่มปฏิทินปีนี้ก่อน';
+          box.appendChild(warn);
+        }
       }
       ['leaveType', 'startDate', 'endDate'].forEach(function (id) {
         document.getElementById(id).addEventListener('change', updateDayCountHint);
